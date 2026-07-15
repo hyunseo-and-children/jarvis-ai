@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: 개발 문서 (docs/)
-    url: https://github.com/OWNER/REPO/tree/main/docs
+    url: https://github.com/hyunseo-and-children/jarvis-ai/tree/main/docs
     about: 계약(api-spec)·SPEC·MVP 계획/TODO·roadmap은 docs/ 참조

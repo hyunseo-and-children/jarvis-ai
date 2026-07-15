@@ -4,6 +4,7 @@
 > 구매자·판매자 양쪽을 위한 LangGraph 멀티 에이전트와 개인화 프로필 파이프라인을 제공한다.
 
 <p>
+  <img alt="CI" src="https://github.com/hyunseo-and-children/jarvis-ai/actions/workflows/ci.yml/badge.svg">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white">
   <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-0.2-1C3C3C">
