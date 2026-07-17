@@ -1,0 +1,43 @@
+name: Claude PR Review
+
+# PR 이 열리거나 갱신될 때 Claude 가 diff 를 리뷰하고 인라인 코멘트를 자동으로 단다.
+# 인증: 구독 OAuth 토큰 (claude setup-token → 리포 시크릿 CLAUDE_CODE_OAUTH_TOKEN).
+# review-only — 커밋/푸시하지 않고 코멘트만 남긴다.
+
+permissions:
+  contents: read
+  pull-requests: write
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.github/**'
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    # draft·fork PR 스킵 (fork 는 시크릿 접근 불가)
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            이 PR 의 diff 를 리뷰해 인라인 리뷰 코멘트로 남겨줘. 저장소 CLAUDE.md 규칙이 기준이다.
+            중점 확인:
+            - 보안: IDOR — 신원(userId/guestId/sellerId)을 요청 본문에서 받는지 (JWT sub 유래여야 함)
+            - 계약: api-spec 스키마/엔드포인트/오류코드 위반, 와이어 camelCase, productId 문자열 규약
+            - 논리 버그, 동시성 위험, 미검증/무제한 입력, 테스트 누락
+            커밋·푸시는 하지 말고 코멘트만 남긴다. 사소한 포매팅·네이밍 취향은 지적하지 마.
+            한국어로 리뷰해줘.
+          claude_args: |
+            --max-turns 5
