@@ -72,7 +72,7 @@ class ActionData(CamelModel):
 
     type: Literal["CART_ADDED", "CART_ADD_FAILED"]
     message: str
-    cart_item_id: str | None = None
+    cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
     reason: (
         Literal["OUT_OF_STOCK", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None
     ) = None

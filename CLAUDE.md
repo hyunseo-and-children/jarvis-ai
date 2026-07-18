@@ -6,7 +6,7 @@
 
 - 외부 계약의 정본은 **api-spec v0.7.0** (기획 repo `project-planning/my-project/docs/api-spec.md`, 로컬 사본 `docs/api-spec.md`). 계약(엔드포인트·SSE 이벤트·필드·오류 코드)을 바꾸려면 **명세 개정이 먼저** — 코드에서 임의 변경 금지.
 - 와이어 포맷은 **camelCase** — Pydantic `CamelModel`(by_alias) 규약 유지 (`app/schemas/`).
-- `productId`는 전 구간 **string**. 사용자/게스트/판매자 id는 숫자(JWT `sub`).
+- 상품·옵션·장바구니·주문 id는 **숫자(BIGINT)** — DB 스키마 기준(product/product_option/cart_item/order). 회원·판매자 id도 숫자(JWT `sub`). **게스트 id는 UUID 문자열**(guest.id CHAR(36)). SSE는 상품 카드/id를 싣지 않는다(경로 B).
 - **신원은 절대 요청 본문에서 받지 않는다** — AI가 검증한 JWT `sub`에서 도출 (IDOR 방지).
 - 인증 레인: 장바구니(I-2/I-9)만 `X-Internal-Token` 서비스 토큰, 나머지 AI→Spring은 JWT 포워딩(🔴 협의). AI→Spring 타임아웃은 전 구간 3s.
 - SSE 이벤트: 구매자 `token/conditions/action/suggestions/budget/products.ready/done/error`, 판매자 `token/draft/done/error`. 상품 카드는 SSE에 싣지 않는다(경로 B).

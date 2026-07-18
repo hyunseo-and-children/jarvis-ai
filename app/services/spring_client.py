@@ -103,7 +103,7 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     )
 
 
-async def get_cart(user_id: int | None = None, guest_id: int | None = None) -> CartView:
+async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> CartView:
     """장바구니 조회 — I-18 (스텁, api-spec §4.9 / C-16). guest_id 타입은 §2.6/DDL 미정 — 현행 유지.
 
     GET {spring_base_url}/internal/cart?userId=|guestId= + X-Internal-Token.

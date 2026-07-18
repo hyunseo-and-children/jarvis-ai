@@ -34,10 +34,10 @@ def test_chat_request_accepts_camel_input() -> None:
 
 def test_search_filters_serialize_camel() -> None:
     """검색 필터는 excludeProductIds/priceMax 등 camelCase 로 나간다 (§4.2 와이어)."""
-    f = ProductSearchFilters(price_max=50000, exclude_product_ids=["P-1"], limit=30)
+    f = ProductSearchFilters(price_max=50000, exclude_product_ids=[1], limit=30)
     d = f.model_dump(by_alias=True)
     assert d["priceMax"] == 50000
-    assert d["excludeProductIds"] == ["P-1"]
+    assert d["excludeProductIds"] == [1]
     assert d["limit"] == 30
 
 

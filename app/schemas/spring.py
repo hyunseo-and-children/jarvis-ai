@@ -44,7 +44,7 @@ class ProductSearchFilters(CamelModel):
     brand: list[str] | None = None
     rating_min: float | None = None
     keyword: str | None = None
-    exclude_product_ids: list[str] = Field(default_factory=list)
+    exclude_product_ids: list[int] = Field(default_factory=list)
     sort: str | None = None
     limit: int = 30
 
@@ -52,7 +52,7 @@ class ProductSearchFilters(CamelModel):
 class SpringProduct(CamelModel):
     """Spring 검색 응답의 상품 1건. price/stock 은 질의 시점 최신값 (rerank·예산 계산용)."""
 
-    product_id: str
+    product_id: int  # 숫자(BIGINT, product.id §2.6)
     name: str
     price: int
     list_price: int | None = None
@@ -115,14 +115,14 @@ class AddToCartRequest(CamelModel):
     """I-2 POST /internal/cart/items 요청 본문 (api-spec §4.1, BE 문서 채택).
 
     userId/guestId 둘 중 하나 — AI-검증 JWT sub 유래(챗 요청의 메아리, FE 본문 값 불신).
-    게스트 담기 허용(결정 8 개정). productId·guestId 타입은 §2.6 경계 정책(internal 숫자 vs SSE 문자열)·DDL(guest UUID) 미정 — 현행 유지, 🔴 C-5.
+    게스트 담기 허용(결정 8 개정). id 타입 = DB 스키마 기준: productId·optionId = 숫자(BIGINT), guestId = UUID 문자열(§2.6).
     quantity 1~99, 동일 상품·옵션 기존 존재 시 Spring 이 합산.
     """
 
     user_id: int | None = None
-    guest_id: int | None = None
-    product_id: str
-    option_id: str | None = None
+    guest_id: str | None = None  # 게스트 UUID(guest.id CHAR(36))
+    product_id: int  # 숫자(BIGINT, product.id)
+    option_id: int | None = None  # 숫자(BIGINT, product_option.id)
     quantity: int = Field(1, ge=1, le=99)
 
 
@@ -135,7 +135,7 @@ class AddToCartResult(CamelModel):
     """
 
     success: bool
-    cart_item_id: int | str | None = None
+    cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
 
 
 # ── 4. 장바구니 조회 (I-9, §4.9, C-16) ──
@@ -144,10 +144,10 @@ class AddToCartResult(CamelModel):
 class CartViewItem(CamelModel):
     """I-9 GET /internal/cart 응답 항목 — productName/optionName 은 챗 답변 생성 필수(🔴)."""
 
-    cart_item_id: int | str
-    product_id: str
+    cart_item_id: int  # 숫자(BIGINT, cart_item.id)
+    product_id: int  # 숫자(BIGINT, product.id)
     product_name: str | None = None
-    option_id: str | None = None
+    option_id: int | None = None  # 숫자(BIGINT, product_option.id)
     option_name: str | None = None
     quantity: int = 1
     price: int | None = None  # 표시가(선택, 총액 안내용 — 표시 권위는 Spring)
@@ -189,7 +189,7 @@ class ProductChange(CamelModel):
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     """
 
-    product_id: str
+    product_id: int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
     status: str  # ACTIVE | DELISTED
     updated_at: str  # ISO-8601
     name: str | None = None
