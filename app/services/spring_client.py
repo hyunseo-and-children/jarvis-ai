@@ -17,9 +17,9 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 타임아웃: AI→Spring 전 구간 3s 통일 (api-spec §2.9 c — BE I-2 문서 기준).
 
 [변경 v0.6.0] add_to_cart 구계약(JWT 포워딩 + items[] 다건) 폐기 → BE I-2 문서 채택(단건,
-게스트 담기 허용, optionId 되물음). get_cart(I-9) 신설.
+게스트 담기 허용, optionId 되물음). get_cart(I-18) 신설.
 [변경 v0.5.x] point_lookup 폐기(경로 B). 주문 시드(order_seed) → get_recent_purchases
-질의 시점 조회로 대체. AI 생성물 갱신은 I-8 pull 배치(§4.8).
+질의 시점 조회로 대체. AI 생성물 갱신은 I-17 pull 배치(§4.8).
 """
 
 from __future__ import annotations

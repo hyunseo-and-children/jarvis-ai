@@ -1,6 +1,6 @@
 """임베딩 파이프라인 — AI 생성물 갱신 배치의 2단계 (MVP, api-spec §4.8).
 
-[정정 v0.5.1] "고도화 post-MVP" 아님 — MVP 배치 소속. I-8 pull 배치 흐름에서
+[정정 v0.5.1] "고도화 post-MVP" 아님 — MVP 배치 소속. I-17 pull 배치 흐름에서
 search_doc 를 조립하고 셀프호스트 한국어 임베딩(1024-dim, CPU, 결정 6)으로 임베딩해
 AI Postgres 에 upsert 한다. 질의 시점 후보 흐름에서의 활용 방식(방식1: AI 벡터 검색 →
 Spring id 제약 조회 / 방식2: Spring 검색 → 임베딩 재정렬 보조)은 OPEN — SearchBackend

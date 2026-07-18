@@ -5,7 +5,7 @@
         conditional edge 로 서브그래프 분기:
             - recommendation (SPEC-RECOMMEND-001): decompose→search(Spring 위임)→rerank→목록 push(경로 B)
             - cart: (상품/옵션/수량) intent → spring_client.add_to_cart(I-2 단건, 반복 호출) 위임
-                    + 옵션 되물음 멀티턴(CART_OPTION_REQUIRED) + get_cart(I-9) 조회 응답 (§4.1·§4.9)
+                    + 옵션 되물음 멀티턴(CART_OPTION_REQUIRED) + get_cart(I-18) 조회 응답 (§4.1·§4.9)
             - fallback: 일반 대화 폴백
 
 결정 4-A: 일시적/상황적 요청("이번엔 비싸도 돼")은 thread checkpointer/state(session_context)

@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 1024
 
     # ── PostgreSQL / pgvector ×2 ──
-    # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-8 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
+    # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
     catalog_db_url: str = "postgresql://jarvis:jarvis@localhost:5433/catalog"
     profile_db_url: str = "postgresql://jarvis:jarvis@localhost:5434/profile"
 

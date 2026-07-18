@@ -2,7 +2,7 @@
 
 [정정 v0.5.1] "고도화 post-MVP" 아님 — MVP 배치 소속. AI Postgres 는 AI 생성물
 (extras·search_doc·임베딩)만 저장하며(상품 원본 컬럼 사본 없음), 이 모듈은
-I-8 pull 배치(spring_client.fetch_product_changes) 흐름의 enrichment 단계다:
+I-17 pull 배치(spring_client.fetch_product_changes) 흐름의 enrichment 단계다:
   변경분 조회 → [enrich_product] → search_doc 조립(embedding.build_search_doc) →
   임베딩(embedding.embed_texts) → AI Postgres upsert.
 
