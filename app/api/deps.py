@@ -60,4 +60,11 @@ def require_seller(authorization: str | None = Header(default=None)) -> Identity
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "FORBIDDEN", "message": "seller scope required"},
         )
+    if not identity.brand_id:
+        # §2.3: 판매자 토큰엔 brandId 클레임 필수 — 없으면 판매자 역호출(§4.4/§4.5) 불가.
+        # 요청 본문/발화로 우회하지 않도록 검증된 클레임 부재 시 거부한다(IDOR 방지).
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "FORBIDDEN", "message": "seller token missing brandId claim"},
+        )
     return identity
