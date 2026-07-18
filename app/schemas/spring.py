@@ -167,7 +167,8 @@ class RecommendationPush(CamelModel):
 
     최종 랭크 상품 id(Top5)만 전달한다 — listId 는 FastAPI 가 생성해 넘기고(Spring 이 Redis 에
     이 키로 TTL 저장), FE 는 CH-5 GET /api/chat/lists/{listId} 로 카드를 조회한다.
-    [변경 v0.15.0] 구 groups/items(title·rank·reason) 구조 폐기 — reason 은 SSE 로 직접(콜백 불포함).
+    [변경 v0.15.0] 구 groups/items 구조 폐기. [Q2 역제안 v0.15.2] reason 은 이 콜백에 포함
+    (reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo. BE 확정 시 reasons 필드 추가(§4.2).
     productId 는 internal 계약이라 숫자(BIGINT, §2.6). 순서 유지 = 렌더 순서.
     상위는 이 콜백이 성공한 뒤에만 SSE products.ready 를 emit 한다(§3.3).
     """
