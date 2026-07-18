@@ -133,6 +133,22 @@ async def test_disconnect_before_first_token_releases_fast(monkeypatch: pytest.M
     assert not get_registry().is_active("pref-sess")  # 슬롯 즉시 해제
 
 
+async def test_in_stream_error_emits_error_event() -> None:
+    """첫 이벤트 후 상류 예외는 in-stream error(INTERNAL) 프레임으로 마무리한다(§2.9 c/§3.1)."""
+
+    async def boom_after_first():
+        yield 'data: {"type":"token","data":{"text":"hi"}}\n\n'
+        raise RuntimeError("mid-stream boom")
+
+    resp = await open_stream(_FakeRequest(), "instream-err", boom_after_first)
+    parts = [c if isinstance(c, str) else c.decode() async for c in resp.body_iterator]
+    text = "".join(parts)
+    assert '"token"' in text
+    assert '"error"' in text
+    assert '"INTERNAL"' in text  # 연결만 끊기지 않고 error 프레임으로 종료
+    assert not get_registry().is_active("instream-err")
+
+
 async def test_first_frame_error_releases_registry() -> None:
     """첫 프레임 전 상류 오류(비-타임아웃) 시에도 레지스트리를 해제한다(§409 누수 방지)."""
 

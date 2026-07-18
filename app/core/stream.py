@@ -22,7 +22,7 @@ from fastapi.responses import StreamingResponse
 from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.logging import get_logger
-from app.schemas.chat import DoneData
+from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
 
@@ -80,6 +80,14 @@ def _done_stop_frame() -> str:
     import json
 
     payload = {"type": "done", "data": DoneData(finish_reason="stop").model_dump(by_alias=True)}
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _error_frame(code: str, message: str) -> str:
+    """스트림 시작 후 오류의 in-stream `error` 프레임 (api-spec §3.1, §2.9 c)."""
+    import json
+
+    payload = {"type": "error", "data": ErrorData(code=code, message=message).model_dump(by_alias=True)}
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
@@ -185,6 +193,13 @@ async def open_stream(
                 try:
                     item = next_task.result()
                 except StopAsyncIteration:
+                    break
+                except Exception:
+                    # (c) 첫 이벤트 후(=200 전송 후) 상류 오류 — 계약상 in-stream error 로
+                    #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
+                    #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
+                    logger.exception("in-stream error session=%s", session_id)
+                    yield _error_frame("INTERNAL", "처리 중 오류가 발생했습니다")
                     break
                 yield item
                 next_task = asyncio.ensure_future(agen.__anext__())
