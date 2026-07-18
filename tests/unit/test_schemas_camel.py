@@ -8,7 +8,6 @@ from __future__ import annotations
 from app.schemas.chat import ChatRequest, DoneData, ProductsReadyData
 from app.schemas.spring import (
     ProductSearchFilters,
-    RecommendationItem,
     RecommendationPush,
 )
 
@@ -42,23 +41,11 @@ def test_search_filters_serialize_camel() -> None:
     assert d["limit"] == 30
 
 
-def test_recommendation_push_serializes_camel_no_display_fields() -> None:
-    """추천 push 는 camelCase 이고 표시 필드(price/image)를 포함하지 않는다 (§4.3)."""
-    push = RecommendationPush(
-        session_id="s-1",
-        thread_id="t-1",
-        groups=[
-            {
-                "title": "여행 방수",
-                "category": "여행용품",
-                "items": [RecommendationItem(product_id="P-1", rank=1, reason="방수 등급 높음")],
-            }
-        ],
-    )
+def test_recommendation_push_i21_serializes_camel() -> None:
+    """I-21 추천 push 는 sessionId/listId/productIds(숫자 id만) 로 직렬화된다 (§4.2 v0.15.0)."""
+    push = RecommendationPush(session_id="s-1", list_id="l-1", product_ids=[101, 205, 552])
     d = push.model_dump(by_alias=True)
-    assert d["sessionId"] == "s-1"
-    item = d["groups"][0]["items"][0]
-    assert item == {"productId": "P-1", "rank": 1, "reason": "방수 등급 높음"}
-    # 표시 필드 부재 확인.
-    assert "price" not in item
-    assert "mainImage" not in item
+    assert d == {"sessionId": "s-1", "listId": "l-1", "productIds": [101, 205, 552]}
+    # 표시 필드·groups 구조 부재 확인 (경로 B — id 만 전달).
+    assert "groups" not in d
+    assert "price" not in d
