@@ -48,6 +48,9 @@ class Identity:
     is_guest: bool
     seller_id: str | None
     brand_id: str | None = None
+    # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
+    # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
+    subject: str | None = None
 
 
 class AuthError(Exception):
@@ -66,15 +69,15 @@ def _claims_to_identity(claims: dict) -> Identity:
     role = claims.get(CLAIM_ROLE)
 
     if role == ROLE_GUEST:
-        return Identity(user_id=None, is_guest=True, seller_id=None)
+        return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
     if role == ROLE_SELLER:
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
         return Identity(
             user_id=subject, is_guest=False, seller_id=subject,
-            brand_id=claims.get(CLAIM_BRAND_ID),
+            brand_id=claims.get(CLAIM_BRAND_ID), subject=subject,
         )
     # 기본: 일반 회원.
-    return Identity(user_id=subject, is_guest=False, seller_id=None)
+    return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
 
 
 @lru_cache

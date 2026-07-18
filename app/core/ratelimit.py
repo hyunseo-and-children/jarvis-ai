@@ -5,10 +5,10 @@ FastAPI 미들웨어 + in-memory(단일 인스턴스 전제 — 다중 인스턴
 채팅 메시지(POST /chat·/seller/chat)에 상한(config)을 적용하고 초과 시 429 RATE_LIMITED
 (§2.5 봉투)로 거절한다.
 
-스코프 = 토큰 `sub`(§2.8). sub 는 **서명 검증 없이** 디코드해 얻는다 — jwks 의 동기 JWKS
-HTTP 가 이벤트 루프를 블로킹하는 문제를 피하기 위함이며, 서명·만료 검증은 다운스트림
-get_identity 소관이다. sub 스코프만으로는 위조/회전 토큰으로 우회 가능하므로, **IP(호스트)
-기준 백스톱 상한을 항상 병행** 적용한다(배수는 NAT 오탐을 줄이려 관대하게).
+스코프 = 토큰 `sub`(§2.8). sub 는 **서명 검증을 통과한** 토큰에서만 얻는다(위조 sub 로
+피해자 버킷을 고갈시키는 표적 DoS 방지). 검증의 동기 JWKS HTTP 는 run_in_threadpool 로
+오프로드해 이벤트 루프 블로킹을 피한다. 미검증/무토큰과 sub 회전 우회를 막기 위해 **IP
+(호스트) 백스톱 상한을 항상 병행** 적용한다(배수는 NAT 오탐을 줄이려 관대하게).
 """
 
 from __future__ import annotations
@@ -16,10 +16,11 @@ from __future__ import annotations
 import time
 from collections import deque
 
-import jwt
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
+from app.core.auth import AuthError, decode_token
 from app.core.config import get_settings
 from app.core.errors import REQUEST_ID_HEADER, error_envelope, get_request_id
 from app.core.logging import get_logger
@@ -63,17 +64,30 @@ def _host(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def _sub_scope(request: Request) -> str | None:
-    """토큰 `sub` 스코프 키. 서명 검증 없이 디코드(무네트워크). 토큰 없음/형식 오류면 None."""
+async def _verified_sub_scope(request: Request) -> str | None:
+    """토큰 `sub` 스코프 키. **서명 검증을 통과한** 토큰의 subject 만 sub 스코프로 쓴다.
+
+    서명 미검증 sub 을 키로 쓰면 공격자가 `{"sub": "<피해자 id>"}` 위조 토큰을 반복 전송해
+    피해자의 sub 버킷을 고갈시키는 표적 DoS 가 가능하다(회원/판매자 id 는 순차 BIGINT).
+    따라서 실제 인증 경로(decode_token)로 검증하되, jwks 의 동기 HTTP 가 이벤트 루프를
+    블로킹하지 않도록 run_in_threadpool 로 오프로드한다. 위조/무효 토큰은 None → IP 백스톱만.
+    """
     token = _extract_bearer(request.headers.get("authorization"))
     if not token:
         return None
+    settings = get_settings()
     try:
-        claims = jwt.decode(token, options={"verify_signature": False})
-    except jwt.PyJWTError:
-        return None  # 형식이 유효한 JWT 가 아니면 sub 스코프 불가 → IP 백스톱만.
-    sub = claims.get("sub")
-    return f"sub:{sub}" if sub else None
+        identity = await run_in_threadpool(
+            decode_token,
+            token,
+            auth_mode=settings.auth_mode,
+            jwks_url=settings.jwks_url,
+            issuer=settings.jwt_issuer,
+            audience=settings.jwt_audience,
+        )
+    except AuthError:
+        return None  # 서명/만료 검증 실패 → sub 스코프 불가(피해자 버킷 오염 차단).
+    return f"sub:{identity.subject}" if identity.subject else None
 
 
 _limiter: SlidingWindowLimiter | None = None
@@ -93,7 +107,7 @@ async def rate_limit_middleware(request: Request, call_next):
         limiter = _get_limiter()
         now = time.monotonic()
         ip_key = f"ip:{_host(request)}"
-        sub_key = _sub_scope(request)
+        sub_key = await _verified_sub_scope(request)
 
         # sub 스코프(있으면) 상한 + IP 백스톱 상한(회전/위조 토큰 우회 차단)을 함께 본다.
         over = False

@@ -47,8 +47,8 @@ class _FakeRequest:
 
 def test_concurrent_same_session_returns_409() -> None:
     """동일 sessionId 활성 스트림 존재 시 새 요청은 409 STREAM_IN_PROGRESS."""
-    # dev 게스트 → registry_key owner="guest" → "guest:busy-sess"
-    get_registry().acquire("guest:busy-sess")
+    # dev 무토큰 게스트 → subject None → registry_key owner="anon" → "anon:busy-sess"
+    get_registry().acquire("anon:busy-sess")
     try:
         r = _chat("busy-sess")
         assert r.status_code == 409
@@ -56,7 +56,7 @@ def test_concurrent_same_session_returns_409() -> None:
         assert env["code"] == "STREAM_IN_PROGRESS"
         assert env["requestId"]
     finally:
-        get_registry().release("guest:busy-sess")
+        get_registry().release("anon:busy-sess")
 
 
 def test_registry_released_after_stream() -> None:
@@ -64,7 +64,7 @@ def test_registry_released_after_stream() -> None:
     r = _chat("done-sess")
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → 제너레이터 완료 → finally 해제
-    assert not get_registry().is_active("guest:done-sess")
+    assert not get_registry().is_active("anon:done-sess")
 
 
 def test_different_sessions_not_blocked() -> None:
@@ -245,11 +245,12 @@ def test_registry_key_binds_identity() -> None:
     from app.core.auth import Identity
     from app.core.stream import registry_key
 
-    member = Identity(user_id="u1", is_guest=False, seller_id=None)
-    guest = Identity(user_id=None, is_guest=True, seller_id=None)
-    seller = Identity(user_id="s1", is_guest=False, seller_id="s1", brand_id="b1")
+    member = Identity(user_id="u1", is_guest=False, seller_id=None, subject="u1")
+    guest1 = Identity(user_id=None, is_guest=True, seller_id=None, subject="guest-uuid-1")
+    guest2 = Identity(user_id=None, is_guest=True, seller_id=None, subject="guest-uuid-2")
+    seller = Identity(user_id="s1", is_guest=False, seller_id="s1", brand_id="b1", subject="s1")
     assert registry_key(member, "sess") == "u1:sess"
-    assert registry_key(guest, "sess") == "guest:sess"
+    assert registry_key(guest1, "sess") == "guest-uuid-1:sess"
     assert registry_key(seller, "sess") == "s1:sess"
-    # 서로 다른 사용자는 같은 session_id 라도 키가 다르다.
-    assert registry_key(member, "x") != registry_key(guest, "x")
+    # 게스트끼리도 subject 로 분리 — 서로의 슬롯을 침범하지 못한다.
+    assert registry_key(guest1, "x") != registry_key(guest2, "x")

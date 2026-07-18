@@ -69,7 +69,9 @@ def registry_key(identity: Identity, session_id: str) -> str:
     동시성 슬롯을 선점(피해자에 409 유발)할 수 있다. owner(판매자/회원 식별자, 게스트는
     "guest")를 접두어로 붙여 사용자 간 슬롯 침범을 막는다.
     """
-    owner = identity.seller_id or identity.user_id or "guest"
+    # subject(검증된 sub)는 게스트 UUID 포함 모든 역할에 보존된다(auth.Identity). 이걸로
+    # 키를 묶어야 게스트끼리도 서로의 슬롯을 침범하지 못한다. 신원 없음(dev 무토큰)은 "anon".
+    owner = identity.subject or "anon"
     return f"{owner}:{session_id}"
 
 
