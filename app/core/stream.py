@@ -19,6 +19,7 @@ from collections.abc import AsyncIterator, Callable
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
+from app.core.auth import Identity
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.schemas.chat import DoneData
@@ -59,6 +60,17 @@ _registry = ActiveStreamRegistry()
 def get_registry() -> ActiveStreamRegistry:
     """활성 스트림 레지스트리 싱글턴."""
     return _registry
+
+
+def registry_key(identity: Identity, session_id: str) -> str:
+    """동시성 레지스트리 키를 **인증된 신원**에 묶는다 (§2.9 a IDOR 방지).
+
+    키를 본문 session_id 만으로 쓰면 다른 사용자가 남의 session_id 를 body 에 실어
+    동시성 슬롯을 선점(피해자에 409 유발)할 수 있다. owner(판매자/회원 식별자, 게스트는
+    "guest")를 접두어로 붙여 사용자 간 슬롯 침범을 막는다.
+    """
+    owner = identity.seller_id or identity.user_id or "guest"
+    return f"{owner}:{session_id}"
 
 
 def _done_stop_frame() -> str:

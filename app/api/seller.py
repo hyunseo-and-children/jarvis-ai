@@ -20,7 +20,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import require_seller
 from app.core.auth import Identity
-from app.core.stream import open_stream
+from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest, DoneData, TokenData
 
 router = APIRouter(tags=["seller"])
@@ -57,6 +57,6 @@ async def seller_chat(
     """
     return await open_stream(
         http_request,
-        request.session_id,
+        registry_key(identity, request.session_id),
         lambda: _stub_stream(request, identity),
     )

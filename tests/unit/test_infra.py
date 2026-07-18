@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import types
 
+import jwt
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -16,10 +17,18 @@ from app.main import app
 client = TestClient(app)
 
 
-def _chat(session_id: str):
+def _chat(session_id: str, headers: dict | None = None):
     return client.post(
-        "/chat", json={"sessionId": session_id, "threadId": "t", "message": "m"}
+        "/chat",
+        json={"sessionId": session_id, "threadId": "t", "message": "m"},
+        headers=headers or {},
     )
+
+
+def _bearer(sub: str) -> dict:
+    """dev 디코드는 서명 검증을 안 하므로 임의 서명 unsigned-ish JWT 로 sub 만 실어 보낸다."""
+    token = jwt.encode({"sub": sub}, "test-secret-key-0123456789abcdef", algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
 
 
 class _FakeRequest:
@@ -38,7 +47,8 @@ class _FakeRequest:
 
 def test_concurrent_same_session_returns_409() -> None:
     """동일 sessionId 활성 스트림 존재 시 새 요청은 409 STREAM_IN_PROGRESS."""
-    get_registry().acquire("busy-sess")
+    # dev 게스트 → registry_key owner="guest" → "guest:busy-sess"
+    get_registry().acquire("guest:busy-sess")
     try:
         r = _chat("busy-sess")
         assert r.status_code == 409
@@ -46,7 +56,7 @@ def test_concurrent_same_session_returns_409() -> None:
         assert env["code"] == "STREAM_IN_PROGRESS"
         assert env["requestId"]
     finally:
-        get_registry().release("busy-sess")
+        get_registry().release("guest:busy-sess")
 
 
 def test_registry_released_after_stream() -> None:
@@ -54,7 +64,7 @@ def test_registry_released_after_stream() -> None:
     r = _chat("done-sess")
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → 제너레이터 완료 → finally 해제
-    assert not get_registry().is_active("done-sess")
+    assert not get_registry().is_active("guest:done-sess")
 
 
 def test_different_sessions_not_blocked() -> None:
@@ -143,21 +153,31 @@ async def test_disconnect_cancels_stream(monkeypatch: pytest.MonkeyPatch) -> Non
 
 
 def test_rate_limit_returns_429() -> None:
-    """분당 상한(기본 10) 초과 시 11번째 요청은 429."""
-    codes = [_chat(f"rl-{i}").status_code for i in range(11)]
+    """동일 sub 토큰의 분당 상한(기본 10) 초과 시 11번째 요청은 429."""
+    h = _bearer("rl-user")
+    codes = [_chat(f"rl-{i}", h).status_code for i in range(11)]
     assert codes.count(200) == 10
     assert codes[-1] == 429
 
 
 def test_rate_limit_429_envelope() -> None:
     """429 응답도 §2.5 봉투(code RATE_LIMITED + requestId)."""
+    h = _bearer("rlx-user")
     for i in range(10):
-        _chat(f"rlx-{i}")
-    r = _chat("rlx-over")
+        _chat(f"rlx-{i}", h)
+    r = _chat("rlx-over", h)
     assert r.status_code == 429
     env = r.json()["error"]
     assert env["code"] == "RATE_LIMITED"
     assert env["requestId"]
+
+
+def test_ip_backstop_limits_token_rotation() -> None:
+    """토큰 sub 를 매번 바꿔도(회전 우회) IP 백스톱 상한(기본 50)에서 결국 429."""
+    limit = 10 * 5  # per_min * host_multiplier
+    codes = [_chat(f"rot-{i}", _bearer(f"user-{i}")).status_code for i in range(limit + 1)]
+    assert codes.count(200) == limit
+    assert codes[-1] == 429
 
 
 # ─────────── §2.5 오류 봉투 (코드 매핑) ───────────
@@ -200,3 +220,36 @@ def test_request_id_header_present() -> None:
     """모든 응답에 X-Request-Id 헤더가 실린다(로그 상관관계)."""
     r = client.get("/health")
     assert r.headers.get("x-request-id")
+
+
+def test_unhandled_exception_returns_500_envelope() -> None:
+    """라우터 미처리 예외(500)도 §2.5 봉투(code INTERNAL)로 감싼다."""
+    from app.main import create_app
+
+    app2 = create_app()
+
+    async def _boom() -> None:
+        raise RuntimeError("intentional test failure")
+
+    app2.add_api_route("/_boom", _boom, methods=["GET"])
+    c = TestClient(app2, raise_server_exceptions=False)
+    r = c.get("/_boom")
+    assert r.status_code == 500
+    env = r.json()["error"]
+    assert env["code"] == "INTERNAL"
+    assert env["requestId"]
+
+
+def test_registry_key_binds_identity() -> None:
+    """레지스트리 키가 인증 신원에 묶여 사용자 간 슬롯 침범을 막는다(§2.9 a)."""
+    from app.core.auth import Identity
+    from app.core.stream import registry_key
+
+    member = Identity(user_id="u1", is_guest=False, seller_id=None)
+    guest = Identity(user_id=None, is_guest=True, seller_id=None)
+    seller = Identity(user_id="s1", is_guest=False, seller_id="s1", brand_id="b1")
+    assert registry_key(member, "sess") == "u1:sess"
+    assert registry_key(guest, "sess") == "guest:sess"
+    assert registry_key(seller, "sess") == "s1:sess"
+    # 서로 다른 사용자는 같은 session_id 라도 키가 다르다.
+    assert registry_key(member, "x") != registry_key(guest, "x")

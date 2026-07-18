@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
     rate_limit_per_min: int = 10
     rate_limit_per_hour: int = 100
+    # IP 백스톱 배수 — 토큰 sub 스코프를 회전 우회해도 클라이언트 IP 상한으로 남용 차단.
+    # NAT 뒤 다수 정상 사용자 오탐을 줄이려 sub 상한보다 관대하게 둔다.
+    rate_limit_host_multiplier: int = 5
 
 
 @lru_cache

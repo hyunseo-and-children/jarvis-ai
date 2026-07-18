@@ -28,7 +28,7 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_identity
 from app.core.auth import Identity
-from app.core.stream import open_stream
+from app.core.stream import open_stream, registry_key
 from app.schemas.chat import (
     ChatRequest,
     ConditionChip,
@@ -84,6 +84,6 @@ async def chat(
     """
     return await open_stream(
         http_request,
-        request.session_id,
+        registry_key(identity, request.session_id),
         lambda: _stub_stream(request, identity),
     )

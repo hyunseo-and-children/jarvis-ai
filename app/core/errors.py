@@ -94,6 +94,17 @@ async def _validation_exception_handler(request: Request, exc: RequestValidation
     )
 
 
+async def _unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """라우터/그래프에서 처리되지 않은 예외(500) → §2.5 봉투. 내부 스택/PII 미노출."""
+    rid = get_request_id(request)
+    logger.exception("unhandled exception rid=%s", rid)
+    return JSONResponse(
+        status_code=500,
+        content=error_envelope("INTERNAL", "서버 내부 오류", rid),
+        headers={REQUEST_ID_HEADER: rid},
+    )
+
+
 async def request_context_middleware(request: Request, call_next: Any) -> Any:
     """요청마다 requestId 를 부여하고 응답 헤더로 노출한다 (로그 상관관계)."""
     rid = new_request_id()
@@ -107,4 +118,5 @@ def install_error_handling(app: FastAPI) -> None:
     """예외 핸들러 + requestId 미들웨어를 앱에 등록한다."""
     app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     app.add_exception_handler(RequestValidationError, _validation_exception_handler)
+    app.add_exception_handler(Exception, _unhandled_exception_handler)
     app.middleware("http")(request_context_middleware)

@@ -1,17 +1,22 @@
-"""레이트 리밋 (api-spec §2.8) — 토큰 스코프 인메모리 카운터 + 미들웨어.
+"""레이트 리밋 (api-spec §2.8) — 토큰 sub 스코프 인메모리 카운터 + IP 백스톱 + 미들웨어.
 
 목적은 정밀 과금이 아니라 **무분별한 남용 차단**(2026-07-15 확정). MVP 소유 =
 FastAPI 미들웨어 + in-memory(단일 인스턴스 전제 — 다중 인스턴스 확장 시 Redis 이관).
-채팅 메시지(POST /chat·/seller/chat)에 분당/시간당 상한(config)을 적용하고 초과 시
-429 RATE_LIMITED(§2.5 봉투)로 거절한다. 계약 사항은 "429 + 토큰 스코프"뿐이다.
+채팅 메시지(POST /chat·/seller/chat)에 상한(config)을 적용하고 초과 시 429 RATE_LIMITED
+(§2.5 봉투)로 거절한다.
+
+스코프 = 토큰 `sub`(§2.8). sub 는 **서명 검증 없이** 디코드해 얻는다 — jwks 의 동기 JWKS
+HTTP 가 이벤트 루프를 블로킹하는 문제를 피하기 위함이며, 서명·만료 검증은 다운스트림
+get_identity 소관이다. sub 스코프만으로는 위조/회전 토큰으로 우회 가능하므로, **IP(호스트)
+기준 백스톱 상한을 항상 병행** 적용한다(배수는 NAT 오탐을 줄이려 관대하게).
 """
 
 from __future__ import annotations
 
-import hashlib
 import time
 from collections import deque
 
+import jwt
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -26,21 +31,20 @@ _LIMITED_PATHS = frozenset({"/chat", "/seller/chat"})
 
 
 class SlidingWindowLimiter:
-    """스코프별 sliding-window 카운터. 분/시간 두 창을 동시에 검사한다."""
+    """스코프별 sliding-window 카운터. allow() 호출마다 분/시간 상한을 검사한다.
+    상한은 호출 인자로 받아 스코프별(sub vs IP 백스톱)로 다른 값을 적용할 수 있다."""
 
-    def __init__(self, per_min: int, per_hour: int) -> None:
-        self._per_min = per_min
-        self._per_hour = per_hour
+    def __init__(self) -> None:
         self._hits: dict[str, deque[float]] = {}
 
-    def allow(self, key: str, now: float) -> bool:
+    def allow(self, key: str, now: float, per_min: int, per_hour: int) -> bool:
         """호출 1건을 기록·판정한다. 상한 초과면 기록하지 않고 False."""
         hits = self._hits.setdefault(key, deque())
         hour_ago = now - 3600.0
         while hits and hits[0] <= hour_ago:
             hits.popleft()
         minute_hits = sum(1 for t in hits if t > now - 60.0)
-        if len(hits) >= self._per_hour or minute_hits >= self._per_min:
+        if len(hits) >= per_hour or minute_hits >= per_min:
             return False
         hits.append(now)
         return True
@@ -55,21 +59,21 @@ def _extract_bearer(authorization: str | None) -> str | None:
     return parts[1].strip() or None
 
 
-def _scope_key(request: Request) -> str:
-    """레이트 리밋 스코프 키 = 토큰 해시(§2.8 토큰 스코프). 무토큰은 클라이언트 호스트로 분리.
+def _host(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
 
-    미들웨어에서 JWT 를 디코드하지 않는다 — jwks 모드의 동기 JWKS HTTP 가 이벤트 루프를
-    블로킹(진행 중 SSE 스트림 폴링까지 정지)하고, 게스트 JWT 의 `sub` 는 Identity 에 보존되지
-    않아 게스트가 전부 host 한 버킷을 공유하는 문제가 생기기 때문. 토큰 원문을 해시해 키로
-    쓰면 회원·게스트 모두 토큰별로 분리된다(§2.8 남용 차단 목적 충족). 토큰 원문은 로그·키에
-    노출하지 않도록 해시한다. 동일 sub 다중 토큰 병합은 post-MVP.
-    """
+
+def _sub_scope(request: Request) -> str | None:
+    """토큰 `sub` 스코프 키. 서명 검증 없이 디코드(무네트워크). 토큰 없음/형식 오류면 None."""
     token = _extract_bearer(request.headers.get("authorization"))
-    if token:
-        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
-        return f"tok:{digest}"
-    host = request.client.host if request.client else "unknown"
-    return f"anon:{host}"
+    if not token:
+        return None
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False})
+    except jwt.PyJWTError:
+        return None  # 형식이 유효한 JWT 가 아니면 sub 스코프 불가 → IP 백스톱만.
+    sub = claims.get("sub")
+    return f"sub:{sub}" if sub else None
 
 
 _limiter: SlidingWindowLimiter | None = None
@@ -78,18 +82,33 @@ _limiter: SlidingWindowLimiter | None = None
 def _get_limiter() -> SlidingWindowLimiter:
     global _limiter
     if _limiter is None:
-        settings = get_settings()
-        _limiter = SlidingWindowLimiter(settings.rate_limit_per_min, settings.rate_limit_per_hour)
+        _limiter = SlidingWindowLimiter()
     return _limiter
 
 
 async def rate_limit_middleware(request: Request, call_next):
-    """채팅 전송 경로에 토큰 스코프 레이트 리밋을 적용한다."""
+    """채팅 전송 경로에 토큰 sub 스코프 + IP 백스톱 레이트 리밋을 적용한다."""
     if request.method == "POST" and request.url.path in _LIMITED_PATHS:
-        key = _scope_key(request)
-        if not _get_limiter().allow(key, time.monotonic()):
+        settings = get_settings()
+        limiter = _get_limiter()
+        now = time.monotonic()
+        ip_key = f"ip:{_host(request)}"
+        sub_key = _sub_scope(request)
+
+        # sub 스코프(있으면) 상한 + IP 백스톱 상한(회전/위조 토큰 우회 차단)을 함께 본다.
+        over = False
+        if sub_key is not None:
+            over = not limiter.allow(sub_key, now, settings.rate_limit_per_min, settings.rate_limit_per_hour)
+        if not over:
+            mult = settings.rate_limit_host_multiplier
+            over = not limiter.allow(
+                ip_key, now, settings.rate_limit_per_min * mult, settings.rate_limit_per_hour * mult
+            )
+
+        if over:
             rid = get_request_id(request)
-            logger.info("rate limited scope=%s path=%s rid=%s", key, request.url.path, rid)
+            scope = sub_key or ip_key
+            logger.info("rate limited scope=%s path=%s rid=%s", scope, request.url.path, rid)
             return JSONResponse(
                 status_code=429,
                 content=error_envelope("RATE_LIMITED", "요청이 너무 많습니다", rid),
