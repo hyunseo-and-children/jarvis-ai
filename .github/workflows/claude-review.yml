@@ -33,13 +33,10 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           prompt: |
-            이 PR 의 diff 를 리뷰해 인라인 리뷰 코멘트로 남겨줘. 저장소 CLAUDE.md 규칙이 기준이다.
-            중점 확인:
-            - 보안: IDOR — 신원(userId/guestId/sellerId)을 요청 본문에서 받는지 (JWT sub 유래여야 함)
-            - 계약: api-spec 스키마/엔드포인트/오류코드 위반, 와이어 camelCase, productId 문자열 규약
-            - 논리 버그, 동시성 위험, 미검증/무제한 입력, 테스트 누락
-            커밋·푸시는 하지 말고 코멘트만 남긴다. 사소한 포매팅·네이밍 취향은 지적하지 마.
-            리뷰 대상은 `app/` 아래 Python 코드만 — `docs/`·`*.md` 문서 diff는 무시해.
-            한국어로 리뷰해줘.
+            이 PR diff 에서 `app/` 아래 Python 코드 변경만 리뷰해줘 (`docs/`·`*.md` 문서는 무시).
+            제공된 diff 위주로 판단하고 불필요한 파일 탐색은 최소화해.
+            결과는 **PR 리뷰 코멘트 하나**로 요약해서 남겨 — 인라인 여러 개 말고 단일 요약.
+            중점: 논리 버그·보안(IDOR: 신원을 요청 본문에서 받는지)·계약 위반(api-spec)·미검증 입력.
+            사소한 포매팅·네이밍은 지적하지 마. 한국어로 간결하게.
           claude_args: |
-            --max-turns 20
+            --max-turns 30
