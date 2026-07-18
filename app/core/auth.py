@@ -48,6 +48,9 @@ class Identity:
     is_guest: bool
     seller_id: str | None
     brand_id: str | None = None
+    # subject: 검증된 raw `sub` 클레임 — 게스트 UUID 포함 모든 역할에 보존한다.
+    # 레이트 리밋·동시성 레지스트리의 신원 스코프 키로 일관되게 쓴다(§2.8/§2.9).
+    subject: str | None = None
 
 
 class AuthError(Exception):
@@ -66,15 +69,15 @@ def _claims_to_identity(claims: dict) -> Identity:
     role = claims.get(CLAIM_ROLE)
 
     if role == ROLE_GUEST:
-        return Identity(user_id=None, is_guest=True, seller_id=None)
+        return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
     if role == ROLE_SELLER:
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
         return Identity(
             user_id=subject, is_guest=False, seller_id=subject,
-            brand_id=claims.get(CLAIM_BRAND_ID),
+            brand_id=claims.get(CLAIM_BRAND_ID), subject=subject,
         )
     # 기본: 일반 회원.
-    return Identity(user_id=subject, is_guest=False, seller_id=None)
+    return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
 
 
 @lru_cache
@@ -98,7 +101,11 @@ def decode_token(
     """
     if auth_mode == "dev":
         if not token:
-            # dev 전용 편의: 헤더 없으면 게스트로 취급.
+            # dev 전용 편의: 헤더 없으면 게스트로 취급. subject 는 의도적으로 None 이다 —
+            # 무토큰 익명은 식별 근거가 없어 registry_key owner 가 "anon" 으로 공유된다.
+            # (프로덕션 jwks 모드는 무토큰이 401 이라 이 경로에 도달하지 않고, 실제 게스트는
+            #  익명 JWT 의 sub 로 개별 스코프된다.) 여기에 요청마다 고유 subject 를 부여하면
+            # 세션당 1스트림 제한(§2.9 a)이 익명에서 무력화되므로 그렇게 하지 않는다.
             return Identity(user_id=None, is_guest=True, seller_id=None)
         try:
             claims = jwt.decode(token, options={"verify_signature": False})

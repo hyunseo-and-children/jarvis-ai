@@ -23,11 +23,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_identity
 from app.core.auth import Identity
+from app.core.stream import open_stream, registry_key
 from app.schemas.chat import (
     ChatRequest,
     ConditionChip,
@@ -73,14 +74,16 @@ async def _stub_stream(request: ChatRequest, identity: Identity) -> AsyncIterato
 @router.post("/chat")
 async def chat(
     request: ChatRequest,
+    http_request: Request,
     identity: Identity = Depends(get_identity),
 ) -> StreamingResponse:
-    """구매자 챗봇 SSE 스트리밍 (api-spec §3.1)."""
-    return StreamingResponse(
-        _stub_stream(request, identity),
-        media_type="text/event-stream; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",  # 리버스 프록시 버퍼링 비활성 (api-spec §2.4)
-        },
+    """구매자 챗봇 SSE 스트리밍 (api-spec §3.1).
+
+    스트림 수명주기(§2.9 동시 스트림 409·취소·전체/first-token 타임아웃)는
+    open_stream 이 감싼다. 레이트 리밋(§2.8)·오류 봉투(§2.5)는 app.main 미들웨어·핸들러.
+    """
+    return await open_stream(
+        http_request,
+        registry_key(identity, request.session_id),
+        lambda: _stub_stream(request, identity),
     )

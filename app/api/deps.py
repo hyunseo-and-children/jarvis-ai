@@ -42,9 +42,11 @@ def get_identity(authorization: str | None = Header(default=None)) -> Identity:
             audience=settings.jwt_audience,
         )
     except AuthError as exc:
+        # §2.5: 401 코드는 TOKEN_EXPIRED / TOKEN_INVALID 2종. 만료는 메시지로 구분.
+        code = "TOKEN_EXPIRED" if "expired" in str(exc).lower() else "TOKEN_INVALID"
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "UNAUTHORIZED", "message": str(exc)},
+            detail={"code": code, "message": "인증 실패"},
         ) from exc
 
 

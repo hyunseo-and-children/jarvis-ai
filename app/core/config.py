@@ -69,6 +69,32 @@ class Settings(BaseSettings):
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
 
+    # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
+    # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
+    stream_first_token_timeout_s: float = 10.0
+    # 스트림 전체 상한. 초과 시 done(finishReason "stop")으로 정상 절단.
+    stream_total_timeout_s: float = 90.0
+    # disconnect 감지 폴링 간격 (취소 = 연결 종료, §2.9 b).
+    stream_disconnect_poll_s: float = 0.5
+    # AI→Spring 콜백 타임아웃 (§2.9 c, BE I-2 기준 통일). 실제 호출부에서 사용.
+    spring_timeout_s: float = 3.0
+    # AI→LLM 단일 호출 타임아웃 + 재시도 횟수 (§2.9 c).
+    llm_timeout_s: float = 30.0
+    llm_max_retries: int = 1
+
+    # ── 레이트 리밋 (api-spec §2.8, 토큰 sub 스코프, 인메모리·단일 인스턴스 전제) ──
+    rate_limit_per_min: int = 10
+    rate_limit_per_hour: int = 100
+    # IP 백스톱 배수 — 토큰 sub 스코프를 회전 우회해도 클라이언트 IP 상한으로 남용 차단.
+    # NAT 뒤 다수 정상 사용자 오탐을 줄이려 sub 상한보다 관대하게 둔다.
+    rate_limit_host_multiplier: int = 5
+    # 신뢰 리버스 프록시 뒤 배포 시 True — 클라이언트 IP 를 X-Forwarded-For 에서 읽는다.
+    # append 형 프록시($proxy_add_x_forwarded_for)는 자사 프록시가 관측한 IP 를 **최우측**에
+    # 붙이므로, 우측에서 신뢰 홉 수만큼 센 위치를 클라이언트 IP 로 쓴다(최좌측은 위조 가능).
+    trust_forwarded_for: bool = False
+    # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
+    forwarded_for_trusted_hops: int = 1
+
 
 @lru_cache
 def get_settings() -> Settings:

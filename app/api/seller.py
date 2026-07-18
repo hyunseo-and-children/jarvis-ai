@@ -15,11 +15,12 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import require_seller
 from app.core.auth import Identity
+from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest, DoneData, TokenData
 
 router = APIRouter(tags=["seller"])
@@ -47,14 +48,15 @@ async def _stub_stream(request: ChatRequest, identity: Identity) -> AsyncIterato
 @router.post("/seller/chat")
 async def seller_chat(
     request: ChatRequest,
+    http_request: Request,
     identity: Identity = Depends(require_seller),
 ) -> StreamingResponse:
-    """판매자 챗봇 SSE 스트리밍 (api-spec §3.2). role==seller 필수."""
-    return StreamingResponse(
-        _stub_stream(request, identity),
-        media_type="text/event-stream; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    """판매자 챗봇 SSE 스트리밍 (api-spec §3.2). role==seller 필수.
+
+    스트림 수명주기(§2.9)는 open_stream 공통 래퍼로 처리한다(chat 과 동일).
+    """
+    return await open_stream(
+        http_request,
+        registry_key(identity, request.session_id),
+        lambda: _stub_stream(request, identity),
     )
