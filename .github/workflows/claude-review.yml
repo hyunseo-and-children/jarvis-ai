@@ -39,6 +39,7 @@ jobs:
             - 계약: api-spec 스키마/엔드포인트/오류코드 위반, 와이어 camelCase, productId 문자열 규약
             - 논리 버그, 동시성 위험, 미검증/무제한 입력, 테스트 누락
             커밋·푸시는 하지 말고 코멘트만 남긴다. 사소한 포매팅·네이밍 취향은 지적하지 마.
+            리뷰 대상은 `app/` 아래 Python 코드만 — `docs/`·`*.md` 문서 diff는 무시해.
             한국어로 리뷰해줘.
           claude_args: |
-            --max-turns 5
+            --max-turns 20
