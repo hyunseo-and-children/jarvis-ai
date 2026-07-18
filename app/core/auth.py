@@ -11,6 +11,7 @@
 클레임:
   - sub  : 사용자 식별자
   - role : 권한 (예: USER). 게스트/판매자 role 값은 TBD (아래 매핑 참고).
+  - brandId : 판매자(role=SELLER) 브랜드 id — {brandId} path용, 요청 본문 불신(§2.6).
 
 [보안] 신원(user_id)·게스트 여부·판매자 스코프는 오직 토큰 클레임에서만 도출한다.
 요청 본문의 식별자는 절대 신뢰하지 않는다 (사칭 방지, api-spec §2.2 a / §2.5 / §3.1 / §3.2).
@@ -27,6 +28,7 @@ from jwt import PyJWKClient
 # 클레임 키
 CLAIM_SUBJECT = "sub"
 CLAIM_ROLE = "role"
+CLAIM_BRAND_ID = "brandId"
 
 # role 값 매핑 — TODO(C-10): 게스트/판매자 role 최종값을 Spring 회원 스키마 확정 시 반영.
 ROLE_USER = "USER"
@@ -36,11 +38,16 @@ ROLE_SELLER = "SELLER"  # TODO: 최종 판매자 role 값 확정 대기
 
 @dataclass(frozen=True)
 class Identity:
-    """토큰에서 도출한 호출자 신원. 요청 본문이 아니라 오직 토큰이 근거다."""
+    """토큰에서 도출한 호출자 신원. 요청 본문이 아니라 오직 토큰이 근거다.
+
+    brand_id 는 role==SELLER 토큰의 `brandId` 클레임 — 판매자 역호출(§4.4/§4.5)의
+    `{brandId}` path 에 쓴다. 요청 본문/발화에서 받지 않는다 (IDOR 방지, §2.6).
+    """
 
     user_id: str | None
     is_guest: bool
     seller_id: str | None
+    brand_id: str | None = None
 
 
 class AuthError(Exception):
@@ -52,7 +59,7 @@ def _claims_to_identity(claims: dict) -> Identity:
 
     role 기반 매핑 (TODO C-10 최종값 확정 대기):
       - role == GUEST  → 게스트 (user_id 없음, 개인화/장바구니 불가)
-      - role == SELLER → 판매자 스코프 부여 (seller_id = sub)
+      - role == SELLER → 판매자 스코프 부여 (seller_id = sub, brand_id = brandId 클레임)
       - 그 외(USER 등) → 일반 회원 (user_id = sub)
     """
     subject = claims.get(CLAIM_SUBJECT)
@@ -62,7 +69,10 @@ def _claims_to_identity(claims: dict) -> Identity:
         return Identity(user_id=None, is_guest=True, seller_id=None)
     if role == ROLE_SELLER:
         # 판매자는 sub 를 판매자 식별자로도 사용한다 (스코프 근거는 role 클레임).
-        return Identity(user_id=subject, is_guest=False, seller_id=subject)
+        return Identity(
+            user_id=subject, is_guest=False, seller_id=subject,
+            brand_id=claims.get(CLAIM_BRAND_ID),
+        )
     # 기본: 일반 회원.
     return Identity(user_id=subject, is_guest=False, seller_id=None)
 

@@ -95,6 +95,14 @@ def test_seller_role_grants_seller_scope(rsa_key: rsa.RSAPrivateKey) -> None:
     assert identity.is_guest is False
 
 
+def test_seller_token_preserves_brand_id(rsa_key: rsa.RSAPrivateKey) -> None:
+    """SELLER 토큰의 brandId 클레임 → Identity.brand_id 보존 ({brandId} path용, IDOR 방지)."""
+    token = _make_token(rsa_key, _base_claims(sub="seller-7", role=auth.ROLE_SELLER, brandId="brand-99"))
+    identity = _decode(token)
+    assert identity.seller_id == "seller-7"
+    assert identity.brand_id == "brand-99"
+
+
 def test_guest_role_has_no_user_id(rsa_key: rsa.RSAPrivateKey) -> None:
     """GUEST role → 게스트 Identity (user_id 없음)."""
     token = _make_token(rsa_key, _base_claims(role=auth.ROLE_GUEST))
