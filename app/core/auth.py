@@ -101,7 +101,11 @@ def decode_token(
     """
     if auth_mode == "dev":
         if not token:
-            # dev 전용 편의: 헤더 없으면 게스트로 취급.
+            # dev 전용 편의: 헤더 없으면 게스트로 취급. subject 는 의도적으로 None 이다 —
+            # 무토큰 익명은 식별 근거가 없어 registry_key owner 가 "anon" 으로 공유된다.
+            # (프로덕션 jwks 모드는 무토큰이 401 이라 이 경로에 도달하지 않고, 실제 게스트는
+            #  익명 JWT 의 sub 로 개별 스코프된다.) 여기에 요청마다 고유 subject 를 부여하면
+            # 세션당 1스트림 제한(§2.9 a)이 익명에서 무력화되므로 그렇게 하지 않는다.
             return Identity(user_id=None, is_guest=True, seller_id=None)
         try:
             claims = jwt.decode(token, options={"verify_signature": False})
