@@ -780,12 +780,16 @@ async def test_add_to_cart_malformed_option_skipped(monkeypatch: pytest.MonkeyPa
     assert [o.option_id for o in ei.value.options] == [3]  # 깨진 항목 제외, 정상만
 
 
-async def test_cart_add_reask_hides_nonpositive_surcharge() -> None:
-    """음수/0 추가금은 문구에 표시하지 않는다('(+-1,000원)' 깨짐 방지, Claude #18)."""
+async def test_cart_add_reask_formats_surcharge_by_sign() -> None:
+    """추가금은 부호별로: 양수=+, 음수=할인(-), 0/None=미표시('(+-)' 깨짐 없이, Claude #18)."""
     store = CartStateStore()
 
     async def add_fn(req):
-        raise CartOptionRequired([CartOption(option_id=4, name="레드", extra_price=-1000), CartOption(option_id=5, name="블랙", extra_price=0)])
+        raise CartOptionRequired([
+            CartOption(option_id=4, name="레드", extra_price=-1000),  # 할인
+            CartOption(option_id=5, name="블랙", extra_price=0),       # 추가금 없음
+            CartOption(option_id=6, name="화이트", extra_price=2000),  # 추가금
+        ])
 
     events = await _collect(
         stream_cart_add(
@@ -795,7 +799,10 @@ async def test_cart_add_reask_hides_nonpositive_surcharge() -> None:
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "레드" in token and "블랙" in token and "+-" not in token and "원)" not in token
+    assert "레드(-1,000원)" in token  # 할인
+    assert "화이트(+2,000원)" in token  # 추가금
+    assert "블랙" in token and "블랙(" not in token  # 0 은 미표시
+    assert "+-" not in token
 
 
 def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptureFixture) -> None:
