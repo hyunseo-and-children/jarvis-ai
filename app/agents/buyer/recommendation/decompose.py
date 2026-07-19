@@ -9,28 +9,37 @@ from __future__ import annotations
 
 from pydantic import ValidationError
 
-from app.agents.buyer.recommendation.state import RouteDecision, extract_json
+from app.agents.buyer.recommendation.state import CartIntent, RouteDecision, extract_json
 from app.core.llm import LLMClient, LLMError
 from app.schemas.spring import ProductSearchFilters
 
-_SYSTEM = """당신은 커머스 추천 어시스턴트의 질의 분해기입니다.
-사용자 발화를 구조화 필터와 의미 쿼리로 분해하고, 상품 추천 요청인지 일반 대화인지 판별합니다.
+_SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
+사용자 발화를 분석해 intent 를 정하고, 추천이면 구조화 필터/의미쿼리를, 장바구니면 상품/옵션/수량을 산출합니다.
 반드시 아래 JSON 만 출력하세요(설명·코드펜스 금지):
 {
-  "intent": "recommend" | "general",
-  "reply": "intent가 general일 때만 줄 짧은 한국어 답변, recommend면 빈 문자열",
+  "intent": "recommend" | "cart_add" | "cart_view" | "general",
+  "reply": "intent가 general일 때만 줄 짧은 한국어 답변, 아니면 빈 문자열",
   "case": 1 | 2 | 3,
   "semanticQuery": "정형 제약을 제외한 벡터 검색용 자연어",
   "filters": {
     "category": string|null, "priceMin": int|null, "priceMax": int|null,
     "brand": [string]|null, "ratingMin": number|null, "keyword": string|null
-  }
+  },
+  "cart": { "productId": int|null, "optionId": int|null, "quantity": int }
 }
 규칙:
-- 상품명이 뚜렷하면 case 1, 구조화 필터 위주면 case 2, 상황/목적("여행 갈 때 필요한 것")이면 case 3.
-- 정확한 수치·카테고리 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
-- PRIOR_FILTERS 가 있으면 후속 발화를 병합하세요: 범위를 좁히면 추가(add), 모순되면 교체(replace).
-- 추천과 무관한 잡담·질문이면 intent=general 로 하고 reply 에 짧게 답하세요."""
+- intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
+  "장바구니 보여줘/뭐 있어?"면 cart_view, 그 외 잡담·무관 질문이면 general.
+- recommend: 상품명이 뚜렷하면 case 1, 필터 위주면 case 2, 상황/목적이면 case 3.
+  정확한 수치·카테고리 제약은 filters 에 넣고 semanticQuery 로 근사하지 마세요.
+  PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
+- cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
+  productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
+- PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
+  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
+  사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
+  담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
+- general: intent=general, reply 에 짧게 답하세요."""
 
 
 async def decompose(
@@ -40,11 +49,13 @@ async def decompose(
     prior_filters: ProductSearchFilters | None,
     profile_summary: str | None,
     model: str,
+    last_recommendations: list[tuple[int, str]] | None = None,
+    pending_cart: dict | None = None,
 ) -> RouteDecision:
-    """Haiku 1회 호출로 병합 필터·의미쿼리·case·intent 를 산출한다.
+    """Haiku 1회 호출로 intent(추천/담기/조회/일반)·필터·장바구니 의도를 산출한다.
 
-    prior_filters(직전 턴 누적)를 규약 JSON 으로 프롬프트에 실어 병합을 위임한다.
-    LLM 오류/타임아웃/JSON 파싱 실패는 LLMError 로 전파 — 상위가 error 이벤트로 낸다.
+    prior_filters(추천 멀티턴)·last_recommendations(담기 productId 해소)·pending_cart(옵션 되물음)를
+    프롬프트에 실어 문맥을 위임한다. LLM 오류/타임아웃/JSON·스키마 파싱 실패는 LLMError 로 전파.
     """
     import json
 
@@ -53,25 +64,72 @@ async def decompose(
         if prior_filters is None
         else json.dumps(prior_filters.model_dump(by_alias=True, exclude_none=True), ensure_ascii=False)
     )
+    reco_json = json.dumps(
+        [{"productId": pid, "name": name} for pid, name in (last_recommendations or [])],
+        ensure_ascii=False,
+    )
+    pending_json = "null" if not pending_cart else json.dumps(pending_cart, ensure_ascii=False)
     prof = profile_summary or "(없음)"
-    user = f"PRIOR_FILTERS: {prior_json}\nPROFILE_SUMMARY: {prof}\nUSER_MESSAGE: {query}"
+    user = (
+        f"PRIOR_FILTERS: {prior_json}\n"
+        f"LAST_RECOMMENDATIONS: {reco_json}\n"
+        f"PENDING_CART: {pending_json}\n"
+        f"PROFILE_SUMMARY: {prof}\n"
+        f"USER_MESSAGE: {query}"
+    )
 
     raw = await llm.complete(system=_SYSTEM, user=user, model=model, max_tokens=800)
     data = extract_json(raw)
 
-    intent = "general" if data.get("intent") == "general" else "recommend"
-    # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다(예: priceMin 이 비수치, case 가 임의 텍스트).
-    # decompose 는 첫 프레임 이전 실행이라 raw 예외가 나가면 in-stream error 가 아닌 500 봉투로 샌다 —
-    # extract_json 처럼 LLMError 로 통일해 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다.
+    intent_raw = data.get("intent")
+    intent = intent_raw if intent_raw in ("recommend", "cart_add", "cart_view", "general") else "recommend"
+    # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해
+    # 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다(첫 프레임 이전 raw 예외 → 500 방지).
     try:
         filters = ProductSearchFilters.model_validate(data.get("filters") or {})
         case = int(data.get("case") or 2)
+        cart = _parse_cart(data.get("cart"))
     except (ValidationError, ValueError, TypeError) as exc:
-        raise LLMError("decompose 필터/케이스 파싱 실패") from exc
+        raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
         intent=intent,
         filters=filters,
         semantic_query=str(data.get("semanticQuery") or query),
         case=case,
         reply=str(data.get("reply") or ""),
+        cart=cart,
+    )
+
+
+def _as_int(value: object) -> int | None:
+    """LLM JSON 변형(int/float/숫자문자열)을 관대하게 int 로 변환한다(bool 제외).
+
+    LLM 이 "quantity": 2.0 이나 "2" 처럼 내보내도 조용한 폴백(수량 1·productId None) 없이
+    의도대로 해석되게 한다.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_cart(raw: object) -> CartIntent | None:
+    """decompose 의 cart 객체 → CartIntent (없거나 형식 오류면 빈 의도)."""
+    if not isinstance(raw, dict):
+        return CartIntent()
+    qty = _as_int(raw.get("quantity"))
+    return CartIntent(
+        product_id=_as_int(raw.get("productId")),
+        option_id=_as_int(raw.get("optionId")),
+        # api-spec §4.1 수량 1~99 — 상한 초과 발화("100개")가 AddToCartRequest 검증에서
+        # ValidationError 로 스트림을 끊지 않게 파싱 시점에 클램프한다.
+        quantity=min(max(qty, 1), 99) if qty is not None else 1,
     )

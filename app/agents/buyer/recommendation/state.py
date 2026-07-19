@@ -17,14 +17,24 @@ from app.schemas.spring import ProductSearchFilters
 
 
 @dataclass
-class RouteDecision:
-    """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변."""
+class CartIntent:
+    """decompose 가 추출한 장바구니 의도(이슈 #3). productId 는 직전 추천 문맥에서 해소."""
 
-    intent: Literal["recommend", "general"]
+    product_id: int | None = None
+    option_id: int | None = None
+    quantity: int = 1
+
+
+@dataclass
+class RouteDecision:
+    """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
+
+    intent: Literal["recommend", "cart_add", "cart_view", "general"]
     filters: ProductSearchFilters
     semantic_query: str
     case: int = 2
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
+    cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
 
 
 @dataclass

@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
+    # ── 장바구니 (이슈 #3, api-spec §4.1) ──
+    # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
+    cart_option_reask_max: int = 1
+
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
     # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.
