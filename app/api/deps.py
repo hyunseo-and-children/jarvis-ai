@@ -70,3 +70,19 @@ def require_seller(authorization: str | None = Header(default=None)) -> Identity
             detail={"code": "FORBIDDEN", "message": "seller token missing brandId claim"},
         )
     return identity
+
+
+def verify_service_token(
+    x_internal_token: str | None = Header(default=None, alias="X-Internal-Token"),
+) -> None:
+    """Spring → AI inbound(레인 b) 서비스 토큰 검증 (api-spec §3.5).
+
+    config internal_api_token 이 설정돼 있으면 헤더 일치를 요구하고, 비어 있으면(dev) 허용한다.
+    """
+    settings: Settings = get_settings()
+    expected = settings.internal_api_token
+    if expected and x_internal_token != expected:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INTERNAL_TOKEN_INVALID", "message": "서비스 토큰 불일치"},
+        )

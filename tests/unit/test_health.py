@@ -88,10 +88,12 @@ def test_seller_chat_requires_seller_scope() -> None:
     assert resp.status_code == 403
 
 
-def test_profile_me_is_post_mvp_404() -> None:
-    """GET /profile/me 는 고도화(post-MVP)로 미등록 → 404 (MVP 표면 축소)."""
+def test_profile_me_guest_returns_exists_false() -> None:
+    """GET /profile/me — 게스트(무토큰 dev)는 exists:false 정상 200 (§3.4, REQ-PROF-081)."""
     resp = client.get("/profile/me")
-    assert resp.status_code == 404
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["exists"] is False and body["markdown"] is None
 
 
 def test_events_catalog_is_post_mvp_404() -> None:
@@ -104,6 +106,6 @@ def test_events_catalog_is_post_mvp_404() -> None:
 
 
 def test_openapi_surface_is_exactly_mvp() -> None:
-    """OpenAPI 표면이 정확히 /chat, /seller/chat, /health 인지 확인."""
+    """OpenAPI 표면이 정확히 MVP 엔드포인트 집합인지 확인."""
     paths = set(app.openapi()["paths"].keys())
-    assert paths == {"/chat", "/seller/chat", "/health"}
+    assert paths == {"/chat", "/seller/chat", "/health", "/profile/me", "/events/session-end"}

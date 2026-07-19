@@ -21,7 +21,10 @@ from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
+from app.agents.profile.builder import record_remember
+from app.agents.profile.gate import is_remember_command
 from app.agents.profile.reader import read_profile_summary
+from app.agents.profile.store import get_profile_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm
@@ -101,6 +104,12 @@ async def run_buyer_turn(
     if not identity.is_guest and identity.user_id and not identity.seller_id:
         summary = read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
+        # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
+        # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
+        pstore = get_profile_store()
+        pstore.append_session_ctx(conversation_key(identity.user_id, request.session_id), request.message)
+        if is_remember_command(request.message):
+            record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
     cart_store = get_cart_store()
