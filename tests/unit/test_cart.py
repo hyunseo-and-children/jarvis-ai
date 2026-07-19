@@ -860,9 +860,10 @@ async def test_add_to_cart_naninf_extra_price_survives(monkeypatch: pytest.Monke
     body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
         {"optionId": 9, "name": "네온", "extraPrice": float("nan")},
         {"optionId": 10, "name": "무한", "extraPrice": float("inf")},
+        {"optionId": 11, "name": "초대형", "extraPrice": 10 ** 400},  # float 변환 OverflowError
     ]}}}
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
-    assert [o.option_id for o in ei.value.options] == [9, 10]
+    assert [o.option_id for o in ei.value.options] == [9, 10, 11]
     assert all(o.extra_price is None for o in ei.value.options)

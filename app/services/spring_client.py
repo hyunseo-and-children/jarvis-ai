@@ -152,15 +152,16 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
-            # extraPrice 는 표시용 부가 필드 — 형식이 이상해도 옵션 자체를 버리지 않게 방어적으로 분리.
+            # extraPrice 는 표시용 부가 필드 — 어떤 병적 입력(NaN/Inf/초대형 정수/이상 타입)에도
+            # 옵션 자체를 버리거나 스트림을 죽이지 않게 통째로 방어(실패 시 None 강등).
             raw_extra = opt.get("extraPrice")
-            if isinstance(raw_extra, bool):
-                extra = None
-            elif isinstance(raw_extra, (int, float)) and math.isfinite(raw_extra):
-                # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
-                # NaN/Infinity(json.loads 가 파싱함)는 round 가 ValueError/OverflowError 라 isfinite 로 배제.
-                extra = round(raw_extra)
-            else:
+            try:
+                if isinstance(raw_extra, bool) or not isinstance(raw_extra, (int, float)) or not math.isfinite(raw_extra):
+                    extra = None
+                else:
+                    # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
+                    extra = round(raw_extra)
+            except (ValueError, OverflowError, TypeError):
                 extra = None
             try:
                 options.append(
