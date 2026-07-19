@@ -14,7 +14,7 @@ from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import chat, seller
+from app.api import chat, events, profile, seller
 from app.core.config import get_settings
 from app.core.errors import install_error_handling
 from app.core.logging import configure_logging
@@ -52,6 +52,8 @@ def create_app() -> FastAPI:
     # MVP 라우터: 사용자 대면 chat / seller 만 등록한다.
     app.include_router(chat.router)
     app.include_router(seller.router)
+    app.include_router(profile.router)
+    app.include_router(events.router)
 
     @app.get("/health", tags=["ops"])
     async def health() -> dict:

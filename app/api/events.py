@@ -1,15 +1,54 @@
-"""이벤트 수신 엔드포인트 — session-end 1종만 MVP (api-spec v0.15.0 §3.5).
+"""이벤트 수신 엔드포인트 — POST /events/session-end (I-20, api-spec §3.5).
 
-[변경 v0.5.0 확정] Spring → AI 이벤트는 POST /events/session-end 하나만 MVP 유지:
-  - session-end : 세션 종료 통지 → 프로필 델타 추출 트리거 (best-effort·멱등, C-8 🔴)
-                  유실돼도 정합성은 대화 저장소 스캔이 회수한다.
-  - catalog     : [영구 미채택] 카탈로그 이벤트/웹훅 없음 — AI 생성물 갱신은
-                  I-17 pull 배치(spring_client.fetch_product_changes, §4.8)로 대체.
-  - order       : [영구 미채택] 주문 알림/미러 없음 — 구매 이력은 질의 시점 조회
-                  (GET /orders/recent, §4.7)로 대체.
-
-TODO(MVP): APIRouter + POST /events/session-end + verify_service_token(레인 b) +
-eventId 멱등 처리(§2.7, 202 Accepted) → main.py 라우터 등록.
+Spring → AI inbound(우리가 호스팅). 세션 종료 통지를 프로필 파이프라인 조기 트리거로 받는다
+(결정 12/16). best-effort·멱등(eventId, §2.7) — 유실돼도 다음 sleep-time 배치가 회수.
+서비스 토큰(레인 b) 검증. catalog/order 이벤트는 영구 미채택(§3.6).
 """
 
 from __future__ import annotations
+
+from fastapi import APIRouter, Depends
+
+from app.agents.profile.builder import consolidate, generate_session_delta
+from app.agents.profile.store import get_profile_store
+from app.api.deps import verify_service_token
+from app.core.config import get_settings
+from app.core.conversation import conversation_key
+from app.core.llm import get_llm
+from app.schemas.profile import SessionEndEvent
+
+router = APIRouter(tags=["events"])
+
+
+@router.post("/events/session-end", status_code=202)
+async def session_end(event: SessionEndEvent, _token: None = Depends(verify_service_token)) -> dict:
+    """세션 종료 → 프로필 델타 추출 + consolidation(best-effort·멱등, 202 Accepted)."""
+    store = get_profile_store()
+    # 원자적 마킹(await 전) — 짧은 간격 재전송(at-least-once)이 둘 다 통과해 중복 처리되는 레이스 차단.
+    if not store.mark_if_new(event.event_id):
+        return {"status": "duplicate"}  # 멱등 — 중복 수신 무시(§2.7)
+
+    # [신뢰경계] session-end 는 Spring→AI(레인 b) — 신원(userId/sessionId)은 §3.5 계약상 본문으로
+    # 오며, 호출 인가는 **서비스 토큰**(verify_service_token)이 담당한다(Spring 은 인증된 호출자).
+    # 필드 길이 상한은 SessionEndEvent validator 가 강제(스토어 키 남용 방어).
+    # best-effort 프로필 갱신 — LLM 미구성/버퍼 없음/오류는 no-op degrade. 어떤 오류도 202 를 막지 않는다(§3.5).
+    key = conversation_key(event.user_id, event.session_id)
+    settings = get_settings()
+    llm = get_llm()
+    ran = False
+    try:
+        # generate 반환: None=degrade(버퍼 보존), list=LLM 정상 실행(게이트 반려로 빈 목록이어도 처리됨).
+        result = await generate_session_delta(event.user_id, key, llm=llm, settings=settings)
+        if result is not None:
+            await consolidate(event.user_id, llm=llm, settings=settings)
+            ran = True
+    except Exception:  # noqa: BLE001 — best-effort inbound 통지(§3.5): 절대 500 금지. 실패 시 버퍼 보존.
+        ran = False
+
+    if ran:
+        # LLM 이 실제 처리한 경우에만 버퍼 정리(정상 반려 포함).
+        store.clear_session_ctx(key)
+    else:
+        # degrade/오류 → 마킹 해제(멱등은 성공에만) + 버퍼 보존 → 재전송·다음 배치가 재처리(REQ-PROF-050/051).
+        store.unmark_event(event.event_id)
+    return {"status": "accepted"}
