@@ -22,7 +22,7 @@ from app.schemas.chat import ConditionsData, DoneData, ErrorData, ProductsReadyD
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
 
-_INACTIVE_STATUSES = frozenset({"CANCELED", "RETURNED"})  # 보유 아님 → dedup 제외 대상 아님
+_INACTIVE_STATUSES = frozenset({"CANCELED", "CANCELLED", "RETURNED"})  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
 
 
 def _now() -> datetime:
@@ -94,7 +94,7 @@ async def stream_recommendation(
     if not candidates:
         # dedup 로 비워진 경우와 검색 자체가 0건인 경우를 구분해 원인을 바르게 안내한다.
         text = (
-            "찾은 상품이 모두 최근에 구매하셨거나 이미 담으신 것들이에요. 다른 상품을 추천해 드릴까요?"
+            "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
             if dedup_emptied
             else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
         )

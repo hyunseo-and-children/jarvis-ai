@@ -461,9 +461,11 @@ def test_purchased_product_ids_excludes_canceled_returned() -> None:
     rp = RecentPurchases(orders=[OrderHistory(order_id=1, ordered_at="2026-07-10T00:00:00", items=[
         OrderHistoryItem(order_item_id=1, product_id=101, status="DELIVERED"),
         OrderHistoryItem(order_item_id=2, product_id=102, status="CANCELED"),
-        OrderHistoryItem(order_item_id=3, product_id=103, status="RETURNED"),
+        OrderHistoryItem(order_item_id=3, product_id=103, status="CANCELLED"),
+        OrderHistoryItem(order_item_id=4, product_id=104, status="RETURNED"),
     ])])
-    assert rp.purchased_product_ids(exclude_statuses={"CANCELED", "RETURNED"}) == {101}
+    # 철자 양쪽(CANCELED/CANCELLED) 모두 제외
+    assert rp.purchased_product_ids(exclude_statuses={"CANCELED", "CANCELLED", "RETURNED"}) == {101}
 
 
 def test_purchased_product_ids_window_excludes_old() -> None:
