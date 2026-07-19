@@ -15,6 +15,8 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from app.agents.buyer._frames import sse
+from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
+from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -22,6 +24,7 @@ from app.agents.profile.reader import read_profile_summary
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm
+from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -98,7 +101,17 @@ async def run_buyer_turn(
         summary = read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
 
-    # decompose — Haiku 1회 (intent 라우팅 + 병합 필터)
+    # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
+    cart_store = get_cart_store()
+    pending = cart_store.get_pending(thread_key)
+    pending_dict = None
+    if pending is not None:
+        pending_dict = {
+            "productId": pending.product_id,
+            "options": [{"optionId": o.option_id, "name": o.name} for o in pending.options],
+        }
+
+    # decompose — Haiku 1회 (intent 4-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
         observer.record_model_call(settings.haiku_model_id)
     try:
@@ -108,14 +121,18 @@ async def run_buyer_turn(
             prior_filters=prior,
             profile_summary=profile,
             model=settings.haiku_model_id,
+            last_recommendations=cart_store.get_last_reco(thread_key),
+            pending_cart=pending_dict,
         )
     except LLMError as exc:
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
         yield sse("error", ErrorData(code=code, message="질의를 이해하지 못했어요.").model_dump(by_alias=True))
         return
 
-    # 멀티턴 병합 결과 저장 (다음 턴 입력)
-    _thread_store.put(thread_key, decision.filters)
+    # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
+    # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
+    if decision.intent != "cart_add" and pending is not None:
+        cart_store.clear_pending(thread_key)
 
     if decision.intent == "general":
         async for frame in stream_fallback(decision, observer=observer):
@@ -123,6 +140,27 @@ async def run_buyer_turn(
         yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))
         return
 
+    if decision.intent == "cart_view":
+        async for frame in stream_cart_view(identity=identity, observer=observer):
+            yield frame
+        return
+
+    if decision.intent == "cart_add":
+        allowed = {pid for pid, _ in cart_store.get_last_reco(thread_key)}
+        async for frame in stream_cart_add(
+            identity=identity,
+            cart=decision.cart or CartIntent(),
+            cart_store=cart_store,
+            thread_key=thread_key,
+            settings=settings,
+            allowed_product_ids=allowed,
+            observer=observer,
+        ):
+            yield frame
+        return
+
+    # recommend — 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
+    _thread_store.put(thread_key, decision.filters)
     async for frame in stream_recommendation(
         request=request,
         decision=decision,
@@ -131,6 +169,8 @@ async def run_buyer_turn(
         push_fn=push_fn,
         profile=profile,
         settings=settings,
+        cart_store=cart_store,
+        thread_key=thread_key,
         observer=observer,
     ):
         yield frame

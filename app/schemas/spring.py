@@ -159,6 +159,16 @@ class CartViewItem(CamelModel):
     price: int | None = None  # 표시가(선택, 총액 안내용 — 표시 권위는 Spring)
 
 
+class CartOption(CamelModel):
+    """CART_OPTION_REQUIRED/INVALID 응답의 옵션 항목 — LLM 되물음 문구 생성용(§4.1, C-3 🔴).
+
+    BE options 스키마는 미확정(🔴) — optionId + 표시명만 방어적으로 파싱한다.
+    """
+
+    option_id: int  # 숫자(BIGINT, product_option.id)
+    name: str = ""  # 표시명(optionName|name)
+
+
 class CartView(CamelModel):
     """I-9 응답. 빈 장바구니는 items=[] 정상 200 (오류 아님, §4.9)."""
 

@@ -28,6 +28,7 @@ from pydantic import ValidationError
 from app.core.config import get_settings
 from app.schemas.spring import (
     AddToCartRequest,
+    CartOption,
     AddToCartResult,
     CartView,
     ProductChangesPage,
@@ -41,6 +42,30 @@ from app.schemas.spring import (
 
 class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
+
+
+class CartOptionRequired(Exception):
+    """I-2 400 CART_OPTION_REQUIRED — 옵션 필수인데 optionId 없음(§4.1). options 목록 동반."""
+
+    def __init__(self, options: list[CartOption]) -> None:
+        super().__init__("cart option required")
+        self.options = options
+
+
+class CartOptionInvalid(Exception):
+    """I-2 400 CART_OPTION_INVALID — 옵션이 상품 소속 아님(§4.1). options 재확인용 동반."""
+
+    def __init__(self, options: list[CartOption]) -> None:
+        super().__init__("cart option invalid")
+        self.options = options
+
+
+class CartProductNotFound(Exception):
+    """I-2 404 PRODUCT_NOT_FOUND — 없는 상품(§4.1)."""
+
+
+class CartError(Exception):
+    """I-2 담기 운영 오류(401 INTERNAL_TOKEN_INVALID·도달 불가·미상 코드) → action CART_ERROR."""
 
 
 def _client() -> httpx.AsyncClient:
@@ -96,6 +121,28 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     return ProductSearchResult(products=products, total_count=len(products))
 
 
+def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption]]:
+    """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
+
+    code 는 error.code | code, options 는 error.options | options | data.options 중
+    처음 발견되는 배열에서 {optionId, optionName|name} 로 읽는다.
+    """
+    try:
+        body = resp.json()
+    except ValueError:
+        return None, []
+    if not isinstance(body, dict):
+        return None, []
+    err = body.get("error") if isinstance(body.get("error"), dict) else None
+    code = (err or {}).get("code") or body.get("code")
+    raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
+    options: list[CartOption] = []
+    for opt in raw if isinstance(raw, list) else []:
+        if isinstance(opt, dict) and opt.get("optionId") is not None:
+            options.append(CartOption(option_id=opt["optionId"], name=opt.get("optionName") or opt.get("name") or ""))
+    return code, options
+
+
 async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
     """Spring 상품 검색 위임 — I-1 GET /internal/products/search (api-spec §4.6 / C-15).
 
@@ -131,24 +178,61 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
-    """장바구니 담기 — BE I-2 문서 채택 (스텁, api-spec §4.1 / C-3 잔여). 이슈 #3 소관.
+    """장바구니 담기 — BE I-2 문서 채택 (api-spec §4.1). [배선 완료]
 
-    POST {spring_base_url}/internal/cart/items + X-Internal-Token (서비스 토큰).
-    본문: {userId|guestId(둘 중 하나, AI-검증 JWT sub 유래), productId, optionId, quantity(1~99)}.
+    POST {spring_base_url}/internal/cart/items + X-Internal-Token. 본문 신원(userId|guestId)은
+    AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 재고검증 없음(C-3 해소 v0.15.5 — OUT_OF_STOCK 폐기).
+    실패 코드는 typed 예외로 전파: CART_OPTION_REQUIRED→CartOptionRequired(options),
+    CART_OPTION_INVALID→CartOptionInvalid(options), 404→CartProductNotFound, 그 외→CartError.
     """
-    raise SpringUnavailableError(
-        "add_to_cart not wired to live Spring yet (api-spec §4.1, I-2, C-3)"
-    )
+    try:
+        async with _client() as client:
+            resp = await client.post("/internal/cart/items", json=request.model_dump(by_alias=True))
+    except httpx.HTTPError as exc:
+        raise CartError(f"add_to_cart 도달 실패: {exc}") from exc
+
+    if resp.status_code == 200:
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise CartError(f"add_to_cart 응답 파싱 실패: {exc}") from exc
+        payload = data.get("data") if isinstance(data, dict) else None
+        cart_item_id = payload.get("cartItemId") if isinstance(payload, dict) else None
+        return AddToCartResult(success=True, cart_item_id=cart_item_id)
+
+    code, options = _parse_cart_error(resp)
+    if resp.status_code == 400 and code == "CART_OPTION_REQUIRED":
+        raise CartOptionRequired(options)
+    if resp.status_code == 400 and code == "CART_OPTION_INVALID":
+        raise CartOptionInvalid(options)
+    if resp.status_code == 404:
+        raise CartProductNotFound()
+    # 401 INTERNAL_TOKEN_INVALID·미상 코드 → 운영 오류
+    raise CartError(f"add_to_cart 실패: {resp.status_code} {code}")
 
 
 async def get_cart(user_id: int | None = None, guest_id: str | None = None) -> CartView:
-    """장바구니 조회 — I-18 (스텁, api-spec §4.9 / C-16). 이슈 #3 소관.
+    """장바구니 조회 — I-18 (api-spec §4.9 / C-16). [배선 완료]
 
     GET {spring_base_url}/internal/cart?userId=|guestId= + X-Internal-Token.
+    빈 장바구니는 items=[] 정상 200. 도달 불가/오류/스키마 불일치는 SpringUnavailableError —
+    조회는 안내용이라 상위(담기)는 조회 실패 시에도 진행한다(degrade, §4.9).
     """
-    raise SpringUnavailableError(
-        "get_cart not wired to live Spring yet (api-spec §4.9, I-18, C-16)"
-    )
+    params: dict[str, object] = {}
+    if user_id is not None:
+        params["userId"] = user_id
+    if guest_id is not None:
+        params["guestId"] = guest_id
+    try:
+        async with _client() as client:
+            resp = await client.get("/internal/cart", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        items = payload.get("items") if isinstance(payload, dict) else None
+        return CartView.model_validate({"items": items or []})
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"get_cart 실패: {exc}") from exc
 
 
 async def push_recommendations(push: RecommendationPush) -> bool:
