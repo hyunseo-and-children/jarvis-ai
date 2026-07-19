@@ -72,6 +72,7 @@ async def stream_cart_add(
 
     # 되물음 진행 중이면 pending 의 상품/수량을 쓰고 이번 턴 답을 optionId 로 해석한다.
     pending = cart_store.get_pending(thread_key)
+    was_pending = pending is not None
     if pending is not None:
         product_id: int | None = pending.product_id
         quantity = pending.quantity
@@ -106,20 +107,24 @@ async def stream_cart_add(
     try:
         req = AddToCartRequest(user_id=user_id, guest_id=guest_id, product_id=product_id, option_id=option_id, quantity=quantity)
         result = await add_fn(req)
-    except CartOptionRequired as exc:
-        cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=0))
-        yield sse("token", TokenData(text=f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?").model_dump(by_alias=True))
-        yield _done()
-        return
-    except CartOptionInvalid as exc:
-        new_attempts = attempts + 1
-        if new_attempts > settings.cart_option_reask_max:
-            cart_store.clear_pending(thread_key)
-            yield sse("action", ActionData(type="CART_ADD_FAILED", message="옵션을 확인하지 못했어요. 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
-            yield _done()
-            return
+    except (CartOptionRequired, CartOptionInvalid) as exc:
+        # 옵션 되물음 — 최초 안내는 자유, 이후 **재질문(was_pending)은 cart_option_reask_max 로 상한**한다.
+        # REQUIRED 도 상한 대상 — optionId 를 끝내 못 뽑으면 매번 REQUIRED 로 떨어져 무한 되물음이 되므로.
+        if was_pending:
+            new_attempts = attempts + 1
+            if new_attempts > settings.cart_option_reask_max:
+                cart_store.clear_pending(thread_key)
+                yield sse("action", ActionData(type="CART_ADD_FAILED", message="옵션을 확인하지 못했어요. 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
+                yield _done()
+                return
+        else:
+            new_attempts = 0  # 최초 안내(재질문 아님)
         cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=new_attempts))
-        yield sse("token", TokenData(text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}").model_dump(by_alias=True))
+        if isinstance(exc, CartOptionRequired):
+            text = f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?"
+        else:
+            text = f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}"
+        yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield _done()
         return
     except CartProductNotFound:

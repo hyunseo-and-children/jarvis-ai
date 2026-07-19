@@ -544,3 +544,46 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
     reco = get_cart_store().get_last_reco(conversation_key("123", "tR"))
     # 노출 순서: rerank [103,101] + expose_min 보충 102 → [103,101,102] (검색순서 아님)
     assert [pid for pid, _ in reco][:2] == [103, 101]
+
+
+# ─────────── 리뷰 라운드 2 회귀 (R1·R2) ───────────
+
+
+async def test_last_reco_not_stored_when_push_fails() -> None:
+    """push 실패로 카드가 노출되지 않으면 last_reco 를 저장하지 않는다(R1 — 경로 B 불변식)."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.core.conversation import conversation_key
+    from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
+
+    async def search(filters, exclude_product_ids=None):
+        return ProductSearchResult(products=DEFAULT_PRODUCTS, total_count=len(DEFAULT_PRODUCTS))
+
+    async def failing_push(p):
+        from app.services.spring_client import SpringUnavailableError
+
+        raise SpringUnavailableError("push down")
+
+    await _collect(run_buyer_turn(_req(message="추천", thread_id="tNo"), _member(), llm=FakeLLM(), search=search, push_fn=failing_push))
+    reco = get_cart_store().get_last_reco(conversation_key("123", "tNo"))
+    assert reco == []  # 저장 안 됨 → 다음 턴 "그거 담아줘"가 미노출 상품을 담지 못함
+
+
+async def test_cart_add_option_required_reask_capped() -> None:
+    """optionId 를 끝내 못 뽑아 REQUIRED 가 반복돼도 상한 초과 시 CART_ERROR(R2 — 무한 되물음 방지)."""
+    store = CartStateStore()
+    # 이미 1회 되물은 상태(attempts=1), 다시 REQUIRED → 상한(기본 1) 초과 → CART_ERROR
+    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1))
+
+    async def add_fn(req):
+        raise CartOptionRequired([CartOption(option_id=3, name="블루")])
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, option_id=None, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
+    assert store.get_pending("m:t") is None

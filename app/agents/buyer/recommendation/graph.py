@@ -81,12 +81,6 @@ async def stream_recommendation(
                     break
     ranked_ids = ranked_ids[: settings.expose_max]
 
-    # 직전 추천 목록을 장바구니 담기(productId 해소, 경로 B)를 위해 스레드에 보관 —
-    # FE 카드 = 최종 push 순서(ranked_ids)이므로 "두 번째 거"가 맞게 해소되도록 노출 순서로 저장.
-    if cart_store is not None and thread_key is not None:
-        name_by_id = {p.product_id: p.name for p in candidates}
-        cart_store.set_last_reco(thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids])
-
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
 
@@ -99,6 +93,11 @@ async def stream_recommendation(
         pushed = False
     if pushed:
         yield sse("products.ready", ProductsReadyData(session_id=request.session_id, list_id=list_id).model_dump(by_alias=True))
+        # 직전 추천을 장바구니 담기(productId 해소, 경로 B)용으로 보관 — **push 성공 후에만**.
+        # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.
+        if cart_store is not None and thread_key is not None:
+            name_by_id = {p.product_id: p.name for p in candidates}
+            cart_store.set_last_reco(thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids])
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
         # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
