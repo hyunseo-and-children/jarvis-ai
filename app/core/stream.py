@@ -93,6 +93,24 @@ def _error_frame(code: str, message: str) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _error_code_of(frame: str) -> str | None:
+    """SSE 프레임이 in-stream error 이벤트면 code 를 반환(그 외 None). 그래프 자체 error emit 감지용."""
+    import json
+
+    try:
+        line = frame.strip()
+        if line.startswith("data:"):
+            line = line[len("data:") :].strip()
+        payload = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "error":
+        return None
+    data = payload.get("data") or {}
+    code = data.get("code") if isinstance(data, dict) else None
+    return code if isinstance(code, str) else "INTERNAL"
+
+
 async def open_stream(
     request: Request,
     session_id: str,
@@ -119,7 +137,14 @@ async def open_stream(
         )
 
     start = loop.time()
-    agen = inner_factory()
+    try:
+        agen = inner_factory()
+    except Exception:
+        # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
+        registry.release(session_id)
+        if observer is not None:
+            observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+        raise
 
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
@@ -198,6 +223,10 @@ async def open_stream(
         error_type: str | None = None
         try:
             if first is not None:
+                first_err = _error_code_of(first)
+                if first_err is not None:
+                    stream_status = TurnStatus.FAILED
+                    error_type = first_err
                 yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
             next_task = asyncio.ensure_future(agen.__anext__())
             while True:
@@ -230,6 +259,12 @@ async def open_stream(
                     break
                 if observer is not None:
                     observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
+                item_err = _error_code_of(item)
+                if item_err is not None:
+                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 클라이언트는
+                    # 실패를 받았으므로 저장/로그도 FAILED 로 마감(§6.3, 성공 오기록 방지).
+                    stream_status = TurnStatus.FAILED
+                    error_type = item_err
                 yield item
                 next_task = asyncio.ensure_future(agen.__anext__())
         except asyncio.CancelledError:

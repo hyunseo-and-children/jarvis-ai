@@ -15,7 +15,7 @@ import json
 from dataclasses import dataclass, field
 
 from app.core.auth import Identity
-from app.core.conversation import ConversationStore, TurnStatus
+from app.core.conversation import ConversationStore, TurnStatus, conversation_key
 from app.core.logging import get_logger
 
 logger = get_logger("observability")
@@ -139,7 +139,8 @@ def start_observation(
     length, digest = message_fingerprint(message)
     role = role_of(identity)
     subject = identity.user_id or identity.subject
-    turn_id = store.save_user_message(conversation_id, subject, role, message)
+    # 저장 키는 신원 스코프(IDOR 방지) — 로그의 conversationId 는 원 sessionId 유지(상관관계용).
+    turn_id = store.save_user_message(conversation_key(subject, conversation_id), subject, role, message)
     return RequestObservation(
         request_id=request_id,
         conversation_id=conversation_id,
@@ -151,3 +152,18 @@ def start_observation(
         message_hash=digest,
         started=now,
     )
+
+
+def emit_rejection(request_id: str, error_type: str, **fields: object) -> None:
+    """스트림 전 거부(429/409/504 등)의 구조화 로그 — 대화 턴 없이 errorType 만 집계(§6.3 b).
+
+    레이트 리밋(§2.8)·409(§2.9 a) 발동을 상한 튜닝 근거로 관측 가능하게 남긴다.
+    """
+    record = {
+        "event": "chat_request",
+        "requestId": request_id,
+        "errorType": error_type,
+        "streamStatus": None,
+        **fields,
+    }
+    logger.info(json.dumps(record, ensure_ascii=False))

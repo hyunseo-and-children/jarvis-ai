@@ -75,6 +75,16 @@ class ConversationStore:
 _store = ConversationStore()
 
 
+def conversation_key(subject: str | None, session_id: str) -> str:
+    """대화 저장 키를 **신원에 스코프**한다(registry_key와 동일 IDOR 방지).
+
+    session_id(요청 본문 유래)만으로 키잉하면 다른 신원이 같은 session_id 를 실어 한 대화에
+    턴을 혼입시킬 수 있다(프로필 스캔 오염·히스토리 노출). subject(검증된 sub)를 접두어로 묶어
+    사용자 간 대화 혼입을 막는다. 신원 없음(dev 무토큰)은 "anon".
+    """
+    return f"{subject or 'anon'}:{session_id}"
+
+
 def get_conversation_store() -> ConversationStore:
     """대화 저장소 싱글턴."""
     return _store

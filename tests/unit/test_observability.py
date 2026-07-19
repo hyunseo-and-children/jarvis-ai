@@ -7,13 +7,16 @@ import json
 import logging
 import types
 
+import jwt
+
 import pytest
 from fastapi.testclient import TestClient
 
 from app.core.auth import Identity
-from app.core.conversation import TurnStatus, get_conversation_store
+from app.core.conversation import TurnStatus, conversation_key, get_conversation_store
 from app.core.config import get_settings
 from app.core.observability import message_fingerprint, start_observation
+from app.core.stream import get_registry
 from app.core.stream import open_stream
 from app.main import app
 
@@ -41,6 +44,11 @@ def _obs(conversation_id: str, message: str = "질문"):
     )
 
 
+def _bearer(sub: str) -> dict:
+    token = jwt.encode({"sub": sub}, "test-secret-key-0123456789abcdef", algorithm="HS256")
+    return {"Authorization": f"Bearer {token}"}
+
+
 # ─────────── §6.3 (a) 대화 저장 ───────────
 
 
@@ -50,7 +58,7 @@ def test_chat_records_completed_turn() -> None:
     r = client.post("/chat", json={"sessionId": "c1", "threadId": "t", "message": msg})
     assert r.status_code == 200
     _ = r.text  # 스트림 소비 → finalize
-    turns = get_conversation_store().turns_for("c1")
+    turns = get_conversation_store().turns_for(conversation_key(None, "c1"))
     assert len(turns) == 1
     assert turns[0].user_text == msg
     assert turns[0].status == TurnStatus.COMPLETED
@@ -123,3 +131,61 @@ def test_message_fingerprint_is_not_raw() -> None:
     assert length == 5
     assert digest != "hello"
     assert len(digest) == 16
+
+
+async def test_graph_error_frame_marks_failed() -> None:
+    """그래프가 자체 in-stream error 프레임을 emit하면 저장/로그가 FAILED 로 마감된다(§6.3)."""
+    obs = _obs("ge")
+
+    async def token_then_error():
+        yield 'data: {"type":"token","data":{"text":"부분"}}\n\n'
+        yield 'data: {"type":"error","data":{"code":"LLM_UNAVAILABLE","message":"x"}}\n\n'
+
+    resp = await open_stream(_FakeRequest(), "member:ge", token_then_error, observer=obs)
+    _ = [c async for c in resp.body_iterator]
+    turn = get_conversation_store().get_turn(obs.turn_id)
+    assert turn is not None
+    assert turn.status == TurnStatus.FAILED
+
+
+def test_conversation_scoped_by_identity() -> None:
+    """서로 다른 신원이 같은 session_id 를 써도 대화가 섞이지 않는다(IDOR 방지)."""
+    store = get_conversation_store()
+    id_a = Identity(user_id="A", is_guest=False, seller_id=None, subject="A")
+    id_b = Identity(user_id="B", is_guest=False, seller_id=None, subject="B")
+    start_observation(request_id="r", identity=id_a, conversation_id="s1", message="a", store=store, now=0.0)
+    start_observation(request_id="r", identity=id_b, conversation_id="s1", message="b", store=store, now=0.0)
+    turns_a = store.turns_for(conversation_key("A", "s1"))
+    turns_b = store.turns_for(conversation_key("B", "s1"))
+    assert len(turns_a) == 1 and turns_a[0].user_text == "a"
+    assert len(turns_b) == 1 and turns_b[0].user_text == "b"
+
+
+async def test_inner_factory_sync_error_releases_and_marks_failed() -> None:
+    """inner_factory 동기 예외 시 슬롯 해제 + 턴 FAILED 마감(PENDING 영구 잔존 방지)."""
+    obs = _obs("if1")
+
+    def bad_factory():
+        raise RuntimeError("factory boom")
+
+    with pytest.raises(RuntimeError):
+        await open_stream(_FakeRequest(), "member:if1", bad_factory, observer=obs)
+    assert not get_registry().is_active("member:if1")
+    turn = get_conversation_store().get_turn(obs.turn_id)
+    assert turn is not None and turn.status == TurnStatus.FAILED
+
+
+def test_rate_limit_emits_structured_observation(caplog: pytest.LogCaptureFixture) -> None:
+    """429 발동도 errorType=RATE_LIMITED 구조화 로그로 관측된다(§6.3 b)."""
+    headers = _bearer("rl-obs")
+    with caplog.at_level(logging.INFO, logger="observability"):
+        for i in range(11):
+            client.post(
+                "/chat",
+                json={"sessionId": f"rlo-{i}", "threadId": "t", "message": "m"},
+                headers=headers,
+            )
+    logs = [json.loads(r.getMessage()) for r in caplog.records if r.name == "observability"]
+    rate_logs = [entry for entry in logs if entry.get("errorType") == "RATE_LIMITED"]
+    assert rate_logs, "429 구조화 로그 없음"
+    assert rate_logs[0]["streamStatus"] is None
