@@ -20,6 +20,7 @@ TODO(§6.3 운영 요구 — 미구현): 대화 저장(user 수신 즉시 / assi
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 
@@ -28,6 +29,9 @@ from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_identity
 from app.core.auth import Identity
+from app.core.conversation import get_conversation_store
+from app.core.errors import get_request_id
+from app.core.observability import start_observation
 from app.core.stream import open_stream, registry_key
 from app.schemas.chat import (
     ChatRequest,
@@ -82,8 +86,17 @@ async def chat(
     스트림 수명주기(§2.9 동시 스트림 409·취소·전체/first-token 타임아웃)는
     open_stream 이 감싼다. 레이트 리밋(§2.8)·오류 봉투(§2.5)는 app.main 미들웨어·핸들러.
     """
+    observation = start_observation(
+        request_id=get_request_id(http_request),
+        identity=identity,
+        conversation_id=request.session_id,
+        message=request.message,
+        store=get_conversation_store(),
+        now=asyncio.get_running_loop().time(),
+    )
     return await open_stream(
         http_request,
         registry_key(identity, request.session_id),
         lambda: _stub_stream(request, identity),
+        observer=observation,
     )

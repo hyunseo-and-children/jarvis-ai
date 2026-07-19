@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import field_validator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -35,7 +35,29 @@ class ChatRequest(CamelModel):
 
     session_id: str = Field(..., description="Spring 발급 불투명 스레드 키 (만료 없음, §2.6)")
     thread_id: str = Field(..., description="대화 스레드 식별자. 멀티턴 필터 누적 대상")
-    message: str = Field(..., description="현재 턴 사용자 원문 질의")
+    message: str = Field(..., description="현재 턴 사용자 원문 질의 (길이 상한은 config chat_message_max_chars)")
+
+    @field_validator("message")
+    @classmethod
+    def _limit_message_length(cls, v: str) -> str:
+        """message 길이 상한을 config 에서 주입(하드코딩 금지). 초과 시 400(api-spec §3.1)."""
+        from app.core.config import get_settings
+
+        cap = get_settings().chat_message_max_chars
+        if len(v) > cap:
+            raise ValueError(f"message exceeds {cap} characters")
+        return v
+
+    @field_validator("session_id", "thread_id")
+    @classmethod
+    def _limit_key_length(cls, v: str) -> str:
+        """불투명 식별자 길이 상한(config) — registry·저장소·로그 남용 방어. 초과 시 400."""
+        from app.core.config import get_settings
+
+        cap = get_settings().chat_key_max_chars
+        if len(v) > cap:
+            raise ValueError(f"identifier exceeds {cap} characters")
+        return v
 
 
 # ── SSE 이벤트 data 페이로드 모델 (api-spec §3.1, 6종) ──

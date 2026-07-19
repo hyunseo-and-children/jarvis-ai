@@ -21,7 +21,9 @@ from fastapi.responses import StreamingResponse
 
 from app.core.auth import Identity
 from app.core.config import get_settings
+from app.core.conversation import TurnStatus
 from app.core.logging import get_logger
+from app.core.observability import RequestObservation
 from app.schemas.chat import DoneData, ErrorData
 
 logger = get_logger(__name__)
@@ -91,10 +93,30 @@ def _error_frame(code: str, message: str) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _error_code_of(frame: str) -> str | None:
+    """SSE 프레임이 in-stream error 이벤트면 code 를 반환(그 외 None). 그래프 자체 error emit 감지용."""
+    import json
+
+    try:
+        line = frame.strip()
+        if line.startswith("data:"):
+            line = line[len("data:") :].strip()
+        payload = json.loads(line)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("type") != "error":
+        return None
+    data = payload.get("data") or {}
+    code = data.get("code") if isinstance(data, dict) else None
+    return code if isinstance(code, str) else "INTERNAL"
+
+
 async def open_stream(
     request: Request,
     session_id: str,
     inner_factory: Callable[[], AsyncIterator[str]],
+    *,
+    observer: RequestObservation | None = None,
 ) -> StreamingResponse:
     """내부 이벤트 제너레이터를 §2.9 수명주기로 감싼 StreamingResponse 를 만든다.
 
@@ -104,16 +126,28 @@ async def open_stream(
     """
     settings = get_settings()
     registry = get_registry()
+    loop = asyncio.get_event_loop()
 
     if not registry.acquire(session_id):
+        if observer is not None:
+            observer.finish(loop.time(), TurnStatus.FAILED, "STREAM_IN_PROGRESS")
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "STREAM_IN_PROGRESS", "message": "동일 세션에 진행 중인 스트림이 있습니다"},
         )
 
-    loop = asyncio.get_event_loop()
+    if observer is not None:
+        observer.commit_user_message()  # 슬롯 확보 후에만 사용자 메시지 저장(§6.3 a, 유령 턴 방지)
+
     start = loop.time()
-    agen = inner_factory()
+    try:
+        agen = inner_factory()
+    except Exception:
+        # 그래프 진입 검증 등 inner_factory 동기 예외 — 슬롯·턴 누수 방지.
+        registry.release(session_id)
+        if observer is not None:
+            observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
+        raise
 
     poll = settings.stream_disconnect_poll_s
     deadline = start + settings.stream_total_timeout_s
@@ -143,6 +177,8 @@ async def open_stream(
         remaining = ft_deadline - loop.time()
         if remaining <= 0:
             await _abort_prestream()
+            if observer is not None:
+                observer.finish(loop.time(), TurnStatus.FAILED, "UPSTREAM_TIMEOUT")
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail={"code": "UPSTREAM_TIMEOUT", "message": "상류(LLM) 응답 지연"},
@@ -153,33 +189,55 @@ async def open_stream(
                 first = ft_task.result()
             except StopAsyncIteration:
                 first = None  # 빈 스트림 — 해제는 _wrapped finally 에서.
-            except BaseException:
-                # 첫 프레임 전 상류 오류(LLM/Spring 등)·취소 — 누수 방지 후 전파.
+            except asyncio.CancelledError:
                 await _abort_prestream()
+                if observer is not None:
+                    observer.finish(loop.time(), TurnStatus.CANCELLED)
+                raise
+            except Exception:
+                # 첫 프레임 전 상류 오류(LLM/Spring 등) — 누수 방지 후 전파.
+                await _abort_prestream()
+                if observer is not None:
+                    observer.finish(loop.time(), TurnStatus.FAILED, "INTERNAL")
                 raise
             break
         if await request.is_disconnected():
             # (b) 첫 이벤트 전 연결 종료 — 정리 후 즉시 종료(소비될 응답 없음).
             logger.info("stream cancelled before first token session=%s", session_id)
             await _abort_prestream()
+            if observer is not None:
+                observer.finish(loop.time(), TurnStatus.CANCELLED)
             return StreamingResponse(
                 _empty_stream(),
                 media_type="text/event-stream; charset=utf-8",
                 headers=_SSE_HEADERS,
             )
 
+    # 첫 이벤트 확보 — first-token 지연 기록 + 부분 텍스트 누적 시작(§6.3).
+    if observer is not None and first is not None:
+        observer.on_first_token(loop.time())
+        observer.record_frame(first)
+
     async def _wrapped() -> AsyncIterator[str]:
         # 다음 이벤트 대기는 지속 task 로 폴링한다 — wait_for 로 __anext__ 를 취소하면
         # 제너레이터가 망가지므로(다음 호출이 StopAsyncIteration) asyncio.wait 로 완료만 관찰한다.
         next_task: asyncio.Task | None = None
+        stream_status = TurnStatus.COMPLETED
+        error_type: str | None = None
         try:
             if first is not None:
-                yield first
+                first_err = _error_code_of(first)
+                yield first  # first 는 위에서 record_frame 됨(중복 누적 방지)
+                if first_err is not None:
+                    # in-stream error 는 종결 이벤트(§3.1) — 이후 이벤트 당기지 않는다.
+                    stream_status = TurnStatus.FAILED
+                    error_type = first_err
+                    return
             next_task = asyncio.ensure_future(agen.__anext__())
             while True:
                 remaining = deadline - loop.time()
                 if remaining <= 0:
-                    # (c) 전체 상한 초과 — done(stop)으로 정상 절단.
+                    # (c) 전체 상한 초과 — done(stop)으로 정상 절단(COMPLETED, FAILED 아님).
                     logger.info("stream total cap reached session=%s", session_id)
                     yield _done_stop_frame()
                     break
@@ -188,6 +246,7 @@ async def open_stream(
                     # 아직 이벤트 없음(제너레이터 유휴) — (b) 연결 종료 조기 감지.
                     if await request.is_disconnected():
                         logger.info("stream cancelled by client disconnect session=%s", session_id)
+                        stream_status = TurnStatus.CANCELLED
                         break
                     continue  # 같은 task 를 계속 기다린다(제너레이터 보존)
                 try:
@@ -199,19 +258,35 @@ async def open_stream(
                     #     마무리해야 한다(연결만 끊기지 않게, §2.9 c/§3.1). 기본 INTERNAL.
                     #     실제 그래프는 필요 시 자체 error(LLM_UNAVAILABLE 등)를 먼저 emit 가능.
                     logger.exception("in-stream error session=%s", session_id)
+                    stream_status = TurnStatus.FAILED
+                    error_type = "INTERNAL"
                     yield _error_frame("INTERNAL", "처리 중 오류가 발생했습니다")
                     break
+                if observer is not None:
+                    observer.record_frame(item)  # 부분 텍스트 누적(§6.3 a)
+                item_err = _error_code_of(item)
                 yield item
+                if item_err is not None:
+                    # 그래프가 자체 in-stream error(LLM_UNAVAILABLE 등)를 emit — 실패로 마감하고
+                    # 종결한다(§3.1/§6.3). break 없으면 이후 token/done 이 저장소를 오염시킨다.
+                    stream_status = TurnStatus.FAILED
+                    error_type = item_err
+                    break
                 next_task = asyncio.ensure_future(agen.__anext__())
+        except asyncio.CancelledError:
+            # Starlette 가 클라이언트 disconnect 로 응답 task 를 취소한 경우 — CANCELLED 로 마감.
+            stream_status = TurnStatus.CANCELLED
+            raise
         finally:
             # (b) 취소·상한·정상 종료 공통 정리: 대기 중 task 취소 → 내부 제너레이터 close
-            #     (LLM 스트림/그래프 task 로 취소 전파) → 레지스트리 해제.
-            #     취소 턴의 CANCELLED 저장·부분텍스트 보존은 이슈 #8(대화 저장) 소관.
+            #     (LLM 스트림/그래프 task 로 취소 전파) → 레지스트리 해제 → 대화 저장·로그 마감.
             if next_task is not None and not next_task.done():
                 next_task.cancel()
                 await asyncio.gather(next_task, return_exceptions=True)
             await agen.aclose()
             registry.release(session_id)
+            if observer is not None:
+                observer.finish(loop.time(), stream_status, error_type)
 
     return StreamingResponse(
         _wrapped(),
