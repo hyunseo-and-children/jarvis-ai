@@ -669,3 +669,16 @@ async def test_recommendation_revert_ignores_non_consumable(monkeypatch: pytest.
     await _collect(run_buyer_turn(_req(thread_id="tN"), _member_num(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()))
     # 화이트리스트 밖이라 저장 안 됨 → 조미료 억제 유지(되돌려지지 않음)
     assert get_revert_store().get(conversation_key("123", "tN")) == set()
+
+
+def test_suggestion_chip_requires_exactly_one_kind() -> None:
+    """SuggestionChip 은 revert/relaxation 중 정확히 하나여야 한다(§3.1)."""
+    import pytest as _pytest
+    from app.schemas.chat import RelaxationRef, RevertRef, SuggestionChip
+
+    SuggestionChip(label="ok", revert=RevertRef(category="조미료"), est_count=1)  # 유효
+    SuggestionChip(label="ok", relaxation=RelaxationRef(field="priceMax", value=1), est_count=1)  # 유효
+    with _pytest.raises(ValueError):
+        SuggestionChip(label="none", est_count=1)  # 둘 다 없음
+    with _pytest.raises(ValueError):
+        SuggestionChip(label="both", revert=RevertRef(category="x"), relaxation=RelaxationRef(field="f", value=1), est_count=1)

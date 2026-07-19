@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import field_validator, BaseModel, ConfigDict, Field
+from pydantic import field_validator, model_validator, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 
@@ -103,6 +103,13 @@ class SuggestionChip(CamelModel):
     revert: RevertRef | None = None
     relaxation: RelaxationRef | None = None
     est_count: int  # 재포함/완화 적용 시 예상 결과 수(COUNT)
+
+    @model_validator(mode="after")
+    def _exactly_one_kind(self) -> "SuggestionChip":
+        """§3.1 — 칩 1건은 relaxation 또는 revert 중 **정확히 하나**여야 한다."""
+        if (self.revert is None) == (self.relaxation is None):
+            raise ValueError("SuggestionChip 은 revert 또는 relaxation 중 정확히 하나여야 한다(§3.1)")
+        return self
 
 
 class SuggestionsData(CamelModel):

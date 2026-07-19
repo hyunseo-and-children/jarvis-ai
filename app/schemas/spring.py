@@ -82,7 +82,8 @@ class ProductSearchResult(CamelModel):
 
 
 class OrderHistoryItem(CamelModel):
-    """I-19 주문 아이템 (api-spec §4.7). dedup 은 productId 기준 — category 없음(§4.7 갭)."""
+    """I-19 주문 아이템 (api-spec §4.7). [v0.15.10] categoryName 포함(BE 확정) — exact productId
+    제외 + 소모품 카테고리 억제(결정 14-F) 모두의 소스."""
 
     order_item_id: int
     product_id: int  # 숫자(BIGINT, §2.6 internal)
