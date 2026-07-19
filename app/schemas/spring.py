@@ -50,17 +50,23 @@ class ProductSearchFilters(CamelModel):
 
 
 class SpringProduct(CamelModel):
-    """Spring 검색 응답의 상품 1건. price/stock 은 질의 시점 최신값 (rerank·예산 계산용)."""
+    """Spring 검색 응답(BE I-1)의 상품 1건. price 는 질의 시점 최신값 (rerank·예산 계산용).
 
-    product_id: int  # 숫자(BIGINT, product.id §2.6)
+    [정합 v이슈#2] 별칭을 BE I-1 응답 실측 필드명에 맞춘다(api-spec §4.6 응답표):
+    categoryName·brandName·originalPrice·imageUrl. to_camel 기본 별칭(category/brand/…)과
+    달라 명시 별칭으로 덮는다 — 안 그러면 rerank 가 category/brand 를 None 으로 받는다.
+    BE 응답에 stock·totalCount 없음(§4.6 주의) — stock 은 optional None.
+    """
+
+    product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
     price: int
-    list_price: int | None = None
-    stock: int | None = None
-    category: str | None = None
-    brand: str | None = None
-    rating: float | None = None
-    main_image: str | None = None
+    list_price: int | None = Field(default=None, alias="originalPrice")  # 정가
+    stock: int | None = None  # BE I-1 응답엔 없음(§4.6) — 담기/주문 시점 판정
+    category: str | None = Field(default=None, alias="categoryName")
+    brand: str | None = Field(default=None, alias="brandName")
+    rating: float | None = None  # 조회 시 집계(DDL D9)
+    main_image: str | None = Field(default=None, alias="imageUrl")
 
 
 class ProductSearchResult(CamelModel):

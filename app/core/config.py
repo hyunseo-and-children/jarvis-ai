@@ -43,6 +43,9 @@ class Settings(BaseSettings):
 
     # ── Spring 연동 (역방향 호출, api-spec §4) ──
     spring_base_url: str = "http://localhost:8080"
+    # AI→Spring internal 역호출 서비스 토큰 (X-Internal-Token, api-spec §2.3 v0.13.0).
+    # 빈 값은 개발용 — Spring 미가동 시 검색/‑push 는 어차피 SpringUnavailable 로 degrade.
+    internal_api_token: str = ""
 
     # ── CORS (FE 직접 호출, api-spec §2.7 / C-11) ──
     cors_origins: list[str] = ["http://localhost:3000"]
