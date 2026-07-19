@@ -125,8 +125,8 @@ class RecentPurchases(CamelModel):
     """I-19 GET /internal/members/{id}/orders 응답 data (api-spec §4.7, BE 본문 재작성 v0.15.0).
 
     [변경 v0.15.0] 구 3필드(productId/category/purchasedAt) 폐기 — BE 본문 재작성 반영.
-    ⚠️ items 에 category 없음 → 소모품 카테고리 억제(결정 14-F) 불가, exact productId 제외만 가능.
-    실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
+    [v0.15.10] items 에 categoryName 포함(BE 확정) → exact productId 제외 + 소모품 카테고리
+    억제(결정 14-F) 모두 가능. 실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
     """
 
     orders: list[OrderHistory] = Field(default_factory=list)

@@ -163,8 +163,10 @@ async def run_buyer_turn(
     # recommend — 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     _thread_store.put(thread_key, decision.filters)
     # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
+    # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
     revert_store = get_revert_store()
-    revert_store.add(thread_key, decision.revert_categories)
+    consumable_set = set(settings.consumable_categories)
+    revert_store.add(thread_key, [c for c in decision.revert_categories if c in consumable_set])
     reverted = revert_store.get(thread_key)
     async for frame in stream_recommendation(
         request=request,

@@ -654,3 +654,18 @@ def test_order_item_category_and_recent_items() -> None:
     items = rp.recent_items(exclude_statuses={"CANCELED"})
     assert [i.product_id for i in items] == [5]
     assert items[0].category == "조미료"
+
+
+async def test_recommendation_revert_ignores_non_consumable(monkeypatch: pytest.MonkeyPatch) -> None:
+    """소모품 화이트리스트 밖 revert 문자열은 무시(무한 누적·임의 문자열 방지, Claude)."""
+    from app.agents.buyer.recommendation.state import get_revert_store
+    from app.core.conversation import conversation_key
+
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추")]
+    llm = FakeLLM(decompose={"intent": "recommend", "revertCategories": ["해킹", "무선이어폰"], "filters": {}, "case": 2})
+    await _collect(run_buyer_turn(_req(thread_id="tN"), _member_num(), llm=llm, search=_make_search(products), push_fn=_RecordingPush()))
+    # 화이트리스트 밖이라 저장 안 됨 → 조미료 억제 유지(되돌려지지 않음)
+    assert get_revert_store().get(conversation_key("123", "tN")) == set()
