@@ -91,6 +91,7 @@ class OrderHistoryItem(CamelModel):
     quantity: int = 1
     price: int | None = None
     status: str | None = None
+    category: str | None = Field(default=None, alias="categoryName")  # I-19 v0.15.9 (소모품 억제 소스)
 
 
 class OrderHistory(CamelModel):
@@ -130,16 +131,14 @@ class RecentPurchases(CamelModel):
 
     orders: list[OrderHistory] = Field(default_factory=list)
 
-    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
-        """exact 제외 dedup(결정 14-F) 대상 productId 집합.
+    def recent_items(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> list["OrderHistoryItem"]:
+        """윈도우·상태 필터를 통과한 구매 아이템 목록 — exact 제외·카테고리 억제(결정 14-F) 공용 소스.
 
-        since 가 주어지면 그보다 오래된 주문은 제외한다(오래 전 구매를 영구 제외하지 않게).
-        exclude_statuses(예: CANCELED/RETURNED)의 아이템은 사용자가 보유하지 않으므로 제외 대상에서 뺀다.
-        since 지정 시 ordered_at 파싱 실패(불명) 주문도 제외 대상에서 뺀다 — 나이를 확인할 수 없는
-        구매를 영구 제외하지 않기 위함(윈도우 취지).
+        since 보다 오래된 주문(또는 ordered_at 불명)은 제외(영구 제외 방지). exclude_statuses
+        (예: CANCELED/RETURNED)의 아이템은 보유분이 아니라 제외한다.
         """
         blocked = {s.upper() for s in exclude_statuses}
-        ids: set[int] = set()
+        out: list["OrderHistoryItem"] = []
         for order in self.orders:
             if since is not None:
                 dt = _parse_ordered_at(order.ordered_at)
@@ -149,8 +148,12 @@ class RecentPurchases(CamelModel):
             for item in order.items:
                 if (item.status or order_status).upper() in blocked:
                     continue
-                ids.add(item.product_id)
-        return ids
+                out.append(item)
+        return out
+
+    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
+        """exact 제외 dedup(결정 14-F) 대상 productId 집합 — recent_items 위임."""
+        return {item.product_id for item in self.recent_items(since=since, exclude_statuses=exclude_statuses)}
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──

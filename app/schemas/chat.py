@@ -83,6 +83,34 @@ class ConditionsData(CamelModel):
     chips: list[ConditionChip] = Field(default_factory=list)
 
 
+class RevertRef(CamelModel):
+    """`revert` — 구매 이력 억제 되돌리기 대상 카테고리 (결정 14-F)."""
+
+    category: str
+
+
+class RelaxationRef(CamelModel):
+    """`relaxation` — 0건 완화 제안 대상 (결정 14-D)."""
+
+    field: str
+    value: Any
+
+
+class SuggestionChip(CamelModel):
+    """`suggestions` 칩 1건 — 완화(relaxation) 또는 되돌리기(revert). estCount==0 은 제외(§3.1)."""
+
+    label: str
+    revert: RevertRef | None = None
+    relaxation: RelaxationRef | None = None
+    est_count: int  # 재포함/완화 적용 시 예상 결과 수(COUNT)
+
+
+class SuggestionsData(CamelModel):
+    """`suggestions` 이벤트 — 완화·되돌리기 제안 칩 목록 (api-spec §3.1)."""
+
+    chips: list[SuggestionChip] = Field(default_factory=list)
+
+
 class ActionData(CamelModel):
     """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (3)).
 

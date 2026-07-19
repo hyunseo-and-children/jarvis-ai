@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # ── dedup (#4, api-spec §4.7 결정 14-F) ──
     # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
     dedup_recent_days: int = 90
+    # 소모품 카테고리(결정 14-F 억제 대상) — MVP config 소스. 정본은 catalog 속성사전
+    # (SPEC-CATALOG-DATA-001 REQ-CAT-013 소모품 boolean 플래그). 카테고리명은 BE categoryName 과 일치.
+    consumable_categories: list[str] = []
 
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000

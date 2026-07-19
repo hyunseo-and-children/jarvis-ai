@@ -19,6 +19,7 @@ from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
 from app.agents.buyer.recommendation.decompose import decompose
+from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
 from app.agents.profile.reader import read_profile_summary
 from app.core.config import get_settings
@@ -161,6 +162,10 @@ async def run_buyer_turn(
 
     # recommend — 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     _thread_store.put(thread_key, decision.filters)
+    # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
+    revert_store = get_revert_store()
+    revert_store.add(thread_key, decision.revert_categories)
+    reverted = revert_store.get(thread_key)
     async for frame in stream_recommendation(
         request=request,
         decision=decision,
@@ -170,6 +175,7 @@ async def run_buyer_turn(
         identity=identity,
         profile=profile,
         settings=settings,
+        reverted_categories=reverted,
         cart_store=cart_store,
         thread_key=thread_key,
         observer=observer,

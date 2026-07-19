@@ -25,7 +25,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
     "category": string|null, "priceMin": int|null, "priceMax": int|null,
     "brand": [string]|null, "ratingMin": number|null, "keyword": string|null
   },
-  "cart": { "productId": int|null, "optionId": int|null, "quantity": int }
+  "cart": { "productId": int|null, "optionId": int|null, "quantity": int },
+  "revertCategories": [string]
 }
 규칙:
 - intent 판별: 상품을 찾아달라는 요청이면 recommend, "담아줘/장바구니에 넣어"면 cart_add,
@@ -39,6 +40,8 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
   사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
   담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
+- revertCategories: 사용자가 특정 카테고리를 \"다시 추천받기\"(되돌리기 칩) 하거나 최근 구매로
+  가려진 카테고리를 다시 보고 싶어하면 그 카테고리명을 넣으세요(예: [\"조미료\"]). 아니면 [].
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
@@ -89,6 +92,8 @@ async def decompose(
         filters = ProductSearchFilters.model_validate(data.get("filters") or {})
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
+        raw_revert = data.get("revertCategories")
+        revert_categories = [str(c) for c in raw_revert if isinstance(c, str) and c] if isinstance(raw_revert, list) else []
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(
@@ -98,6 +103,7 @@ async def decompose(
         case=case,
         reply=str(data.get("reply") or ""),
         cart=cart,
+        revert_categories=revert_categories,
     )
 
 

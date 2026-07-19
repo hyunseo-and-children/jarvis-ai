@@ -35,6 +35,7 @@ class RouteDecision:
     case: int = 2
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
+    revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
 
 
 @dataclass
@@ -83,3 +84,37 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
     if filters.keyword:
         chips.append(ConditionChip(field="keyword", label=filters.keyword, value=filters.keyword))
     return chips
+
+
+class RevertStore:
+    """스레드별 소모품 억제 되돌리기 카테고리 집합 — 인메모리 placeholder(신원 스코프 키).
+
+    사용자가 "다시 추천받기"(되돌리기 칩)한 카테고리는 이후 턴에서도 억제하지 않는다(결정 14-F).
+    프로덕션은 LangGraph 체크포인터로 이관(ThreadFilterStore 와 동일 패턴).
+    """
+
+    def __init__(self) -> None:
+        self._reverted: dict[str, set[str]] = {}
+
+    def get(self, key: str) -> set[str]:
+        return set(self._reverted.get(key, set()))
+
+    def add(self, key: str, categories) -> None:
+        if categories:
+            self._reverted.setdefault(key, set()).update(categories)
+
+    def clear(self) -> None:
+        self._reverted.clear()
+
+
+_revert_store = RevertStore()
+
+
+def get_revert_store() -> RevertStore:
+    """되돌리기 스토어 싱글턴."""
+    return _revert_store
+
+
+def reset_revert_store() -> None:
+    """테스트 격리용."""
+    _revert_store.clear()

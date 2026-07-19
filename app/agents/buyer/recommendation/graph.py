@@ -18,7 +18,16 @@ from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
 from app.core.llm import LLMClient, LLMError
 from app.services import spring_client
-from app.schemas.chat import ConditionsData, DoneData, ErrorData, ProductsReadyData, TokenData
+from app.schemas.chat import (
+    ConditionsData,
+    DoneData,
+    ErrorData,
+    ProductsReadyData,
+    RevertRef,
+    SuggestionChip,
+    SuggestionsData,
+    TokenData,
+)
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
 
@@ -41,6 +50,7 @@ async def stream_recommendation(
     profile: str | None,
     settings,
     get_purchases_fn=None,
+    reverted_categories=frozenset(),
     cart_store=None,
     thread_key: str | None = None,
     observer=None,
@@ -58,10 +68,9 @@ async def stream_recommendation(
         except SpringUnavailableError:
             return None
 
-    async def _fetch_exclude() -> list[int] | None:
+    async def _fetch_purchases():
         # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
-        # [IDOR] role==SELLER 는 user_id=sub 이면서 seller_id 도 set — 판매자 sub 를 memberId 로
-        # I-19 에 쓰면 안 되므로 seller_id 있으면 dedup 스킵(신원 오용 방지, §2.6).
+        # [IDOR] role==SELLER 는 user_id=sub·seller_id=sub — 판매자 sub 를 memberId 로 쓰면 안 됨.
         if identity is None or identity.is_guest or not identity.user_id or identity.seller_id:
             return None
         try:
@@ -70,37 +79,60 @@ async def stream_recommendation(
             return None
         fn = get_purchases_fn or spring_client.get_recent_purchases
         try:
-            purchases = await fn(uid)
+            return await fn(uid)
         except SpringUnavailableError:
             return None
-        # 최근 윈도우 안 + 취소/반품 제외(보유분만) — 결정 14-F.
-        since = _now() - timedelta(days=settings.dedup_recent_days)
-        ids = purchases.purchased_product_ids(since=since, exclude_statuses=_INACTIVE_STATUSES)
-        return list(ids) if ids else None
 
-    search_result, exclude_ids = await asyncio.gather(_run_search(), _fetch_exclude())
+    search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
     if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
         yield sse("error", ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(by_alias=True))
         return
 
-    # exact 제외 사후필터(§4.7, C-15 — I-1 엔 제외 파라미터 없음).
+    # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
+    exclude_ids: set[int] = set()
+    cat_samples: dict[str, str] = {}  # 억제 소모품 카테고리 -> 최근 구매 상품명(되돌리기 칩 라벨용)
+    if purchases is not None:
+        since = _now() - timedelta(days=settings.dedup_recent_days)
+        recent = purchases.recent_items(since=since, exclude_statuses=_INACTIVE_STATUSES)
+        exclude_ids = {i.product_id for i in recent}
+        consumables = set(settings.consumable_categories)
+        for i in recent:
+            # 소모품 카테고리인데 사용자가 되돌리지 않은 것만 억제 대상.
+            if i.category and i.category in consumables and i.category not in reverted_categories:
+                cat_samples.setdefault(i.category, i.product_name or i.category)
+
+    # 사후필터: exact productId 제외 + 소모품 카테고리 억제(§4.7, C-15).
     result: ProductSearchResult = search_result
-    dedup_emptied = False
-    if exclude_ids:
-        excluded = set(exclude_ids)
-        kept = [p for p in result.products if p.product_id not in excluded]
-        dedup_emptied = bool(result.products) and not kept  # 검색은 있었으나 전부 제외됨
-        result = ProductSearchResult(products=kept, total_count=len(kept))  # dedup 후 개수로 정합
+    had_candidates = bool(result.products)
+    suppressed_by_cat: dict[str, int] = {}
+    kept = []
+    for product in result.products:
+        if product.product_id in exclude_ids:
+            continue
+        if product.category in cat_samples:
+            suppressed_by_cat[product.category] = suppressed_by_cat.get(product.category, 0) + 1
+            continue
+        kept.append(product)
+    result = ProductSearchResult(products=kept, total_count=len(kept))
+
+    # 되돌리기 칩 — 억제된 소모품 카테고리별(estCount==0 제외, §3.1).
+    revert_chips = [
+        SuggestionChip(label=f"{cat_samples[c]}은 최근 구매 — 다시 추천받기", revert=RevertRef(category=c), est_count=n)
+        for c, n in suppressed_by_cat.items()
+        if n > 0
+    ]
 
     candidates = result.products
     if not candidates:
-        # dedup 로 비워진 경우와 검색 자체가 0건인 경우를 구분해 원인을 바르게 안내한다.
+        # exact/카테고리로 전부 제거된 경우와 검색 자체 0건을 구분해 원인을 바르게 안내한다.
         text = (
             "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
-            if dedup_emptied
+            if had_candidates
             else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
         )
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
+        if revert_chips:  # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능)
+            yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
         return
 
@@ -136,6 +168,9 @@ async def stream_recommendation(
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))
+
+    if revert_chips:  # 소모품 카테고리 억제 되돌리기 칩(결정 14-F)
+        yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
     list_id = uuid4().hex

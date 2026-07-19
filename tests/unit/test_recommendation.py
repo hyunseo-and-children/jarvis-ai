@@ -14,6 +14,7 @@ import pytest
 
 from app.agents.buyer.graph import get_thread_store, run_buyer_turn
 from app.core.auth import Identity
+from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.schemas.spring import ProductSearchResult, SpringProduct
 from app.services.spring_client import SpringUnavailableError
@@ -538,3 +539,116 @@ async def test_recommendation_skips_dedup_for_seller(monkeypatch: pytest.MonkeyP
     await _collect(run_buyer_turn(_req(), seller, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
     assert called["n"] == 0  # 판매자 sub 로 I-19 조회 안 함
     assert 101 in push.pushes[0].product_ids  # dedup 미적용
+
+
+# ─────────── 소모품 카테고리 억제 + 되돌리기 (#4, 결정 14-F) ───────────
+
+
+def _purchases_cat(*items):
+    """items = (productId, category, name) — 카테고리 포함 최근 구매."""
+    async def _fn(user_id, status=None):
+        return RecentPurchases(orders=[OrderHistory(order_id=1, ordered_at="2026-07-15T00:00:00", items=[
+            OrderHistoryItem(order_item_id=idx, product_id=pid, category=cat, product_name=name)
+            for idx, (pid, cat, name) in enumerate(items, 1)
+        ])])
+    return _fn
+
+
+def _prod(pid, cat, name="상품"):
+    return SpringProduct(product_id=pid, name=name, price=10000, rating=4.0, category=cat, brand="b")
+
+
+async def test_recommendation_suppresses_consumable_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    """최근 구매한 소모품 카테고리는 후보에서 억제되고 되돌리기 칩이 나온다(결정 14-F)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추"), _prod(202, "무선이어폰", "이어폰")]
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push))
+    assert 201 not in push.pushes[0].product_ids  # 조미료 억제
+    assert 202 in push.pushes[0].product_ids
+    sug = next(e for e in events if e["type"] == "suggestions")["data"]
+    assert sug["chips"][0]["revert"]["category"] == "조미료"
+    assert sug["chips"][0]["estCount"] == 1
+    assert "소금" in sug["chips"][0]["label"]
+
+
+async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """비소모품 카테고리는 억제하지 않는다(exact 제외만) — 되돌리기 칩 없음."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((202, "무선이어폰", "이어폰")))
+    products = [_prod(201, "조미료", "후추"), _prod(202, "무선이어폰", "이어폰")]
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push))
+    assert 202 not in push.pushes[0].product_ids  # exact 제외(구매한 productId)
+    assert 201 in push.pushes[0].product_ids       # 조미료지만 구매 안 함 → 유지
+    assert "suggestions" not in _types(events)      # 억제 카테고리 없음 → 칩 없음
+
+
+async def test_recommendation_no_consumable_config_no_suppression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """consumable_categories 미설정(기본 [])이면 카테고리 억제·칩 없음."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추")]
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push))
+    assert 201 in push.pushes[0].product_ids
+    assert "suggestions" not in _types(events)
+
+
+async def test_recommendation_revert_unsuppresses_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    """되돌리기(revertCategories)하면 다음 턴부터 그 카테고리를 억제하지 않는다(멀티턴 지속)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추"), _prod(202, "무선이어폰", "이어폰")]
+    # 턴 1: 조미료 억제
+    push1 = _RecordingPush()
+    await _collect(run_buyer_turn(_req(thread_id="tR"), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=push1))
+    assert 201 not in push1.pushes[0].product_ids
+    # 턴 2: 사용자 되돌리기
+    push2 = _RecordingPush()
+    llm2 = FakeLLM(decompose={"intent": "recommend", "revertCategories": ["조미료"], "filters": {}, "case": 2})
+    events2 = await _collect(run_buyer_turn(_req(thread_id="tR"), _member_num(), llm=llm2, search=_make_search(products), push_fn=push2))
+    assert 201 in push2.pushes[0].product_ids       # 조미료 복원
+    assert "suggestions" not in _types(events2)      # 더는 억제 안 함 → 칩 없음
+
+
+async def test_recommendation_all_suppressed_offers_revert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """후보가 전부 소모품 억제로 비어도 되돌리기 칩은 제공한다(복원 가능)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases_cat((900, "조미료", "소금")))
+    products = [_prod(201, "조미료", "후추")]
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=_RecordingPush()))
+    assert "products.ready" not in _types(events)
+    assert events[-1]["data"]["finishReason"] == "zero_result"
+    sug = next(e for e in events if e["type"] == "suggestions")["data"]
+    assert sug["chips"][0]["revert"]["category"] == "조미료"
+
+
+async def test_recommendation_guest_no_suppression(monkeypatch: pytest.MonkeyPatch) -> None:
+    """게스트는 이력 조회 스킵 → 카테고리 억제·칩 없음."""
+    monkeypatch.setattr(get_settings(), "consumable_categories", ["조미료"])
+    products = [_prod(201, "조미료", "후추")]
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(products), push_fn=push))
+    assert 201 in push.pushes[0].product_ids
+    assert "suggestions" not in _types(events)
+
+
+def test_order_item_category_and_recent_items() -> None:
+    """I-19 categoryName 파싱 + recent_items 윈도우/상태 필터."""
+    from app.schemas.spring import RecentPurchases
+
+    rp = RecentPurchases.model_validate({"orders": [
+        {"orderId": 1, "orderedAt": "2026-07-15T00:00:00", "items": [
+            {"orderItemId": 1, "productId": 5, "categoryName": "조미료", "status": "DELIVERED"},
+            {"orderItemId": 2, "productId": 6, "categoryName": "조미료", "status": "CANCELED"},
+        ]},
+    ]})
+    items = rp.recent_items(exclude_statuses={"CANCELED"})
+    assert [i.product_id for i in items] == [5]
+    assert items[0].category == "조미료"

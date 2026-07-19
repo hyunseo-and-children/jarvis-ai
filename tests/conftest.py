@@ -6,6 +6,7 @@ import pytest
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store
+from app.agents.buyer.recommendation.state import reset_revert_store
 from app.core.conversation import reset_store
 from app.core.ratelimit import reset_limiter
 from app.core.stream import get_registry
@@ -18,12 +19,14 @@ def _reset_infra_state():
     reset_store()
     reset_thread_store()
     reset_cart_store()
+    reset_revert_store()
     get_registry()._active.clear()
     yield
     reset_limiter()
     reset_store()
     reset_thread_store()
     reset_cart_store()
+    reset_revert_store()
     get_registry()._active.clear()
 
 
