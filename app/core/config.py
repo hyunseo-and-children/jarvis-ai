@@ -58,9 +58,55 @@ class Settings(BaseSettings):
     jwt_issuer: str | None = "shopping-spring-auth"
     jwt_audience: str | None = "shopping-fastapi-ai"
 
-    # ── 이벤트 채널 서비스 토큰 (DEPRECATED) ──
-    # /events/* 는 고도화(post-MVP)로 이동해 제거됨. 고도화 재도입 대비 필드만 남긴다.
+    # ── Spring→AI 인바운드 서비스 토큰 (REALIGN-SELLER-20260719 D1, X-Internal-Token 검증) ──
+    # 인바운드(CH-2/S-4/I-20)는 전부 같은 X-Internal-Token 을 쓴다(아키텍처 확정 07/17).
+    # 현재 소비처: 판매자 챗 require_seller_internal. 미설정 시 dev 한정 검증 스킵(운영 금지).
+    # (구 용도였던 /events/* 이벤트 채널 검증도 재도입 시 이 필드를 쓴다.)
     service_token: str | None = None
+
+    # ── 판매자 Spring internal 콜백 (api-spec §2.3/§2.9 c, DESIGN-SELLER-TOOLS-STAGE1 §5) ──
+    # AI→Spring 서비스 토큰. 기존 service_token(이벤트용, deprecated)과 별도 신설.
+    internal_token: str | None = None
+    # AI→Spring 전 구간 타임아웃(§2.9 c). 기존 spring_client._client() 하드코딩(3.0)을 여기로 이관.
+    spring_timeout_s: float = 3.0
+
+    # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
+    seller_ma_window: int = 7  # 매출 이동평균 window(일)
+    seller_anomaly_deviation_pct: float = 30.0  # 매출 이상판정 편차 임계(%)
+    seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
+    seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
+    seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
+    # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
+    seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
+    seller_summary_max_events: int = 5  # I-13/I-14 이벤트 kv 나열 상한(건)
+    seller_list_default_limit: int = 20  # I-9 상품 목록 기본 limit(미지정 시)
+
+    # ── 판매자 후속 단계 대비 선등록 (1단계 미소비, 하드코딩 재발 방지) ──
+    seller_report_score_threshold: int = 21  # 보고서 검증 통과 점수(21/30)
+    seller_report_max_retries: int = 3  # 검증 루프 상한
+    seller_draft_ttl_minutes: int = 10  # HITL 미승인 draft 만료
+    # 4-2 HITL 실행(hitl.py): confirm 시점 I-9 재조회(stale 검증)의 페이지 순회 상한 —
+    # I-9 에 productId 필터가 없어 목록을 넘겨가며 찾는다(페이지 크기 = seller_list_default_limit).
+    seller_draft_lookup_max_pages: int = 10
+    # PostgresSaver(pg-profile) 초기 연결 대기 상한 — 초과 시 dev 는 InMemory 폴백.
+    seller_checkpoint_connect_timeout_s: float = 5.0
+    seller_history_recent_n: int = 5  # planner 최근 분석 이력 주입 건수
+    # 4-3 분석 이력(history.py): 판매자당 보관 상한(초과분 오래된 것부터 폐기)과
+    # 이력에 남길 보고서 요약 길이(전문 보존은 4-4 캐시 소관 — SPEC §9.1 "report 요약").
+    seller_history_max_items: int = 20
+    seller_history_report_max_chars: int = 500
+    seller_tool_call_limit: int = 8  # ToolCallLimit 전역 한도(선택)
+    seller_worker_timeout_s: float = 60.0  # 분석 워커 1종 실행 상한(3-3 팬아웃, §7 90s 목표 내)
+
+    # ── 판매자 supervisor 라우팅 (4-1a, REALIGN §4 — 2026-07-19 확정) ──
+    # confidence 미달 = analysis 보수 라우팅(SPEC 장치 ⑤). 장애 = general 폴백(사용자 결정).
+    seller_route_confidence_min: float = 0.6  # 이 값 미만이면 analysis 로 보수 재지정
+    seller_route_timeout_s: float = 10.0  # 라우팅 LLM 상한 — first-token 10s 목표 내(§2.9)
+
+    # ── 판매자 모델 배정 (SPEC-SELLER-001 §8 — Anthropic 2-tier temperature) ──
+    # 모델 ID 는 위 haiku_model_id/sonnet_model_id 가 단일 출처(중복 필드 금지).
+    seller_haiku_temperature: float = 0.0  # supervisor·planner·워커 5종·judge (일관성 장치 ①)
+    seller_sonnet_temperature: float = 0.2  # report·recommend (서술 품질)
 
     # ── 검색/추천 튜너블 (SPEC-RECOMMEND-001) ──
     search_default_limit: int = 30
