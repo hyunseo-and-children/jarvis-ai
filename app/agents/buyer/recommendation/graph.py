@@ -88,7 +88,7 @@ async def stream_recommendation(
         excluded = set(exclude_ids)
         kept = [p for p in result.products if p.product_id not in excluded]
         dedup_emptied = bool(result.products) and not kept  # 검색은 있었으나 전부 제외됨
-        result = ProductSearchResult(products=kept, total_count=result.total_count)
+        result = ProductSearchResult(products=kept, total_count=len(kept))  # dedup 후 개수로 정합
 
     candidates = result.products
     if not candidates:
