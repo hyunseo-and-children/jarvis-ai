@@ -432,14 +432,33 @@ async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_add_to_cart_option_required_raises_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[BE 확정 2026-07-18] error.detail.options = [{optionId, name, extraPrice}] 를 파싱한다."""
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "options": [{"optionId": 3, "optionName": "블루"}]}}
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 3, "name": "블루", "extraPrice": 0},
+        {"optionId": 4, "name": "레드", "extraPrice": 1000},
+    ]}}}
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
-    assert ei.value.options[0].option_id == 3 and ei.value.options[0].name == "블루"
+    opts = ei.value.options
+    assert [o.option_id for o in opts] == [3, 4]
+    assert [o.name for o in opts] == ["블루", "레드"]
+    assert opts[1].extra_price == 1000
+
+
+async def test_add_to_cart_option_required_legacy_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """구버전 위치(error.options, optionName)도 방어적으로 파싱한다(하위호환)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "options": [{"optionId": 9, "optionName": "그린"}]}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert ei.value.options[0].option_id == 9 and ei.value.options[0].name == "그린"
 
 
 async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:

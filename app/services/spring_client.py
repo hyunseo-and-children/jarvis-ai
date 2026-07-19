@@ -124,8 +124,9 @@ def _parse_search_response(data: object) -> ProductSearchResult:
 def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption]]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
-    code 는 error.code | code, options 는 error.options | options | data.options 중
-    처음 발견되는 배열에서 {optionId, optionName|name} 로 읽는다.
+    code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
+    ([{optionId, name, extraPrice}]) 를 우선하고, 구버전 위치(error.options·options·data.options)도
+    방어적으로 본다. name 은 name|optionName, extraPrice(추가금)까지 읽는다.
     """
     try:
         body = resp.json()
@@ -135,11 +136,24 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
         return None, []
     err = body.get("error") if isinstance(body.get("error"), dict) else None
     code = (err or {}).get("code") or body.get("code")
-    raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
+    detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
+    raw = (
+        (detail or {}).get("options")  # BE 확정 위치
+        or (err or {}).get("options")
+        or body.get("options")
+        or (body.get("data") or {}).get("options")
+        or []
+    )
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
-            options.append(CartOption(option_id=opt["optionId"], name=opt.get("optionName") or opt.get("name") or ""))
+            options.append(
+                CartOption(
+                    option_id=opt["optionId"],
+                    name=opt.get("name") or opt.get("optionName") or "",
+                    extra_price=opt.get("extraPrice"),
+                )
+            )
     return code, options
 
 

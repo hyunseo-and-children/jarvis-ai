@@ -160,13 +160,16 @@ class CartViewItem(CamelModel):
 
 
 class CartOption(CamelModel):
-    """CART_OPTION_REQUIRED/INVALID 응답의 옵션 항목 — LLM 되물음 문구 생성용(§4.1, C-3 🔴).
+    """CART_OPTION_REQUIRED/INVALID 응답의 옵션 항목 — LLM 되물음 문구 생성용(§4.1).
 
-    BE options 스키마는 미확정(🔴) — optionId + 표시명만 방어적으로 파싱한다.
+    [BE 확정 2026-07-18] I-2 CART_OPTION_REQUIRED 는 error.detail.options 에
+    [{optionId, name, extraPrice}] 를 싣는다(C-3 OPEN-CART-2 해소). extraPrice 는
+    옵션 추가금(표시·되물음 문구용, 없으면 None).
     """
 
     option_id: int  # 숫자(BIGINT, product_option.id)
-    name: str = ""  # 표시명(optionName|name)
+    name: str = ""  # 표시명(BE: name)
+    extra_price: int | None = None  # 옵션 추가금(extraPrice)
 
 
 class CartView(CamelModel):
