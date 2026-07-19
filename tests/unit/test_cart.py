@@ -587,3 +587,40 @@ async def test_cart_add_option_required_reask_capped() -> None:
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
     assert store.get_pending("m:t") is None
+
+
+# ─────────── 리뷰 라운드 3 회귀 ───────────
+
+
+def test_parse_cart_coerces_float_and_string() -> None:
+    """LLM JSON 변형(float·숫자문자열)도 조용한 폴백 없이 int 로 해석한다."""
+    from app.agents.buyer.recommendation.decompose import _parse_cart
+
+    assert _parse_cart({"productId": 101.0, "quantity": 2.0}).product_id == 101
+    assert _parse_cart({"productId": 101.0, "quantity": 2.0}).quantity == 2
+    assert _parse_cart({"productId": "101", "quantity": "3"}).product_id == 101
+    assert _parse_cart({"productId": "101", "quantity": "3"}).quantity == 3
+    # bool 은 제외(수량 True 오해석 방지)
+    assert _parse_cart({"quantity": True}).quantity == 1
+
+
+async def test_cart_add_switches_product_during_pending() -> None:
+    """되물음 중 다른 추천 상품으로 전환하면 pending 을 버리고 새 상품을 담는다(라운드3)."""
+    store = CartStateStore()
+    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")]))
+    captured = {}
+
+    async def add_fn(req):
+        captured["productId"] = req.product_id
+        return AddToCartResult(success=True, cart_item_id=8)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=2, quantity=1),  # 다른 상품으로 전환
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            allowed_product_ids={1, 2}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    assert captured["productId"] == 2  # 옛 상품(1) 아닌 새 상품(2)
+    assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
+    assert store.get_pending("m:t") is None

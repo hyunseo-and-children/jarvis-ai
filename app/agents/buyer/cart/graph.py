@@ -70,8 +70,17 @@ async def stream_cart_add(
         yield _done()
         return
 
-    # 되물음 진행 중이면 pending 의 상품/수량을 쓰고 이번 턴 답을 optionId 로 해석한다.
+    # 되물음 진행 중이라도 사용자가 **다른 추천 상품**으로 전환하면 pending 을 버리고 새 담기로 처리한다
+    # (옛 상품 옵션 되물음에 갇히지 않게 — decompose 가 전환을 새 productId 로 신호).
     pending = cart_store.get_pending(thread_key)
+    if (
+        pending is not None
+        and cart.product_id is not None
+        and cart.product_id != pending.product_id
+        and (allowed_product_ids is None or cart.product_id in allowed_product_ids)
+    ):
+        cart_store.clear_pending(thread_key)
+        pending = None
     was_pending = pending is not None
     if pending is not None:
         product_id: int | None = pending.product_id

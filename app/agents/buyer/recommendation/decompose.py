@@ -35,8 +35,10 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   PRIOR_FILTERS 가 있으면 병합(좁히면 add, 모순되면 replace)하세요.
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
-- PENDING_CART(옵션 되물음 대기)가 있으면 이번 발화는 옵션 답변입니다 — options 목록에서
-  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요.
+- PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서
+  사용자 답에 맞는 optionId 를 골라 intent=cart_add, cart.optionId 로 주세요. 단,
+  사용자가 다른 상품을 담으려 하면 LAST_RECOMMENDATIONS 의 그 productId 로 cart_add,
+  담기를 취소·중단하려 하면 intent=general 로 전환하세요(옛 상품에 갇히지 않게).
 - general: intent=general, reply 에 짧게 답하세요."""
 
 
@@ -99,17 +101,35 @@ async def decompose(
     )
 
 
+def _as_int(value: object) -> int | None:
+    """LLM JSON 변형(int/float/숫자문자열)을 관대하게 int 로 변환한다(bool 제외).
+
+    LLM 이 "quantity": 2.0 이나 "2" 처럼 내보내도 조용한 폴백(수량 1·productId None) 없이
+    의도대로 해석되게 한다.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
 def _parse_cart(raw: object) -> CartIntent | None:
     """decompose 의 cart 객체 → CartIntent (없거나 형식 오류면 빈 의도)."""
     if not isinstance(raw, dict):
         return CartIntent()
-    pid = raw.get("productId")
-    oid = raw.get("optionId")
-    qty = raw.get("quantity")
+    qty = _as_int(raw.get("quantity"))
     return CartIntent(
-        product_id=int(pid) if isinstance(pid, int) else None,
-        option_id=int(oid) if isinstance(oid, int) else None,
+        product_id=_as_int(raw.get("productId")),
+        option_id=_as_int(raw.get("optionId")),
         # api-spec §4.1 수량 1~99 — 상한 초과 발화("100개")가 AddToCartRequest 검증에서
         # ValidationError 로 스트림을 끊지 않게 파싱 시점에 클램프한다.
-        quantity=min(max(int(qty), 1), 99) if isinstance(qty, int) else 1,
+        quantity=min(max(qty, 1), 99) if qty is not None else 1,
     )
