@@ -46,9 +46,6 @@ async def stream_recommendation(
         return
 
     candidates = result.products
-    # 직전 추천 목록을 장바구니 담기(productId 해소, 경로 B)를 위해 스레드에 보관.
-    if cart_store is not None and thread_key is not None:
-        cart_store.set_last_reco(thread_key, [(p.product_id, p.name) for p in candidates])
     if not candidates:
         yield sse("token", TokenData(text="조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?").model_dump(by_alias=True))
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
@@ -83,6 +80,12 @@ async def stream_recommendation(
                 if len(ranked_ids) >= settings.expose_min:
                     break
     ranked_ids = ranked_ids[: settings.expose_max]
+
+    # 직전 추천 목록을 장바구니 담기(productId 해소, 경로 B)를 위해 스레드에 보관 —
+    # FE 카드 = 최종 push 순서(ranked_ids)이므로 "두 번째 거"가 맞게 해소되도록 노출 순서로 저장.
+    if cart_store is not None and thread_key is not None:
+        name_by_id = {p.product_id: p.name for p in candidates}
+        cart_store.set_last_reco(thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids])
 
     if comment:
         yield sse("token", TokenData(text=comment).model_dump(by_alias=True))

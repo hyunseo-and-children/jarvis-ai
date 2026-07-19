@@ -346,6 +346,10 @@ async def test_route_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(sc, "add_to_cart", fake_add)
     monkeypatch.setattr(sc, "get_cart", fake_get)
+    # 직전 추천이 있어야 담기 가능(경로 B) — last_reco 시드.
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.core.conversation import conversation_key
+    get_cart_store().set_last_reco(conversation_key("123", "t1"), [(101, "이어폰")])
     llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101, "quantity": 1}})
     events = await _collect(run_buyer_turn(_req(), _member(), llm=llm))
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -455,3 +459,88 @@ async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
     view = await sc.get_cart(user_id=1)
     assert len(view.items) == 1
     assert view.items[0].product_name == "파우치" and view.items[0].option_name == "블루" and view.items[0].quantity == 2
+
+
+# ─────────── 리뷰 수정 회귀 (Fix 1~4) ───────────
+
+
+def test_parse_cart_clamps_quantity() -> None:
+    """수량 상한(99) 초과 발화가 파싱 시점에 클램프된다(Fix1 — ValidationError 스트림 중단 방지)."""
+    from app.agents.buyer.recommendation.decompose import _parse_cart
+
+    assert _parse_cart({"productId": 1, "quantity": 1000}).quantity == 99
+    assert _parse_cart({"productId": 1, "quantity": 0}).quantity == 1
+    assert _parse_cart({"productId": 1, "quantity": 3}).quantity == 3
+
+
+async def test_cart_add_rejects_out_of_context_product() -> None:
+    """last_reco 밖 productId(LLM 오추출)는 담지 않고 안내 token(Fix4)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise AssertionError("문맥 밖 상품은 add 호출 금지")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=777, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            allowed_product_ids={101, 102}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    assert "action" not in _types(events)
+    assert "어떤 상품" in next(e for e in events if e["type"] == "token")["data"]["text"]
+
+
+async def test_cart_add_allows_in_context_product() -> None:
+    """last_reco 안 productId 는 정상 담기(Fix4 — pending 아닌 신규)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        return AddToCartResult(success=True, cart_item_id=5)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=101, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            allowed_product_ids={101, 102}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
+
+
+async def test_cart_add_invalid_quantity_maps_cart_error() -> None:
+    """req 생성이 try 안이라 quantity 스펙 위반도 CART_ERROR 로 degrade(Fix2)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise AssertionError("검증 실패 시 add 미도달")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, quantity=1000),  # 클램프 우회(직접 주입)
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
+
+
+async def test_last_reco_stored_in_ranked_display_order() -> None:
+    """last_reco 는 검색순서가 아니라 노출(rerank) 순서로 저장된다(Codex P1, Fix3)."""
+    from app.agents.buyer.cart.state import get_cart_store
+    from app.core.conversation import conversation_key
+    from tests._fakes import DEFAULT_PRODUCTS, FakeLLM
+
+    async def search(filters, exclude_product_ids=None):
+        return ProductSearchResult(products=DEFAULT_PRODUCTS, total_count=len(DEFAULT_PRODUCTS))
+
+    async def push(p):
+        return True
+
+    # rerank 가 검색순서(101,102,103)와 다르게 재정렬(103 먼저).
+    llm = FakeLLM(rerank={"ranked": [{"productId": 103, "rationale": "a"}, {"productId": 101, "rationale": "b"}], "overallComment": "c"})
+    await _collect(run_buyer_turn(_req(message="추천", thread_id="tR"), _member(), llm=llm, search=search, push_fn=push))
+    reco = get_cart_store().get_last_reco(conversation_key("123", "tR"))
+    # 노출 순서: rerank [103,101] + expose_min 보충 102 → [103,101,102] (검색순서 아님)
+    assert [pid for pid, _ in reco][:2] == [103, 101]

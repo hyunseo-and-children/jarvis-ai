@@ -109,5 +109,7 @@ def _parse_cart(raw: object) -> CartIntent | None:
     return CartIntent(
         product_id=int(pid) if isinstance(pid, int) else None,
         option_id=int(oid) if isinstance(oid, int) else None,
-        quantity=int(qty) if isinstance(qty, int) and qty >= 1 else 1,
+        # api-spec §4.1 수량 1~99 — 상한 초과 발화("100개")가 AddToCartRequest 검증에서
+        # ValidationError 로 스트림을 끊지 않게 파싱 시점에 클램프한다.
+        quantity=min(max(int(qty), 1), 99) if isinstance(qty, int) else 1,
     )

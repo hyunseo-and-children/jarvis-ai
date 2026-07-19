@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
+from pydantic import ValidationError
+
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
@@ -53,6 +55,7 @@ async def stream_cart_add(
     cart_store: CartStateStore,
     thread_key: str,
     settings,
+    allowed_product_ids: set[int] | None = None,
     add_fn=None,
     get_cart_fn=None,
     observer=None,
@@ -79,8 +82,13 @@ async def stream_cart_add(
         attempts = 0
     option_id = cart.option_id
 
-    if product_id is None:
-        # 경로 B — SSE에 카드가 없어 문맥으로 상품을 못 찾음. 실패 action 대신 안내 token.
+    # 경로 B — SSE에 카드가 없어 문맥으로 상품을 확정한다. 신규 담기는 직전 추천(last_reco)에 있는
+    # productId 만 허용(LLM 이 발화 속 임의 숫자를 오추출해 추천 안 된 상품을 담는 것 차단). 되물음
+    # 진행(pending) 중이면 이미 검증된 상품이므로 예외.
+    unresolved = product_id is None or (
+        pending is None and allowed_product_ids is not None and product_id not in allowed_product_ids
+    )
+    if unresolved:
         yield sse("token", TokenData(text="어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요.").model_dump(by_alias=True))
         yield _done()
         return
@@ -95,8 +103,8 @@ async def stream_cart_add(
     except SpringUnavailableError:
         pass  # 조회 실패해도 담기는 진행(§4.9)
 
-    req = AddToCartRequest(user_id=user_id, guest_id=guest_id, product_id=product_id, option_id=option_id, quantity=quantity)
     try:
+        req = AddToCartRequest(user_id=user_id, guest_id=guest_id, product_id=product_id, option_id=option_id, quantity=quantity)
         result = await add_fn(req)
     except CartOptionRequired as exc:
         cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=0))
@@ -119,7 +127,7 @@ async def stream_cart_add(
         yield sse("action", ActionData(type="CART_ADD_FAILED", message="해당 상품을 찾지 못했어요.", reason="PRODUCT_NOT_FOUND").model_dump(by_alias=True))
         yield _done()
         return
-    except (CartError, SpringUnavailableError):
+    except (CartError, SpringUnavailableError, ValidationError):
         cart_store.clear_pending(thread_key)
         yield sse("action", ActionData(type="CART_ADD_FAILED", message="장바구니에 담지 못했어요. 잠시 후 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
         yield _done()

@@ -141,12 +141,14 @@ async def run_buyer_turn(
         return
 
     if decision.intent == "cart_add":
+        allowed = {pid for pid, _ in cart_store.get_last_reco(thread_key)}
         async for frame in stream_cart_add(
             identity=identity,
             cart=decision.cart or CartIntent(),
             cart_store=cart_store,
             thread_key=thread_key,
             settings=settings,
+            allowed_product_ids=allowed,
             observer=observer,
         ):
             yield frame
