@@ -52,7 +52,7 @@ def _bearer(sub: str) -> dict:
 # ─────────── §6.3 (a) 대화 저장 ───────────
 
 
-def test_chat_records_completed_turn() -> None:
+def test_chat_records_completed_turn(buyer_fakes) -> None:
     """정상 스트림 완료 후 턴이 COMPLETED + user 원문 + assistant 부분 누적으로 저장된다."""
     msg = "여행용 방수 케이스 추천해줘"
     r = client.post("/chat", json={"sessionId": "c1", "threadId": "t", "message": msg})
@@ -62,7 +62,7 @@ def test_chat_records_completed_turn() -> None:
     assert len(turns) == 1
     assert turns[0].user_text == msg
     assert turns[0].status == TurnStatus.COMPLETED
-    assert "(stub)" in turns[0].assistant_text
+    assert turns[0].assistant_text  # assistant 부분 텍스트 누적 저장
 
 
 async def test_partial_text_preserved_on_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -102,7 +102,7 @@ async def test_partial_text_preserved_on_error() -> None:
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
 
 
-def test_structured_log_has_fields_and_hides_raw_message(caplog: pytest.LogCaptureFixture) -> None:
+def test_structured_log_has_fields_and_hides_raw_message(caplog: pytest.LogCaptureFixture, buyer_fakes) -> None:
     """요청 구조화 로그가 §6.3 b 필드를 담되, 사용자 message 원문은 남기지 않는다(길이/해시만)."""
     msg = "SECRET_QUERY_비밀질의_XYZ"
     with caplog.at_level(logging.INFO, logger="observability"):

@@ -36,11 +36,11 @@ def _parse_sse(body: str) -> list[dict]:
     return events
 
 
-def test_chat_streams_sse_ending_with_done() -> None:
-    """POST /chat 는 CH-2 6-event SSE 를 스트리밍하고 done 으로 끝난다 (dev 게스트)."""
+def test_chat_streams_sse_ending_with_done(buyer_fakes) -> None:
+    """POST /chat 는 실 buyer 그래프를 SSE 로 스트리밍하고 done 으로 끝난다 (fake LLM/검색/push)."""
     resp = client.post(
         "/chat",
-        json={"sessionId": "sess-1", "threadId": "thread-1", "message": "여행용 방수 케이스 추천해줘"},
+        json={"sessionId": "sess-1", "threadId": "thread-1", "message": "무선 이어폰 추천해줘"},
     )
     assert resp.status_code == 200
     assert resp.headers["content-type"].startswith("text/event-stream")
@@ -48,23 +48,28 @@ def test_chat_streams_sse_ending_with_done() -> None:
     events = _parse_sse(resp.text)
     types = [e["type"] for e in events]
 
-    # 이벤트 순서 계약 (api-spec §3.1): token → conditions → products.ready → done
-    assert types == ["token", "conditions", "products.ready", "done"]
+    # 순서·유일성 계약 (api-spec §3.1, 경로 B): conditions·products.ready 각 1회, done 마지막.
+    assert types.count("conditions") == 1
+    assert types.count("products.ready") == 1
+    assert types.count("done") == 1
+    assert types[-1] == "done"
+    assert types.index("conditions") < types.index("products.ready") < types.index("done")
 
-    # [HARD] 스트림 어디에도 상품 카드가 없다 (경로 B) — products 카드 이벤트 부재.
+    # [HARD] 스트림 어디에도 상품 카드가 없다 (경로 B) — 카드 필드 부재.
     assert "products" not in types  # 구 카드 이벤트명 폐기
     for ev in events:
         data = ev["data"]
-        # 카드 필드(price/name/rank/rationale)가 어떤 이벤트 data 에도 실리지 않는다.
         assert "price" not in data
         assert "rationale" not in data
         assert "items" not in data  # 카드 목록 없음
 
-    # products.ready 는 상관관계 키만 (camelCase): sessionId, listId.
+    # products.ready 는 상관관계 키만 (camelCase): sessionId + 비어있지 않은 listId.
     ready = next(e for e in events if e["type"] == "products.ready")["data"]
-    assert ready == {"sessionId": "sess-1", "listId": "stub-list-1"}
+    assert set(ready.keys()) == {"sessionId", "listId"}
+    assert ready["sessionId"] == "sess-1"
+    assert ready["listId"]
 
-    # conditions 는 chips 배열.
+    # conditions 는 chips 배열, 카테고리 칩이 먼저.
     conditions = next(e for e in events if e["type"] == "conditions")["data"]
     assert isinstance(conditions["chips"], list)
     assert conditions["chips"][0]["field"] == "category"
