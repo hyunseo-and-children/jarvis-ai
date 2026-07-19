@@ -204,11 +204,22 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
     userId 는 AI-검증 JWT sub 유래(신원 도출, 요청 본문 불신). 응답은 주문 상세 배열(OrderHistory) —
     ⚠️ items 에 category 없음: dedup 은 exact productId 제외만, 카테고리 억제 불가(§4.7 갭).
     소비처: 추천 dedup(결정 14-F) + 프로필 sleep-time 구매 소스(결정 16).
-    게스트는 호출 스킵(이력 없음). 실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
+    게스트는 호출 스킵(이력 없음, 호출 측 책임). 실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
+    [배선 완료]
     """
-    raise SpringUnavailableError(
-        "get_recent_purchases not wired to live Spring yet (api-spec §4.7, I-19, C-6)"
-    )
+    params: dict[str, object] = {}
+    if status is not None:
+        params["status"] = status
+    try:
+        async with _client() as client:
+            resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        orders = payload.get("orders") if isinstance(payload, dict) else None
+        return RecentPurchases.model_validate({"orders": orders or []})
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
