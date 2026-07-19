@@ -495,3 +495,27 @@ async def test_get_recent_purchases_failure_degrades(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
     with pytest.raises(SpringUnavailableError):
         await _REAL_GET_RECENT(1)
+
+
+# ─────────── #19 리뷰 2차 회귀 ───────────
+
+
+def test_parse_ordered_at_normalizes_tz() -> None:
+    """aware ordered_at 은 UTC 로 변환 후 naive 화(offset 만 버리지 않음, Claude #19)."""
+    from app.schemas.spring import _parse_ordered_at
+
+    # 09:00+09:00 == 00:00 UTC
+    assert _parse_ordered_at("2026-07-10T09:00:00+09:00") == datetime(2026, 7, 10, 0, 0, 0)
+    assert _parse_ordered_at("2026-07-10T00:00:00") == datetime(2026, 7, 10, 0, 0, 0)  # naive 그대로
+    assert _parse_ordered_at("bad") is None
+
+
+async def test_recommendation_dedup_empty_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dedup 로 후보가 전부 제외되면 '조건 바꿔라'가 아니라 원인을 바르게 안내한다(Claude #19)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101, 102, 103))  # DEFAULT 전부 제외
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=_RecordingPush()))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "최근에 구매" in token
+    assert "products.ready" not in _types(events)
+    assert events[-1]["data"]["finishReason"] == "zero_result"

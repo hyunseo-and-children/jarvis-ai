@@ -18,7 +18,7 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -113,7 +113,11 @@ def _parse_ordered_at(value: str | None) -> datetime | None:
         dt = datetime.fromisoformat(value)
     except ValueError:
         return None
-    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+    # aware 는 UTC 로 변환 후 naive 화(offset 만 버리면 wall-clock 이 최대 수시간 어긋남).
+    # naive(offset 없음)는 그대로 — 90일 윈도우 granularity 에선 UTC 가정 오차 무의미.
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class RecentPurchases(CamelModel):

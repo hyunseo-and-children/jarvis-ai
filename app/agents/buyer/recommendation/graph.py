@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
@@ -26,8 +26,8 @@ _INACTIVE_STATUSES = frozenset({"CANCELED", "RETURNED"})  # 보유 아님 → de
 
 
 def _now() -> datetime:
-    """현재 시각(테스트 주입 지점)."""
-    return datetime.now()
+    """현재 시각 — naive-UTC(ordered_at 정규화와 동일 기준으로 비교, 테스트 주입 지점)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def stream_recommendation(
@@ -83,16 +83,22 @@ async def stream_recommendation(
 
     # exact 제외 사후필터(§4.7, C-15 — I-1 엔 제외 파라미터 없음).
     result: ProductSearchResult = search_result
+    dedup_emptied = False
     if exclude_ids:
         excluded = set(exclude_ids)
-        result = ProductSearchResult(
-            products=[p for p in result.products if p.product_id not in excluded],
-            total_count=result.total_count,
-        )
+        kept = [p for p in result.products if p.product_id not in excluded]
+        dedup_emptied = bool(result.products) and not kept  # 검색은 있었으나 전부 제외됨
+        result = ProductSearchResult(products=kept, total_count=result.total_count)
 
     candidates = result.products
     if not candidates:
-        yield sse("token", TokenData(text="조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?").model_dump(by_alias=True))
+        # dedup 로 비워진 경우와 검색 자체가 0건인 경우를 구분해 원인을 바르게 안내한다.
+        text = (
+            "찾은 상품이 모두 최근에 구매하셨거나 이미 담으신 것들이에요. 다른 상품을 추천해 드릴까요?"
+            if dedup_emptied
+            else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
+        )
+        yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
         return
 
