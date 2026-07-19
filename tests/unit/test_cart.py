@@ -432,14 +432,33 @@ async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 async def test_add_to_cart_option_required_raises_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    """[BE 확정 2026-07-18] error.detail.options = [{optionId, name, extraPrice}] 를 파싱한다."""
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "options": [{"optionId": 3, "optionName": "블루"}]}}
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 3, "name": "블루", "extraPrice": 0},
+        {"optionId": 4, "name": "레드", "extraPrice": 1000},
+    ]}}}
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
-    assert ei.value.options[0].option_id == 3 and ei.value.options[0].name == "블루"
+    opts = ei.value.options
+    assert [o.option_id for o in opts] == [3, 4]
+    assert [o.name for o in opts] == ["블루", "레드"]
+    assert opts[1].extra_price == 1000
+
+
+async def test_add_to_cart_option_required_legacy_location(monkeypatch: pytest.MonkeyPatch) -> None:
+    """구버전 위치(error.options, optionName)도 방어적으로 파싱한다(하위호환)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "options": [{"optionId": 9, "optionName": "그린"}]}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert ei.value.options[0].option_id == 9 and ei.value.options[0].name == "그린"
 
 
 async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -711,3 +730,140 @@ async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) ->
     llm = FakeLLM(decompose={"intent": "general", "reply": "네, 취소할게요."})
     await _collect(run_buyer_turn(_req(message="그만할래"), _member(), llm=llm))
     assert get_cart_store().get_pending(key) is None  # 정리됨
+
+
+# ─────────── #18 리뷰 수정 회귀 ───────────
+
+
+async def test_cart_add_reask_shows_option_surcharge() -> None:
+    """되물음 문구에 옵션 추가금(extraPrice)을 표시한다(Codex #18)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([CartOption(option_id=3, name="블루", extra_price=0), CartOption(option_id=4, name="레드", extra_price=1000)])
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "레드(+1,000원)" in token and "블루" in token
+
+
+async def test_add_to_cart_empty_detail_options_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    """detail.options 가 빈 배열이면 구버전 위치의 잔재 options 로 폴백하지 않는다(Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": []}, "options": [{"optionId": 99, "name": "stale"}]}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert ei.value.options == []  # 빈 배열 신뢰 — 99(잔재) 안 고름
+
+
+async def test_add_to_cart_malformed_option_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """형식 이상 옵션 항목은 건너뛰고 정상 항목만 파싱한다(되물음 흐름 보호, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": "not-int", "name": "깨짐"},          # optionId 변환 불가 → 건너뜀
+        {"optionId": 3, "name": "블루", "extraPrice": 0},  # 정상
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [3]  # 깨진 항목 제외, 정상만
+
+
+async def test_cart_add_reask_formats_surcharge_by_sign() -> None:
+    """추가금은 부호별로: 양수=+, 음수=할인(-), 0/None=미표시('(+-)' 깨짐 없이, Claude #18)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired([
+            CartOption(option_id=4, name="레드", extra_price=-1000),  # 할인
+            CartOption(option_id=5, name="블랙", extra_price=0),       # 추가금 없음
+            CartOption(option_id=6, name="화이트", extra_price=2000),  # 추가금
+        ])
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store, thread_key="m:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "화이트(+2,000원)" in token  # 양수 추가금만 표시
+    assert "레드" in token and "레드(" not in token  # 음수(계약 미정의) 미표시
+    assert "블랙" in token and "블랙(" not in token  # 0 미표시
+    assert "+-" not in token and "-1,000" not in token
+
+
+def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptureFixture) -> None:
+    """옵션이 전부 파싱 실패하면 계약 위반 신호로 경고 로그를 남긴다(Claude #18)."""
+    import logging
+    import app.services.spring_client as sc
+
+    class _R:
+        status_code = 400
+        def json(self):
+            return {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [{"optionId": "bad"}]}}}
+
+    with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
+        code, options = sc._parse_cart_error(_R())
+    assert options == [] and code == "CART_OPTION_REQUIRED"
+    assert any("전부 파싱 실패" in r.getMessage() for r in caplog.records)
+
+
+async def test_add_to_cart_bad_extra_price_keeps_option(monkeypatch: pytest.MonkeyPatch) -> None:
+    """extraPrice(표시용)가 이상해도 옵션 자체는 버리지 않는다(extra_price=None, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 3, "name": "블루", "extraPrice": "weird"},  # extraPrice 이상 → None 으로, 옵션 유지
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [3]
+    assert ei.value.options[0].extra_price is None
+
+
+async def test_add_to_cart_float_extra_price_coerced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """BE 가 정수 금액을 float(1500.0)로 내려도 int 로 수용한다(Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 7, "name": "골드", "extraPrice": 1500.0},
+        {"optionId": 8, "name": "실버", "extraPrice": 999.9999999998},  # BigDecimal.doubleValue 오차
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert ei.value.options[0].extra_price == 1500
+    assert ei.value.options[1].extra_price == 1000  # 반올림
+
+
+async def test_add_to_cart_naninf_extra_price_survives(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NaN/Infinity extraPrice 여도 스트림이 죽지 않고 옵션은 유지된다(extra_price None, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": 9, "name": "네온", "extraPrice": float("nan")},
+        {"optionId": 10, "name": "무한", "extraPrice": float("inf")},
+        {"optionId": 11, "name": "초대형", "extraPrice": 10 ** 400},  # float 변환 OverflowError
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [9, 10, 11]
+    assert all(o.extra_price is None for o in ei.value.options)

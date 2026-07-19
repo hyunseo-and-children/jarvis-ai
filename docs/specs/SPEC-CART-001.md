@@ -1,6 +1,6 @@
 ---
 id: SPEC-CART-001
-version: 0.2.3
+version: 0.2.4
 status: draft
 created: 2026-07-17
 author: navis
@@ -17,7 +17,8 @@ issue_number: null
 
 ## HISTORY
 
-- **v0.2.3 (2026-07-19)** — PR #17 리뷰 반영: api-spec v0.15.5에서 `OUT_OF_STOCK`이 폐기됨에 따라(담기 시점 재고검증 없음, 재고 차감·품절 판정은 주문 O-1 시점에만 발생) EX-CART-2/REQ-CART-015/OPEN-CART-1을 폐기·해소 처리. `reason` 허용값을 `PRODUCT_NOT_FOUND`/`CART_ERROR` 2종으로 확정(REQ-CART-051). 참조 api-spec 버전 v0.15.3→v0.15.8. 경로 B에서 `productId` 해소 소스 누락 지적을 반영해 REQ-CART-008(직전 추천 `last_reco` 밖 productId는 I-2 호출 차단)·AC-CART-10·`last_reco` 용어 정의를 신설(실제 구현 `app/agents/buyer/cart/{graph,state}.py`와 대조해 이미 코드에 있던 안전장치를 문서화). `CART_OPTION_REQUIRED` options 스키마·I-18 `productName`/`optionName` 포함 여부가 BE 문서(2026-07-18)로 확정됨에 따라 OPEN-CART-2를 해소하고 REQ-CART-025/036을 갱신, I-18 `CART_QUERY_INVALID` 오류 처리를 §7에 신설. 리뷰의 구조 제안을 받아들여 `reason`·options 구조를 SPEC에 값으로 직접 중복 기재하지 않고 api-spec §4.1 참조로 전환(§5.3, REQ-CART-025/051).
+- **v0.2.4 (2026-07-19)** — PR #17 리뷰(별도 사항) + PR #21과의 병합: `productName`/`optionName`(C-16)이 BE I-18 문서(2026-07-18)로 필수 포함 확정됨을 반영해 REQ-CART-036·OPEN-CART-2를 완전히 해소(v0.2.3/PR #21 시점엔 이 부분만 미확정으로 남아 있었음). `CART_QUERY_INVALID`(I-18 400) 오류 처리를 §7에 신설. `reason`·options 구조를 SPEC에 값으로 직접 중복 기재하지 않고 api-spec §4.1 참조로 전환(§5.3, REQ-CART-025/051) — REQ-CART-025엔 PR #21의 방어적 스킵 문구를 유지. 경로 B productId 요구사항은 PR #21이 붙인 `REQ-CART-001a` 번호를 그대로 채택(중복 REQ-CART-008 제거). PRD-RECOMMEND-PROFILE-AGENT.md에도 동일 내용 반영, api-spec 참조 버전 v0.15.8 유지.
+- **v0.2.3 (2026-07-19, PR #21)** — api-spec v0.15.8 동기화(#17 리뷰 반영): (1) `OUT_OF_STOCK` **폐기**(v0.15.5 C-3 해소 — 담기 재고검증 없음, 재고 차감=주문 시점) → 담기 실패 **2종**(`PRODUCT_NOT_FOUND`/`CART_ERROR`); §5.3·REQ-CART-015·051·EX-CART-2·§7 오류표·OPEN-CART-1 반영. (2) **옵션 스키마 확정**(BE 2026-07-18) — `CART_OPTION_REQUIRED` → `error.detail.options: [{optionId, name, extraPrice}]`, REQ-CART-025·OPEN-CART-2 해소. (3) **경로 B productId 해소 요구사항 신설**(REQ-CART-001a) — SSE에 카드가 없어 productId 를 직전 추천(last_reco) 문맥에서 확정하고 미노출 상품 담기를 차단(코드 구현 정합). 참조 버전 v0.15.3→v0.15.8.
 - **v0.2.2 (2026-07-19)** — 팀 피드백(PRD.pdf) 반영: `product_id`/`option_id`를 `str`→`int`(BIGINT)로, `guest_id`를 `int`→`str`(UUID)로 수정(정본 §2.6 확정 — product/product_option id는 숫자, guest.id는 CHAR(36) UUID). §5.2 응답과 §5.3 SSE 페이로드 간 `cartItemId` 타입 불일치를 `int`로 통일. OPEN-CART-5(`productId` 타입)를 해소 처리. api-spec 참조 버전 v0.14.0→v0.15.3.
 - **v0.2.1 (2026-07-18)** — BE 팀 공유 문서로 재고(`stock_quantity`) 도입·주문 실패 조건 확인, 장바구니 실패 사유 개수(4종→3종 추정) 확인 요청을 반영해 OPEN-CART-1 갱신. BE가 이 확인을 **LLM팀(우리) 책임**으로 명시함에 따라 OPEN-CART-1을 "Spring 대기" 성격에서 "우리가 답해야 하는 확인 요청"으로 재정의.
 - **v0.2.0 (2026-07-17)** — 의도 추출 모델을 **Claude Haiku 4.5로 확정**(OPEN-CART-4 해소). 근거: `decompose`(추천 서브그래프)와 동일한 성격 — 복잡한 추론·종합 판단 없이 발화에서 (상품·옵션·수량) 3개 필드만 뽑는 경량 구조화 추출이며, 오히려 Case 판별까지 겸하는 `decompose`보다 단순하다. 이 프로젝트의 2-tier 모델 배정 원칙(결정 5 — Haiku=경량 추출/분해, Sonnet=종합 판단·생성)을 그대로 따른 결정. REQ-CART-007 개정, §9 OPEN-CART-4 해소로 이동.
@@ -145,16 +146,16 @@ class CartItem(BaseModel):
 
 > 공통 규약(HARD): 수량 상한(1~99)·재시도 횟수·타임아웃 등 모든 튜너블은 `core/config.py`에서 config 주입한다 — 하드코딩 금지.
 
-### 6.1 의도 추출 (intent extraction, REQ-CART-001~008)
+### 6.1 의도 추출 (intent extraction, REQ-CART-001~007)
 
 - **REQ-CART-001** (Event-Driven): **When** intent router가 사용자 발화를 장바구니 의도로 분류하면, the cart 서브그래프 **shall** 발화에서 (상품·옵션·수량)을 `CartIntent`로 추출한다.
+- **REQ-CART-001a** (Unwanted, 경로 B, 2026-07-19): **If** 추출된 `product_id`가 직전 추천 결과(스레드 범위 `last_reco`)에 없으면, **then** the cart 서브그래프 **shall** I-2를 호출하지 않고 "추천을 먼저 받아보시면 담아드릴게요"류 안내로 종결한다 — 경로 B(SSE에 상품 카드 미탑재)라 LLM이 발화 속 임의 숫자를 상품으로 오추출해 추천되지 않은 상품을 담는 것을 방지한다(옵션 되물음 진행 중인 `pending`은 이미 검증된 상품이라 예외).
 - **REQ-CART-002** (Ubiquitous): The cart 서브그래프 **shall** 신원(`userId` 또는 `guestId`)을 요청 본문이 아니라 AI가 검증한 JWT `sub` 클레임에서 도출한다 — FE가 보낸 신원 값을 신뢰하지 않는다(IDOR 방지, api-spec §2.3).
 - **REQ-CART-003** (Optional): **Where** 사용자가 수량을 명시하지 않으면, the cart 서브그래프 **shall** 기본 수량 1로 처리한다.
 - **REQ-CART-004** (Unwanted): The cart 서브그래프 **shall not** config 상한(기본 1~99) 밖의 수량으로 I-2를 호출하지 않는다.
 - **REQ-CART-005** (State-Driven): **While** Case 3(다중 니즈) 상황에서 여러 상품을 담아야 하는 동안, the cart 서브그래프 **shall** 상품별로 I-2를 **개별 반복 호출**한다 — 묶음 담기 API는 없다(단건 계약).
 - **REQ-CART-006** (Ubiquitous): The cart 서브그래프 **shall** 항목별 성공/실패를 자연히 분리해, 각 담기 시도마다 개별 `action` 이벤트를 emit한다(REQ-CART-005 연계).
 - **REQ-CART-007** (Ubiquitous, 2026-07-17 확정): 의도 추출 **shall** **Claude Haiku 4.5**를 사용한다 — `decompose`(추천 서브그래프)와 동일한 경량 구조화 추출 성격(복잡한 추론·종합 판단 불필요)이며, 2-tier 모델 배정 원칙(결정 5)을 따른다. 모델 식별자는 `core/config.py` 주입(하드코딩 금지, 향후 모델 교체 시 config만 변경).
-- **REQ-CART-008** (Unwanted, 2026-07-19 추가): **If** 추출된 `product_id`가 직전 추천 결과(스레드 범위 `last_reco`)에 없으면, **then** the cart 서브그래프 **shall** I-2를 호출하지 않고 "추천을 먼저 받아보시면 담아드릴게요"류 안내로 종결한다 — 경로 B(SSE에 상품 카드 미탑재)라 LLM이 발화 속 임의 숫자를 상품으로 오추출해 추천되지 않은 상품을 담는 것을 방지한다(옵션 되물음 진행 중인 `pending`은 이미 검증된 상품이라 예외).
 
 ### 6.2 담기 실행 (add to cart, REQ-CART-010~016)
 
@@ -173,7 +174,7 @@ class CartItem(BaseModel):
 - **REQ-CART-022** (Event-Driven): **When** I-2가 `400 CART_OPTION_INVALID`(옵션이 해당 상품 소속 아님)를 반환하면, the cart 서브그래프 **shall** options 목록을 다시 제시하며 **1회 재시도**로 되물음한다.
 - **REQ-CART-023** (Unwanted): **If** `CART_OPTION_INVALID` 되물음 재시도(REQ-CART-022) 후에도 실패하면, **then** the cart 서브그래프 **shall** 반복 재시도하지 않고 `action`(`CART_ADD_FAILED`, `reason: "CART_ERROR"`)으로 종료한다.
 - **REQ-CART-024** (Ubiquitous): 되물음 중인 상태(대상 상품·옵션 후보 목록)는 그래프 state(thread checkpointer)에 임시 보관하며, 프로필 store에 영속하지 **않는다**.
-- **REQ-CART-025** (Ubiquitous, 2026-07-19 확정): options 목록 **shall** api-spec §4.1이 정의하는 구조를 따른다(정확한 필드는 본 SPEC에 중복 기재하지 않음). 되물음 문구 생성은 그 구조의 표시명 필드(`name`)를 사용한다.
+- **REQ-CART-025** (Ubiquitous, 2026-07-19 확정): options 목록 **shall** api-spec §4.1이 정의하는 구조를 따른다(정확한 필드는 본 SPEC에 중복 기재하지 않음). 되물음 문구 생성은 그 구조의 표시명 필드(`name`)를 사용하며, 형식 이상 항목은 방어적으로 건너뛴다.
 
 ### 6.4 담기 전 보유 조회 (pre-add lookup, REQ-CART-030~033)
 
@@ -210,6 +211,7 @@ class CartItem(BaseModel):
 | I-2 `CART_OPTION_INVALID` | 400 응답 | 되물음 1회 재시도 후 실패 시 CART_ERROR(REQ-CART-022/023) | 무한 재시도 금지 |
 | I-2 `PRODUCT_NOT_FOUND` | 404 응답 | `action`(CART_ADD_FAILED, PRODUCT_NOT_FOUND) | 후보 날조 금지 |
 | I-2 `INTERNAL_TOKEN_INVALID` | 401 응답 | `action`(CART_ERROR) + 서버 로그, 내부 원인 미노출 | 사용자에 내부 오류 상세 노출 금지 |
+| I-2 재고 부족 | — | **해당 없음** — 담기 재고검증 없음, `OUT_OF_STOCK` 폐기(v0.15.5) | 담기는 재고로 실패하지 않음 |
 | I-18 조회 실패 | 타임아웃/오류 | 보유 안내 생략, 담기는 정상 진행(degrade, REQ-CART-032) | 조회 실패가 담기를 막지 않음 |
 | I-18 `CART_QUERY_INVALID` | 400 응답(userId/guestId 둘 다 없거나 둘 다 있음) | REQ-CART-002(신원은 항상 JWT `sub`에서 도출)를 따르면 설계상 발생하지 않아야 하는 상태 — 발생 시 I-18 실패로 취급해 degrade(REQ-CART-032) | 신원 도출 로직 결함의 조기 발견 신호로만 사용, 사용자 노출 없음 |
 | AI→Spring 타임아웃(3s) | 공통 인프라 | 재시도 정책은 공통 인프라 원칙(MoAI 3회) 따름 | — |
@@ -227,7 +229,7 @@ class CartItem(BaseModel):
 - **AC-CART-07 (장바구니 질의 응답)**: **Given** 담긴 상품이 있는 상태, **When** "장바구니에 뭐 있어?" 발화, **Then** 별도 이벤트 없이 `token`으로 목록이 자연어 응답된다(REQ-CART-034).
 - **AC-CART-08 (신원 IDOR 방지)**: **Given** 임의의 담기/조회 요청, **When** 처리되면, **Then** `userId`/`guestId`는 요청 본문이 아니라 JWT `sub`에서 도출된 값이다(REQ-CART-002).
 - **AC-CART-09 (수량 상한)**: **Given** config 수량 상한(1~99), **When** 범위 밖 수량이 추출되면, **Then** I-2 호출 전 상한 내로 처리된다(REQ-CART-004).
-- **AC-CART-10 (추천 외 상품 담기 차단)**: **Given** 직전 추천 목록에 없는 `productId`, **When** 담기 시도, **Then** I-2를 호출하지 않고 안내 문구로 종결한다(REQ-CART-008).
+- **AC-CART-10 (추천 외 상품 담기 차단)**: **Given** 직전 추천 목록에 없는 `productId`, **When** 담기 시도, **Then** I-2를 호출하지 않고 안내 문구로 종결한다(REQ-CART-001a).
 
 ### Definition of Done
 
@@ -249,7 +251,7 @@ class CartItem(BaseModel):
 
 **[해소] OPEN-CART-5 (`productId` 타입)**: 숫자(BIGINT)로 확정(2026-07-18, S-1 연계) — 전 구간 string 통일 원칙은 폐기.
 
-**[해소, v0.15.5] OPEN-CART-1 (재고 코드 부재)**: `OUT_OF_STOCK` 폐기 확정 — 담기(I-2) 시점 재고 검증 자체가 없고, 재고 차감·품절 판정은 주문(O-1) 시점에만 발생한다.
+**[해소, v0.15.5] OPEN-CART-1 (재고 코드 부재)**: `OUT_OF_STOCK` 폐기 확정 — 담기(I-2) 시점 재고 검증 자체가 없고, 재고 차감·품절 판정은 주문(O-1) 시점에만 발생한다(BE Notion I-2·C-2 오류코드에도 부재 확인).
 
 **[해소] OPEN-CART-2 (옵션·조회 응답 스키마)**: `CART_OPTION_REQUIRED`의 options 목록은 `{optionId, name, extraPrice}`로(BE 2026-07-18, api-spec §4.1), I-18 응답의 `productName`/`optionName`은 필수 포함으로 각각 확정됐다(BE I-18 문서, 2026-07-18) — REQ-CART-025/036 갱신.
 
@@ -274,7 +276,7 @@ class CartItem(BaseModel):
 - [`PRD-RECOMMEND-PROFILE-AGENT.md`](../PRD-RECOMMEND-PROFILE-AGENT.md) §3.3/§5.4/§7/§10-F — 본 SPEC의 직접 입력
 - [`api-spec.md`](../api-spec.md) §3.1 (3)/§4.1/§4.9/§8 항목7 — 외부 계약 정본
 - [`mvp-plan.md`](../mvp-plan.md) §2, [`mvp-todo.md`](../mvp-todo.md) §2 — MVP 범위·체크리스트
-- `app/agents/buyer/cart/__init__.py` — 현재 스텁 구현 docstring
+- `app/agents/buyer/cart/{graph,state}.py` — 실제 구현(이슈 #3, PR #16) — 본 SPEC의 REQ-CART-001a·`last_reco`는 이 구현체와 대조해 문서화함
 - Notion "📡 API 명세서" DB — I-2/I-18 경로·Method·인증 레인 확정 소스(2026-07-16 대조)
 - BE 팀 공유 문서(2026-07-18) — 재고(`stock_quantity`) 도입·주문 실패 조건, 장바구니 실패 사유 개수(4종→3종) 확인 요청 근거(OPEN-CART-1)
 - BE 팀 공유 문서(2026-07-18, "챗봇 장바구니 조회") — I-18 `productName`/`optionName` 필수 포함, `CART_QUERY_INVALID` 오류 코드, options 스키마 확정 근거(OPEN-CART-2)

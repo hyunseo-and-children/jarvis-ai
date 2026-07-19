@@ -22,6 +22,9 @@ AI 는 커머스 DB 에 직접 write 하지 않는다. 와이어 포맷은 camel
 
 from __future__ import annotations
 
+import logging
+import math
+
 import httpx
 from pydantic import ValidationError
 
@@ -38,6 +41,9 @@ from app.schemas.spring import (
     RecommendationPush,
     SpringProduct,
 )
+
+
+_log = logging.getLogger(__name__)
 
 
 class SpringUnavailableError(Exception):
@@ -124,8 +130,9 @@ def _parse_search_response(data: object) -> ProductSearchResult:
 def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption]]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
-    code 는 error.code | code, options 는 error.options | options | data.options 중
-    처음 발견되는 배열에서 {optionId, optionName|name} 로 읽는다.
+    code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
+    ([{optionId, name, extraPrice}]) 를 우선하고, 구버전 위치(error.options·options·data.options)도
+    방어적으로 본다. name 은 name|optionName, extraPrice(추가금)까지 읽는다.
     """
     try:
         body = resp.json()
@@ -135,11 +142,45 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
         return None, []
     err = body.get("error") if isinstance(body.get("error"), dict) else None
     code = (err or {}).get("code") or body.get("code")
-    raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
+    detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
+    # BE 확정 위치(error.detail.options)는 '키 존재'로 우선한다 — 빈 배열이어도 그 값을 신뢰하고
+    # 구버전 위치로 조용히 폴백하지 않는다(잔재 options 오선택 방지).
+    if detail is not None and "options" in detail:
+        raw = detail.get("options") or []
+    else:
+        raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
-            options.append(CartOption(option_id=opt["optionId"], name=opt.get("optionName") or opt.get("name") or ""))
+            # extraPrice 는 표시용 부가 필드 — 어떤 병적 입력(NaN/Inf/초대형 정수/이상 타입)에도
+            # 옵션 자체를 버리거나 스트림을 죽이지 않게 통째로 방어(실패 시 None 강등).
+            raw_extra = opt.get("extraPrice")
+            try:
+                if isinstance(raw_extra, bool) or not isinstance(raw_extra, (int, float)) or not math.isfinite(raw_extra):
+                    extra = None
+                else:
+                    # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
+                    extra = round(raw_extra)
+            except (ValueError, OverflowError, TypeError):
+                extra = None
+            try:
+                options.append(
+                    CartOption(
+                        option_id=opt["optionId"],
+                        name=opt.get("name") or opt.get("optionName") or "",
+                        extra_price=extra,
+                    )
+                )
+            except (ValidationError, ValueError, TypeError):
+                continue  # 형식 이상 옵션은 건너뜀 — 되물음 흐름 전체가 죽지 않게(방어적)
+    # 파싱 실패를 집계해 한 번에 로그(부분 실패도 포함). error.detail.options 는 BE 확정 계약이라
+    # 실패는 계약 위반 신호 — REQUIRED/INVALID 공통 파서이므로 실제 code 를 함께 찍어 진단 오도 방지.
+    if isinstance(raw, list) and raw:
+        dropped = len(raw) - len(options)
+        if not options:
+            _log.warning("cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw)
+        elif dropped:
+            _log.warning("cart 옵션 %d/%d개 파싱 실패(부분, code=%r)", dropped, len(raw), code)
     return code, options
 
 
@@ -170,11 +211,22 @@ async def get_recent_purchases(user_id: int, status: str | None = None) -> Recen
     userId 는 AI-검증 JWT sub 유래(신원 도출, 요청 본문 불신). 응답은 주문 상세 배열(OrderHistory) —
     ⚠️ items 에 category 없음: dedup 은 exact productId 제외만, 카테고리 억제 불가(§4.7 갭).
     소비처: 추천 dedup(결정 14-F) + 프로필 sleep-time 구매 소스(결정 16).
-    게스트는 호출 스킵(이력 없음). 실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
+    게스트는 호출 스킵(이력 없음, 호출 측 책임). 실패/타임아웃 시 dedup 없이 추천 진행(degrade, §4.7).
+    [배선 완료]
     """
-    raise SpringUnavailableError(
-        "get_recent_purchases not wired to live Spring yet (api-spec §4.7, I-19, C-6)"
-    )
+    params: dict[str, object] = {}
+    if status is not None:
+        params["status"] = status
+    try:
+        async with _client() as client:
+            resp = await client.get(f"/internal/members/{user_id}/orders", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+        payload = data.get("data") if isinstance(data, dict) else None
+        orders = payload.get("orders") if isinstance(payload, dict) else None
+        return RecentPurchases.model_validate({"orders": orders or []})
+    except (httpx.HTTPError, ValueError, ValidationError) as exc:
+        raise SpringUnavailableError(f"get_recent_purchases 실패: {exc}") from exc
 
 
 async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:

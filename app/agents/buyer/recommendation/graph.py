@@ -8,16 +8,26 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
 from app.agents.buyer.recommendation.rerank import rerank
 from app.agents.buyer.recommendation.state import RouteDecision, build_condition_chips
 from app.core.llm import LLMClient, LLMError
+from app.services import spring_client
 from app.schemas.chat import ConditionsData, DoneData, ErrorData, ProductsReadyData, TokenData
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
+
+_INACTIVE_STATUSES = frozenset({"CANCELED", "CANCELLED", "RETURNED"})  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
+
+
+def _now() -> datetime:
+    """현재 시각 — naive-UTC(ordered_at 정규화와 동일 기준으로 비교, 테스트 주입 지점)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 async def stream_recommendation(
@@ -27,8 +37,10 @@ async def stream_recommendation(
     llm: LLMClient,
     search,
     push_fn,
+    identity=None,
     profile: str | None,
     settings,
+    get_purchases_fn=None,
     cart_store=None,
     thread_key: str | None = None,
     observer=None,
@@ -38,16 +50,57 @@ async def stream_recommendation(
     chips = build_condition_chips(decision.filters)
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
-    # search — Spring GET 위임 (§4.6). 실패 시 SEARCH_FAILED(종료).
-    try:
-        result: ProductSearchResult = await search(decision.filters, exclude_product_ids=None)
-    except SpringUnavailableError:
+    # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
+    # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
+    async def _run_search() -> ProductSearchResult | None:
+        try:
+            return await search(decision.filters, exclude_product_ids=None)
+        except SpringUnavailableError:
+            return None
+
+    async def _fetch_exclude() -> list[int] | None:
+        # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
+        # [IDOR] role==SELLER 는 user_id=sub 이면서 seller_id 도 set — 판매자 sub 를 memberId 로
+        # I-19 에 쓰면 안 되므로 seller_id 있으면 dedup 스킵(신원 오용 방지, §2.6).
+        if identity is None or identity.is_guest or not identity.user_id or identity.seller_id:
+            return None
+        try:
+            uid = int(identity.user_id)
+        except (ValueError, TypeError):
+            return None
+        fn = get_purchases_fn or spring_client.get_recent_purchases
+        try:
+            purchases = await fn(uid)
+        except SpringUnavailableError:
+            return None
+        # 최근 윈도우 안 + 취소/반품 제외(보유분만) — 결정 14-F.
+        since = _now() - timedelta(days=settings.dedup_recent_days)
+        ids = purchases.purchased_product_ids(since=since, exclude_statuses=_INACTIVE_STATUSES)
+        return list(ids) if ids else None
+
+    search_result, exclude_ids = await asyncio.gather(_run_search(), _fetch_exclude())
+    if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
         yield sse("error", ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(by_alias=True))
         return
 
+    # exact 제외 사후필터(§4.7, C-15 — I-1 엔 제외 파라미터 없음).
+    result: ProductSearchResult = search_result
+    dedup_emptied = False
+    if exclude_ids:
+        excluded = set(exclude_ids)
+        kept = [p for p in result.products if p.product_id not in excluded]
+        dedup_emptied = bool(result.products) and not kept  # 검색은 있었으나 전부 제외됨
+        result = ProductSearchResult(products=kept, total_count=len(kept))  # dedup 후 개수로 정합
+
     candidates = result.products
     if not candidates:
-        yield sse("token", TokenData(text="조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?").model_dump(by_alias=True))
+        # dedup 로 비워진 경우와 검색 자체가 0건인 경우를 구분해 원인을 바르게 안내한다.
+        text = (
+            "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
+            if dedup_emptied
+            else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
+        )
+        yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         yield sse("done", DoneData(finish_reason="zero_result").model_dump(by_alias=True))
         return
 
