@@ -30,9 +30,16 @@ from app.services.spring_client import (
 
 
 def cart_identity(identity) -> tuple[int | None, str | None]:
-    """신원 → (userId, guestId). 회원=userId(숫자), 게스트=guestId(UUID), 익명(dev 무토큰)=둘 다 None."""
+    """신원 → (userId, guestId). 회원=userId(숫자), 게스트=guestId(UUID), 익명(dev 무토큰)=둘 다 None.
+
+    user_id 는 JWT sub 원문 문자열이라 숫자 보장이 없다 — 비숫자면 익명 취급((None, None))해
+    상위가 CART_ERROR 로 우아하게 처리하게 한다(미처리 ValueError 로 스트림이 죽지 않게).
+    """
     if not identity.is_guest and identity.user_id:
-        return int(identity.user_id), None
+        try:
+            return int(identity.user_id), None
+        except (ValueError, TypeError):
+            return None, None
     if identity.is_guest and identity.subject:
         return None, identity.subject
     return None, None

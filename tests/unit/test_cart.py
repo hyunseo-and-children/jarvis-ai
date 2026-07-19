@@ -624,3 +624,48 @@ async def test_cart_add_switches_product_during_pending() -> None:
     assert captured["productId"] == 2  # 옛 상품(1) 아닌 새 상품(2)
     assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
     assert store.get_pending("m:t") is None
+
+
+# ─────────── 리뷰 라운드 4 회귀 ───────────
+
+
+def test_cart_identity_non_numeric_sub_is_anon() -> None:
+    """비숫자 sub(dev 미검증 토큰)는 익명 취급 — int 변환 실패로 죽지 않는다."""
+    from app.agents.buyer.cart.graph import cart_identity
+
+    assert cart_identity(_member()) == (123, None)
+    assert cart_identity(_guest()) == (None, "guest-uuid-1")
+    bad = Identity(user_id="abc", is_guest=False, seller_id=None, subject="abc")
+    assert cart_identity(bad) == (None, None)
+
+
+async def test_cart_add_non_numeric_member_maps_cart_error() -> None:
+    """비숫자 user_id 회원은 예외로 죽지 않고 CART_ERROR 로 낙성한다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise AssertionError("익명 취급 → add 미도달")
+
+    bad = Identity(user_id="abc", is_guest=False, seller_id=None, subject="abc")
+    events = await _collect(
+        stream_cart_add(
+            identity=bad, cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store, thread_key="b:t", settings=get_settings(),
+            add_fn=add_fn, get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
+
+
+async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) -> None:
+    """되물음 중 취소(general 전환)하면 stale pending 이 정리된다(라운드4)."""
+    from app.agents.buyer.cart.state import PendingAdd, get_cart_store
+    from app.core.conversation import conversation_key
+    from tests._fakes import FakeLLM
+
+    key = conversation_key("123", "t1")
+    get_cart_store().set_pending(key, PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")]))
+    llm = FakeLLM(decompose={"intent": "general", "reply": "네, 취소할게요."})
+    await _collect(run_buyer_turn(_req(message="그만할래"), _member(), llm=llm))
+    assert get_cart_store().get_pending(key) is None  # 정리됨

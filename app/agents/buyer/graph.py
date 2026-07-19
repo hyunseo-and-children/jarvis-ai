@@ -129,6 +129,11 @@ async def run_buyer_turn(
         yield sse("error", ErrorData(code=code, message="질의를 이해하지 못했어요.").model_dump(by_alias=True))
         return
 
+    # 되물음 대기 중 사용자가 담기 아닌 의도로 전환(취소·조회·추천)하면 stale pending 을 정리한다
+    # (프롬프트가 약속한 "옛 상품에 갇히지 않게"와 실제 동작 일치).
+    if decision.intent != "cart_add" and pending is not None:
+        cart_store.clear_pending(thread_key)
+
     if decision.intent == "general":
         async for frame in stream_fallback(decision, observer=observer):
             yield frame
