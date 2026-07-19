@@ -18,6 +18,8 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -96,11 +98,26 @@ class OrderHistory(CamelModel):
 
     order_id: int
     ordered_at: str  # ISO-8601
-    representative_status: str | None = None  # 대표 상태 enum 8종(표시 문구는 FE 매핑)
+    status: str | None = None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
     items: list[OrderHistoryItem] = Field(default_factory=list)
     items_total: int | None = None
     shipping_fee: int = 0
     total_amount: int | None = None
+
+
+def _parse_ordered_at(value: str | None) -> datetime | None:
+    """ISO-8601 ordered_at 파싱(실패 시 None). tz-aware 는 naive 로 정규화(naive 비교)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    # aware 는 UTC 로 변환 후 naive 화(offset 만 버리면 wall-clock 이 최대 수시간 어긋남).
+    # naive(offset 없음)는 그대로 — 90일 윈도우 granularity 에선 UTC 가정 오차 무의미.
+    if dt.tzinfo is not None:
+        return dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
 
 
 class RecentPurchases(CamelModel):
@@ -112,6 +129,28 @@ class RecentPurchases(CamelModel):
     """
 
     orders: list[OrderHistory] = Field(default_factory=list)
+
+    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
+        """exact 제외 dedup(결정 14-F) 대상 productId 집합.
+
+        since 가 주어지면 그보다 오래된 주문은 제외한다(오래 전 구매를 영구 제외하지 않게).
+        exclude_statuses(예: CANCELED/RETURNED)의 아이템은 사용자가 보유하지 않으므로 제외 대상에서 뺀다.
+        since 지정 시 ordered_at 파싱 실패(불명) 주문도 제외 대상에서 뺀다 — 나이를 확인할 수 없는
+        구매를 영구 제외하지 않기 위함(윈도우 취지).
+        """
+        blocked = {s.upper() for s in exclude_statuses}
+        ids: set[int] = set()
+        for order in self.orders:
+            if since is not None:
+                dt = _parse_ordered_at(order.ordered_at)
+                if dt is None or dt < since:
+                    continue
+            order_status = (order.status or "").upper()
+            for item in order.items:
+                if (item.status or order_status).upper() in blocked:
+                    continue
+                ids.add(item.product_id)
+        return ids
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──

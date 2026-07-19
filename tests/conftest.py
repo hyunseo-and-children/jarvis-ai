@@ -40,3 +40,16 @@ def buyer_fakes(monkeypatch):
     monkeypatch.setattr(ss, "default_backend", FakeBackend())
     monkeypatch.setattr(sc, "push_recommendations", fake_push)
     return llm
+
+
+@pytest.fixture(autouse=True)
+def _no_live_recent_purchases(monkeypatch):
+    """구매이력 조회 기본값을 빈 응답으로 — 단위테스트가 라이브 Spring 을 건드리지 않게.
+    dedup 동작 검증 테스트는 get_recent_purchases 를 명시적으로 재패치한다.
+    """
+    from app.schemas.spring import RecentPurchases
+
+    async def _empty(user_id, status=None):
+        return RecentPurchases()
+
+    monkeypatch.setattr("app.services.spring_client.get_recent_purchases", _empty)

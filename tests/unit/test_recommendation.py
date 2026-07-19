@@ -7,6 +7,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -353,3 +354,187 @@ async def test_push_failure_emits_notice_token() -> None:
     texts = " ".join(e["data"].get("text", "") for e in events if e["type"] == "token")
     assert "잠시 후" in texts or "문제" in texts
     assert _types(events)[-1] == "done"
+
+
+# ─────────── 구매 이력 dedup (#4, §4.7 결정 14-F) ───────────
+
+import app.services.spring_client as _sc_mod  # noqa: E402
+from app.schemas.spring import OrderHistory, OrderHistoryItem, RecentPurchases  # noqa: E402
+
+_REAL_GET_RECENT = _sc_mod.get_recent_purchases  # autouse 패치 전에 캡처(배선 테스트용)
+
+
+def _guest() -> Identity:
+    return Identity(user_id=None, is_guest=True, seller_id=None, subject="guest-1")
+
+
+def _member_num() -> Identity:
+    """숫자 sub 회원(실제 JWT sub 는 숫자 BIGINT, §2.6) — dedup 경로 검증용."""
+    return Identity(user_id="123", is_guest=False, seller_id=None, subject="123")
+
+
+def _recording_search(products, sink):
+    async def _s(filters, exclude_product_ids=None):
+        sink["exclude"] = exclude_product_ids
+        return ProductSearchResult(products=list(products), total_count=len(products))
+
+    return _s
+
+
+def _purchases(*product_ids):
+    async def _fn(user_id, status=None):
+        return RecentPurchases(orders=[
+            OrderHistory(order_id=1, ordered_at="2026-07-10T00:00:00", items=[
+                OrderHistoryItem(order_item_id=i, product_id=pid) for i, pid in enumerate(product_ids, 1)
+            ])
+        ])
+
+    return _fn
+
+
+def _fix_now(monkeypatch, when=datetime(2026, 7, 19)):
+    monkeypatch.setattr("app.agents.buyer.recommendation.graph._now", lambda: when)
+
+
+async def test_recommendation_dedups_recent_purchases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """회원 최근 구매 productId 는 그래프 사후필터로 후보에서 제외된다(exact 제외, 결정 14-F).
+
+    병렬화로 검색엔 exclude 를 넘기지 않고(그래프에서 제외), 최종 push 에 101 이 빠진다.
+    """
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
+    push = _RecordingPush()
+    sink: dict = {}
+    await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=push))
+    assert sink["exclude"] is None  # 검색엔 exclude 미전달(병렬 — 제외는 그래프 사후필터)
+    assert 101 not in push.pushes[0].product_ids  # 최근 구매 101 제외
+    assert 102 in push.pushes[0].product_ids
+
+
+async def test_recommendation_skips_dedup_for_guest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """게스트는 이력 조회를 스킵하고 제외 없이 추천한다(결정 8)."""
+    called = {"n": 0}
+
+    async def _spy(user_id, status=None):
+        called["n"] += 1
+        return RecentPurchases()
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert called["n"] == 0  # 조회 스킵
+    assert 101 in push.pushes[0].product_ids  # 제외 안 됨
+
+
+async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.MonkeyPatch) -> None:
+    """이력 조회 실패 시 dedup 없이 추천을 정상 진행한다(degrade, §4.7)."""
+    async def _boom(user_id, status=None):
+        raise SpringUnavailableError("orders down")
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert 101 in push.pushes[0].product_ids  # dedup 없이 진행
+    assert _types(events)[-1] == "done"
+
+
+async def test_recommendation_degrades_on_non_numeric_member(monkeypatch: pytest.MonkeyPatch) -> None:
+    """비숫자 sub 회원은 dedup 없이 진행(int 변환 실패로 죽지 않음)."""
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
+    bad = Identity(user_id="abc", is_guest=False, seller_id=None, subject="abc")
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), bad, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert 101 in push.pushes[0].product_ids  # dedup 스킵
+
+
+async def test_recommendation_search_and_purchases_run_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """검색과 이력조회를 병렬 실행한다 — 검색 호출에 exclude 를 넘기지 않는다(§4.7 지연 가드)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
+    sink: dict = {}
+    await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
+    assert sink["exclude"] is None
+
+
+def test_purchased_product_ids_excludes_canceled_returned() -> None:
+    """취소/반품 아이템은 보유분이 아니라 제외 대상에서 뺀다(Claude #19)."""
+    rp = RecentPurchases(orders=[OrderHistory(order_id=1, ordered_at="2026-07-10T00:00:00", items=[
+        OrderHistoryItem(order_item_id=1, product_id=101, status="DELIVERED"),
+        OrderHistoryItem(order_item_id=2, product_id=102, status="CANCELED"),
+        OrderHistoryItem(order_item_id=3, product_id=103, status="CANCELLED"),
+        OrderHistoryItem(order_item_id=4, product_id=104, status="RETURNED"),
+    ])])
+    # 철자 양쪽(CANCELED/CANCELLED) 모두 제외
+    assert rp.purchased_product_ids(exclude_statuses={"CANCELED", "CANCELLED", "RETURNED"}) == {101}
+
+
+def test_purchased_product_ids_window_excludes_old() -> None:
+    """윈도우(since)보다 오래된 구매는 제외 목록에서 뺀다 — 영구 제외 방지(Codex #19)."""
+    rp = RecentPurchases(orders=[
+        OrderHistory(order_id=1, ordered_at="2026-07-15T00:00:00", items=[OrderHistoryItem(order_item_id=1, product_id=101)]),
+        OrderHistory(order_id=2, ordered_at="2025-01-01T00:00:00", items=[OrderHistoryItem(order_item_id=2, product_id=102)]),
+        OrderHistory(order_id=3, ordered_at="bad-date", items=[OrderHistoryItem(order_item_id=3, product_id=103)]),
+    ])
+    assert rp.purchased_product_ids(since=datetime(2026, 7, 1)) == {101}  # 오래된 102·불명 103 제외
+    assert rp.purchased_product_ids() == {101, 102, 103}  # since 없으면 전체(불명 포함)
+
+
+async def test_get_recent_purchases_parses_and_collects_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    """I-19 응답을 파싱하고 productId 집합을 모은다(§4.7)."""
+    body = {"success": True, "data": {"orders": [
+        {"orderId": 1023, "orderedAt": "2026-07-10T14:23:00", "status": "DELIVERED",
+         "items": [{"orderItemId": 2001, "productId": 552, "productName": "무선 키보드", "quantity": 1, "price": 29000, "status": "DELIVERED"}]},
+        {"orderId": 1024, "orderedAt": "2026-07-11T09:00:00", "status": "SHIPPING",
+         "items": [{"orderItemId": 2002, "productId": 88}, {"orderItemId": 2003, "productId": 552}]},
+    ]}}
+    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    res = await _REAL_GET_RECENT(123)
+    assert res.purchased_product_ids() == {552, 88}
+
+
+async def test_get_recent_purchases_failure_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
+    """스키마 불일치(필수 productId 결측)는 SpringUnavailableError 로(호출측 degrade)."""
+    body = {"success": True, "data": {"orders": [{"orderId": 1, "orderedAt": "x", "items": [{"orderItemId": 1}]}]}}
+    monkeypatch.setattr(_sc_mod, "_client", lambda: _FakeClient(body))
+    with pytest.raises(SpringUnavailableError):
+        await _REAL_GET_RECENT(1)
+
+
+# ─────────── #19 리뷰 2차 회귀 ───────────
+
+
+def test_parse_ordered_at_normalizes_tz() -> None:
+    """aware ordered_at 은 UTC 로 변환 후 naive 화(offset 만 버리지 않음, Claude #19)."""
+    from app.schemas.spring import _parse_ordered_at
+
+    # 09:00+09:00 == 00:00 UTC
+    assert _parse_ordered_at("2026-07-10T09:00:00+09:00") == datetime(2026, 7, 10, 0, 0, 0)
+    assert _parse_ordered_at("2026-07-10T00:00:00") == datetime(2026, 7, 10, 0, 0, 0)  # naive 그대로
+    assert _parse_ordered_at("bad") is None
+
+
+async def test_recommendation_dedup_empty_message(monkeypatch: pytest.MonkeyPatch) -> None:
+    """dedup 로 후보가 전부 제외되면 '조건 바꿔라'가 아니라 원인을 바르게 안내한다(Claude #19)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101, 102, 103))  # DEFAULT 전부 제외
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=_RecordingPush()))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "최근에 구매" in token
+    assert "products.ready" not in _types(events)
+    assert events[-1]["data"]["finishReason"] == "zero_result"
+
+
+async def test_recommendation_skips_dedup_for_seller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """판매자 토큰(user_id=sub·seller_id=sub)은 sub 를 memberId 로 쓰지 않는다(IDOR 방지, Claude #19)."""
+    called = {"n": 0}
+
+    async def _spy(user_id, status=None):
+        called["n"] += 1
+        return RecentPurchases()
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
+    seller = Identity(user_id="500", is_guest=False, seller_id="500", subject="500")
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), seller, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert called["n"] == 0  # 판매자 sub 로 I-19 조회 안 함
+    assert 101 in push.pushes[0].product_ids  # dedup 미적용
