@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from app.agents.profile.gate import should_promote
 from app.agents.profile.store import get_profile_store
 from app.agents.buyer.recommendation.state import extract_json
+from app.core.config import get_settings
 from app.core.llm import LLMError
 
 _DELTA_SYSTEM = """당신은 커머스 어시스턴트의 취향 프로필 델타 추출기입니다.
@@ -38,9 +39,15 @@ def _now_iso() -> str:
 
 
 def record_remember(user_id: str, fact: str) -> None:
-    """"기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF)."""
-    if user_id and fact:
-        get_profile_store().add_fact(user_id, fact.strip())
+    """"기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF).
+
+    발화 원문을 그대로 저장하되 config 길이 상한으로 절단한다(오탐·남용 시 무제한 누적 방어).
+    """
+    if not (user_id and fact):
+        return
+    cleaned = fact.strip()[: get_settings().profile_fact_char_cap]
+    if cleaned:
+        get_profile_store().add_fact(user_id, cleaned)
 
 
 async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings) -> list[str]:

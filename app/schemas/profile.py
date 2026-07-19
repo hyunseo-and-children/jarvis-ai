@@ -27,6 +27,6 @@ class SessionEndEvent(CamelModel):
 
     event_id: str
     user_id: str
-    session_id: str | None = None
+    session_id: str  # 세션 버퍼 키의 필수 요소(§3.5 예시도 값 채움)
     ended_at: str | None = None
     reason: str | None = None

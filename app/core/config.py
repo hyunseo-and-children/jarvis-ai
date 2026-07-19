@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     profile_summary_char_cap: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     profile_recency_highlights: int = 3   # §5.1 최근 맥락 하이라이트 개수
     profile_gate_threshold: float = 0.5   # §6.3 승격 게이트 임계(salience·repetition EMA)
+    profile_fact_char_cap: int = 200      # "기억해" hot-path fact 길이 상한(오탐·남용 방어)
 
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000

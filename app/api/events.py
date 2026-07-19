@@ -26,13 +26,22 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     store = get_profile_store()
     if store.seen_event(event.event_id):
         return {"status": "duplicate"}  # 멱등 — 중복 수신 무시(§2.7)
-    store.mark_event(event.event_id)
 
-    # best-effort 프로필 갱신 — LLM 미구성/버퍼 없음이면 내부에서 no-op degrade(§3.5).
-    key = conversation_key(event.user_id, event.session_id or "")
+    # best-effort 프로필 갱신 — LLM 미구성/버퍼 없음/오류는 no-op degrade. 어떤 오류도 202 를 막지 않는다(§3.5).
+    key = conversation_key(event.user_id, event.session_id)
     settings = get_settings()
     llm = get_llm()
-    await generate_session_delta(event.user_id, key, llm=llm, settings=settings)
-    await consolidate(event.user_id, llm=llm, settings=settings)
-    store.clear_session_ctx(key)
+    processed = False
+    try:
+        promoted = await generate_session_delta(event.user_id, key, llm=llm, settings=settings)
+        updated = await consolidate(event.user_id, llm=llm, settings=settings)
+        processed = bool(promoted or updated)
+    except Exception:  # noqa: BLE001 — best-effort inbound 통지(§3.5): 절대 500 금지
+        processed = False
+
+    store.mark_event(event.event_id)  # 수신 확인(멱등) — 처리 시도 후 마킹
+    if processed:
+        # 성공 시에만 transient 버퍼 정리. degrade(LLM 미구성·오류) 시 보존해 회수 여지를 남긴다
+        # (자동 회수 배치는 후속, REQ-PROF-050/051).
+        store.clear_session_ctx(key)
     return {"status": "accepted"}

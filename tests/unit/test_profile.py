@@ -76,6 +76,8 @@ def test_is_remember_command() -> None:
     assert is_remember_command("이거 기억해줘")
     assert is_remember_command("remember this please")
     assert not is_remember_command("무선 이어폰 추천해줘")
+    assert not is_remember_command("저번에 뭐 담았는지 기억해?")  # 질문 오탐 제외
+    assert not is_remember_command("이거 기억해두면 좋을까?")
 
 
 # ─────────── builder (델타·consolidation) ───────────
@@ -124,6 +126,12 @@ async def test_consolidate_degrades_without_facts() -> None:
 def test_record_remember_hot_path() -> None:
     record_remember("9", "겨울 등산 자주 감")
     assert "겨울 등산 자주 감" in get_profile_store().get_facts("9")
+
+
+def test_record_remember_caps_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(get_settings(), "profile_fact_char_cap", 10)
+    record_remember("cap", "가" * 100)
+    assert len(get_profile_store().get_facts("cap")[0]) == 10
 
 
 async def test_consolidate_respects_char_cap(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -196,6 +204,8 @@ def test_session_end_degrades_without_llm() -> None:
     r = client.post("/events/session-end", json={"eventId": "se-3", "userId": "55", "sessionId": "s"})
     assert r.status_code == 202
     assert get_profile_store().get_summary("55") is None  # LLM 없어 미갱신
+    # degrade 시 transient 버퍼는 보존(성공 시에만 정리) — 회수 여지
+    assert get_profile_store().get_session_ctx(conversation_key("55", "s")) != []
 
 
 # ─────────── e2e (채팅 transient → 세션종료 → 조회) ───────────

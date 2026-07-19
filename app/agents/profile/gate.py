@@ -28,8 +28,14 @@ def should_promote(
 
 
 def is_remember_command(text: str | None) -> bool:
-    """발화가 "기억해"류 명시 명령인지 — hot-path 즉시 기록 트리거(REQ-PROF)."""
+    """발화가 "기억해"류 명시 **명령**인지 — hot-path 즉시 기록 트리거(REQ-PROF).
+
+    질문·비확정 발화("~기억해?", "기억나?")는 오탐 방지를 위해 제외한다.
+    """
     if not text:
         return False
-    lowered = text.lower()
+    stripped = text.strip()
+    if "?" in stripped:  # 질문은 명령이 아님
+        return False
+    lowered = stripped.lower()
     return any(marker in lowered for marker in _REMEMBER_MARKERS)
