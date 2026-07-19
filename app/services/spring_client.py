@@ -172,12 +172,15 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
                     )
                 )
             except (ValidationError, ValueError, TypeError):
-                _log.warning("cart 옵션 항목 파싱 실패 — 건너뜀: %r", opt)
                 continue  # 형식 이상 옵션은 건너뜀 — 되물음 흐름 전체가 죽지 않게(방어적)
-    if raw and not options:
-        # error.detail.options 는 BE 확정 계약(§4.1 v0.15.8) — 전멸은 계약 위반 신호라 로그 남김.
-        # REQUIRED/INVALID 공통 파서라 실제 code 를 찍어 진단 오도 방지.
-        _log.warning("cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw)
+    # 파싱 실패를 집계해 한 번에 로그(부분 실패도 포함). error.detail.options 는 BE 확정 계약이라
+    # 실패는 계약 위반 신호 — REQUIRED/INVALID 공통 파서이므로 실제 code 를 함께 찍어 진단 오도 방지.
+    if isinstance(raw, list) and raw:
+        dropped = len(raw) - len(options)
+        if not options:
+            _log.warning("cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw)
+        elif dropped:
+            _log.warning("cart 옵션 %d/%d개 파싱 실패(부분, code=%r)", dropped, len(raw), code)
     return code, options
 
 

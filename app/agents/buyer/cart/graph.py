@@ -51,12 +51,11 @@ def _options_text(options: list[CartOption]) -> str:
     for opt in options:
         if not opt.name:
             continue
+        # extraPrice 는 api-spec §4.1 상 surcharge(≥0) — 양수만 표시. 0/음수(계약 미정의)는 미표시.
         if opt.extra_price and opt.extra_price > 0:
             parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
-        elif opt.extra_price and opt.extra_price < 0:
-            parts.append(f"{opt.name}(-{abs(opt.extra_price):,}원)")  # 음수 = 할인
         else:
-            parts.append(opt.name)  # 0/None = 추가금 없음
+            parts.append(opt.name)
     return " / ".join(parts) if parts else "옵션"
 
 

@@ -799,10 +799,10 @@ async def test_cart_add_reask_formats_surcharge_by_sign() -> None:
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
-    assert "레드(-1,000원)" in token  # 할인
-    assert "화이트(+2,000원)" in token  # 추가금
-    assert "블랙" in token and "블랙(" not in token  # 0 은 미표시
-    assert "+-" not in token
+    assert "화이트(+2,000원)" in token  # 양수 추가금만 표시
+    assert "레드" in token and "레드(" not in token  # 음수(계약 미정의) 미표시
+    assert "블랙" in token and "블랙(" not in token  # 0 미표시
+    assert "+-" not in token and "-1,000" not in token
 
 
 def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptureFixture) -> None:
