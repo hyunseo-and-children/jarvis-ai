@@ -153,7 +153,14 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
         if isinstance(opt, dict) and opt.get("optionId") is not None:
             # extraPrice 는 표시용 부가 필드 — 형식이 이상해도 옵션 자체를 버리지 않게 방어적으로 분리.
             raw_extra = opt.get("extraPrice")
-            extra = raw_extra if isinstance(raw_extra, int) and not isinstance(raw_extra, bool) else None
+            if isinstance(raw_extra, bool):
+                extra = None
+            elif isinstance(raw_extra, int):
+                extra = raw_extra
+            elif isinstance(raw_extra, float) and raw_extra.is_integer():
+                extra = int(raw_extra)  # BE(Java) BigDecimal/Double → 정수 금액이 1000.0 로 올 수 있음
+            else:
+                extra = None
             try:
                 options.append(
                     CartOption(
