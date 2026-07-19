@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from app.schemas.chat import ChatRequest, DoneData, ProductsReadyData
 from app.schemas.spring import (
+    ProductCreate,
     ProductSearchFilters,
     RecommendationPush,
+    SellerProductRow,
 )
 
 
@@ -25,9 +27,7 @@ def test_done_serializes_camel() -> None:
 
 def test_chat_request_accepts_camel_input() -> None:
     """요청 본문(camelCase)이 snake 속성으로 파싱된다 (populate_by_name)."""
-    req = ChatRequest.model_validate(
-        {"sessionId": "s", "threadId": "t", "message": "m"}
-    )
+    req = ChatRequest.model_validate({"sessionId": "s", "threadId": "t", "message": "m"})
     assert req.session_id == "s"
     assert req.thread_id == "t"
 
@@ -49,3 +49,35 @@ def test_recommendation_push_i21_serializes_camel() -> None:
     # 표시 필드·groups 구조 부재 확인 (경로 B — id 만 전달).
     assert "groups" not in d
     assert "price" not in d
+
+
+def test_seller_product_row_serializes_camel() -> None:
+    """SellerProductRow(I-9)는 originalPrice/stockQuantity/displayedSalesCount 로 직렬화된다."""
+    row = SellerProductRow(
+        product_id=101,
+        name="여행용 파우치",
+        price=10000,
+        original_price=12000,
+        stock_quantity=5,
+        status="ON_SALE",
+        displayed_sales_count=42,
+    )
+    d = row.model_dump(by_alias=True)
+    assert d["originalPrice"] == 12000
+    assert d["stockQuantity"] == 5
+    assert d["displayedSalesCount"] == 42
+
+
+def test_product_create_by_alias() -> None:
+    """ProductCreate(I-10) 요청 바디는 camelCase 로 직렬화된다."""
+    payload = ProductCreate(name="여행용 파우치", price=10000, stock_quantity=5)
+    d = payload.model_dump(by_alias=True)
+    assert d == {
+        "name": "여행용 파우치",
+        "price": 10000,
+        "originalPrice": None,
+        "stockQuantity": 5,
+        "category": None,
+        "description": None,
+        "imageUrl": None,
+    }

@@ -32,7 +32,7 @@ def _parse_sse(body: str) -> list[dict]:
     for raw in body.splitlines():
         line = raw.strip()
         if line.startswith("data:"):
-            events.append(json.loads(line[len("data:"):].strip()))
+            events.append(json.loads(line[len("data:") :].strip()))
     return events
 
 
@@ -79,13 +79,34 @@ def test_chat_streams_sse_ending_with_done(buyer_fakes) -> None:
     assert done["finishReason"] == "stop"
 
 
-def test_seller_chat_requires_seller_scope() -> None:
-    """판매자 스코프 없는 토큰(dev 게스트)의 /seller/chat 은 403 이다 (api-spec §3.2)."""
+def test_seller_chat_requires_identity_headers() -> None:
+    """신원 헤더(X-Seller-Id/X-Brand-Id) 없는 /seller/chat 은 400 이다.
+
+    [변경 2026-07-19, REALIGN D1] Spring 패스스루 전환 — 구 403(티켓 스코프) 폐기.
+    dev(service_token 미설정)라 토큰 검증은 스킵되지만 신원 헤더는 여전히 필수.
+    """
     resp = client.post(
         "/seller/chat",
         json={"sessionId": "sess-1", "threadId": "thread-1", "message": "이번 주 매출 어때?"},
     )
-    assert resp.status_code == 403
+    assert resp.status_code == 400
+
+
+def test_seller_chat_streams_with_spring_headers() -> None:
+    """Spring 주입 신원 헤더가 있으면 스트림이 열린다 (엔드포인트 배선 검증).
+
+    LLM 은 실호출하지 않는다 — scope 선차단 문구(경쟁사)로 LLM 0회 경로를 태워
+    SSE 응답 자체(200 + token/done)만 확인한다.
+    """
+    resp = client.post(
+        "/seller/chat",
+        json={"sessionId": "sess-1", "threadId": "thread-1", "message": "경쟁사 매출 알려줘"},
+        headers={"X-Seller-Id": "7", "X-Brand-Id": "3"},
+    )
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    body = resp.text
+    assert '"type": "token"' in body and '"type": "done"' in body
 
 
 def test_profile_me_guest_returns_exists_false() -> None:
