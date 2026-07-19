@@ -124,12 +124,13 @@ async def stream_recommendation(
 
     candidates = result.products
     if not candidates:
-        # exact/카테고리로 전부 제거된 경우와 검색 자체 0건을 구분해 원인을 바르게 안내한다.
-        text = (
-            "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
-            if had_candidates
-            else "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
-        )
+        # 3분기: 검색 자체 0건 / 소모품 카테고리 억제로 비워짐 / exact 최근구매로 비워짐 — 원인별 안내.
+        if not had_candidates:
+            text = "조건에 맞는 상품을 찾지 못했어요. 조건을 조금 바꿔볼까요?"
+        elif suppressed_by_cat:
+            text = "최근 구매하신 카테고리라 결과를 가렸어요. 아래에서 되돌리거나 다른 조건으로 찾아볼까요?"
+        else:
+            text = "찾은 상품이 모두 최근에 구매하신 것들이에요. 다른 상품을 추천해 드릴까요?"
         yield sse("token", TokenData(text=text).model_dump(by_alias=True))
         if revert_chips:  # 전부 억제됐어도 되돌리기 칩은 준다(사용자가 복원 가능)
             yield sse("suggestions", SuggestionsData(chips=revert_chips).model_dump(by_alias=True))

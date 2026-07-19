@@ -625,6 +625,8 @@ async def test_recommendation_all_suppressed_offers_revert(monkeypatch: pytest.M
     events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(products), push_fn=_RecordingPush()))
     assert "products.ready" not in _types(events)
     assert events[-1]["data"]["finishReason"] == "zero_result"
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "가렸" in token and "구매하신 것들" not in token  # 카테고리 억제 문구(exact 문구 아님)
     sug = next(e for e in events if e["type"] == "suggestions")["data"]
     assert sug["chips"][0]["revert"]["category"] == "조미료"
 
