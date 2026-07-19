@@ -12,6 +12,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,8 +69,10 @@ class Settings(BaseSettings):
 
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
-    # PII 로그 지문 pepper (§6.3 b) — 운영은 실제 secret 주입 필수. 빈 값은 개발용.
+    # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.
     pii_hash_pepper: str = ""
+    # 사용자 message 길이 상한 (api-spec §3.1 · PII·메모리 방어). 튜너블.
+    chat_message_max_chars: int = 4000
 
     # ── SSE 스트림 수명주기 (api-spec §2.9, 값은 config 기본값·운영 조정 가능) ──
     # first-token: 첫 이벤트까지 상한. 초과 시 스트림 시작 전이면 504, 후면 in-stream error.
@@ -96,6 +99,14 @@ class Settings(BaseSettings):
     trust_forwarded_for: bool = False
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
+
+
+    @model_validator(mode="after")
+    def _require_pepper_in_prod(self) -> "Settings":
+        """운영(jwks)에서 PII pepper 미주입이면 기동 실패 — 조용히 약한 해시로 도는 것 방지."""
+        if self.auth_mode == "jwks" and not self.pii_hash_pepper:
+            raise ValueError("PII_HASH_PEPPER must be set when auth_mode=jwks")
+        return self
 
 
 @lru_cache

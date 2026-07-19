@@ -233,3 +233,13 @@ def test_fingerprint_uses_pepper(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "pii_hash_pepper", "pep2")
     _, d2 = message_fingerprint("hello")
     assert d1 != d2
+
+
+def test_pepper_required_in_jwks_mode() -> None:
+    """운영(jwks)에서 pii_hash_pepper 미주입이면 Settings 기동이 실패한다."""
+    from app.core.config import Settings
+
+    with pytest.raises(Exception):
+        Settings(auth_mode="jwks", pii_hash_pepper="", jwks_url="http://x")
+    # dev 모드는 빈 pepper 허용
+    Settings(auth_mode="dev", pii_hash_pepper="")
