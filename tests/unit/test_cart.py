@@ -763,3 +763,18 @@ async def test_add_to_cart_empty_detail_options_no_fallback(monkeypatch: pytest.
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert ei.value.options == []  # 빈 배열 신뢰 — 99(잔재) 안 고름
+
+
+async def test_add_to_cart_malformed_option_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    """형식 이상 옵션 항목은 건너뛰고 정상 항목만 파싱한다(되물음 흐름 보호, Claude #18)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
+        {"optionId": "not-int", "name": "깨짐"},          # optionId 변환 불가 → 건너뜀
+        {"optionId": 3, "name": "블루", "extraPrice": 0},  # 정상
+    ]}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartOptionRequired) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
+    assert [o.option_id for o in ei.value.options] == [3]  # 깨진 항목 제외, 정상만
