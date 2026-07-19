@@ -8,7 +8,9 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from app.agents.buyer._frames import sse
@@ -19,6 +21,13 @@ from app.services import spring_client
 from app.schemas.chat import ConditionsData, DoneData, ErrorData, ProductsReadyData, TokenData
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
+
+_INACTIVE_STATUSES = frozenset({"CANCELED", "RETURNED"})  # 보유 아님 → dedup 제외 대상 아님
+
+
+def _now() -> datetime:
+    """현재 시각(테스트 주입 지점)."""
+    return datetime.now()
 
 
 async def stream_recommendation(
@@ -41,25 +50,45 @@ async def stream_recommendation(
     chips = build_condition_chips(decision.filters)
     yield sse("conditions", ConditionsData(chips=chips).model_dump(by_alias=True))
 
-    # dedup — 회원이면 최근 구매(I-19)를 조회해 exact productId 제외 목록을 만든다(결정 14-F).
-    # I-1 엔 제외 파라미터가 없어(C-15) 검색 응답 뒤 AI 사후필터(search_catalog)로 제외한다.
-    # 게스트는 스킵(이력 없음), I-19 실패·비숫자 sub 는 degrade(dedup 없이 진행, §4.7).
-    exclude_ids: list[int] | None = None
-    if identity is not None and not identity.is_guest and identity.user_id:
-        get_purchases_fn = get_purchases_fn or spring_client.get_recent_purchases
+    # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
+    # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
+    async def _run_search() -> ProductSearchResult | None:
         try:
-            purchases = await get_purchases_fn(int(identity.user_id))
-            ids = purchases.purchased_product_ids()
-            exclude_ids = list(ids) if ids else None
-        except (SpringUnavailableError, ValueError, TypeError):
-            exclude_ids = None
+            return await search(decision.filters, exclude_product_ids=None)
+        except SpringUnavailableError:
+            return None
 
-    # search — Spring GET 위임 (§4.6). 실패 시 SEARCH_FAILED(종료).
-    try:
-        result: ProductSearchResult = await search(decision.filters, exclude_product_ids=exclude_ids)
-    except SpringUnavailableError:
+    async def _fetch_exclude() -> list[int] | None:
+        # 게스트/비회원/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
+        if identity is None or identity.is_guest or not identity.user_id:
+            return None
+        try:
+            uid = int(identity.user_id)
+        except (ValueError, TypeError):
+            return None
+        fn = get_purchases_fn or spring_client.get_recent_purchases
+        try:
+            purchases = await fn(uid)
+        except SpringUnavailableError:
+            return None
+        # 최근 윈도우 안 + 취소/반품 제외(보유분만) — 결정 14-F.
+        since = _now() - timedelta(days=settings.dedup_recent_days)
+        ids = purchases.purchased_product_ids(since=since, exclude_statuses=_INACTIVE_STATUSES)
+        return list(ids) if ids else None
+
+    search_result, exclude_ids = await asyncio.gather(_run_search(), _fetch_exclude())
+    if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
         yield sse("error", ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(by_alias=True))
         return
+
+    # exact 제외 사후필터(§4.7, C-15 — I-1 엔 제외 파라미터 없음).
+    result: ProductSearchResult = search_result
+    if exclude_ids:
+        excluded = set(exclude_ids)
+        result = ProductSearchResult(
+            products=[p for p in result.products if p.product_id not in excluded],
+            total_count=result.total_count,
+        )
 
     candidates = result.products
     if not candidates:

@@ -74,6 +74,10 @@ class Settings(BaseSettings):
     # CART_OPTION_INVALID 재질문 상한 — 초과 시 action CART_ERROR(§4.1). 하드코딩 금지.
     cart_option_reask_max: int = 1
 
+    # ── dedup (#4, api-spec §4.7 결정 14-F) ──
+    # 최근 구매 제외 윈도우(일) — 이보다 오래된 구매는 제외 목록에서 뺀다(영구 제외 방지).
+    dedup_recent_days: int = 90
+
     # ── 프로필 (SPEC-PROFILE-001, 내부 전용) ──
     profile_summary_max_chars: int = 1000
     # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.

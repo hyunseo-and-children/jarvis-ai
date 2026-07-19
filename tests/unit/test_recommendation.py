@@ -7,6 +7,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from types import SimpleNamespace
 
 import pytest
@@ -391,16 +392,27 @@ def _purchases(*product_ids):
     return _fn
 
 
+def _fix_now(monkeypatch, when=datetime(2026, 7, 19)):
+    monkeypatch.setattr("app.agents.buyer.recommendation.graph._now", lambda: when)
+
+
 async def test_recommendation_dedups_recent_purchases(monkeypatch: pytest.MonkeyPatch) -> None:
-    """회원 최근 구매 productId 를 검색 사후필터 exclude 로 넘긴다(exact 제외, 결정 14-F)."""
+    """회원 최근 구매 productId 는 그래프 사후필터로 후보에서 제외된다(exact 제외, 결정 14-F).
+
+    병렬화로 검색엔 exclude 를 넘기지 않고(그래프에서 제외), 최종 push 에 101 이 빠진다.
+    """
+    _fix_now(monkeypatch)
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
+    push = _RecordingPush()
     sink: dict = {}
-    await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
-    assert sink["exclude"] == [101]
+    await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=push))
+    assert sink["exclude"] is None  # 검색엔 exclude 미전달(병렬 — 제외는 그래프 사후필터)
+    assert 101 not in push.pushes[0].product_ids  # 최근 구매 101 제외
+    assert 102 in push.pushes[0].product_ids
 
 
 async def test_recommendation_skips_dedup_for_guest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """게스트는 이력 조회를 스킵하고 exclude 없이 검색한다(결정 8)."""
+    """게스트는 이력 조회를 스킵하고 제외 없이 추천한다(결정 8)."""
     called = {"n": 0}
 
     async def _spy(user_id, status=None):
@@ -408,9 +420,10 @@ async def test_recommendation_skips_dedup_for_guest(monkeypatch: pytest.MonkeyPa
         return RecentPurchases()
 
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
-    sink: dict = {}
-    await _collect(run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
-    assert called["n"] == 0 and sink["exclude"] is None
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), _guest(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert called["n"] == 0  # 조회 스킵
+    assert 101 in push.pushes[0].product_ids  # 제외 안 됨
 
 
 async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -419,19 +432,48 @@ async def test_recommendation_degrades_when_purchases_fail(monkeypatch: pytest.M
         raise SpringUnavailableError("orders down")
 
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _boom)
-    sink: dict = {}
-    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
-    assert sink["exclude"] is None
-    assert _types(events)[-1] == "done"  # 정상 종료
+    push = _RecordingPush()
+    events = await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert 101 in push.pushes[0].product_ids  # dedup 없이 진행
+    assert _types(events)[-1] == "done"
 
 
 async def test_recommendation_degrades_on_non_numeric_member(monkeypatch: pytest.MonkeyPatch) -> None:
     """비숫자 sub 회원은 dedup 없이 진행(int 변환 실패로 죽지 않음)."""
     monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
     bad = Identity(user_id="abc", is_guest=False, seller_id=None, subject="abc")
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), bad, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert 101 in push.pushes[0].product_ids  # dedup 스킵
+
+
+async def test_recommendation_search_and_purchases_run_parallel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """검색과 이력조회를 병렬 실행한다 — 검색 호출에 exclude 를 넘기지 않는다(§4.7 지연 가드)."""
+    _fix_now(monkeypatch)
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _purchases(101))
     sink: dict = {}
-    await _collect(run_buyer_turn(_req(), bad, llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
+    await _collect(run_buyer_turn(_req(), _member_num(), llm=FakeLLM(), search=_recording_search(DEFAULT_PRODUCTS, sink), push_fn=_RecordingPush()))
     assert sink["exclude"] is None
+
+
+def test_purchased_product_ids_excludes_canceled_returned() -> None:
+    """취소/반품 아이템은 보유분이 아니라 제외 대상에서 뺀다(Claude #19)."""
+    rp = RecentPurchases(orders=[OrderHistory(order_id=1, ordered_at="2026-07-10T00:00:00", items=[
+        OrderHistoryItem(order_item_id=1, product_id=101, status="DELIVERED"),
+        OrderHistoryItem(order_item_id=2, product_id=102, status="CANCELED"),
+        OrderHistoryItem(order_item_id=3, product_id=103, status="RETURNED"),
+    ])])
+    assert rp.purchased_product_ids(exclude_statuses={"CANCELED", "RETURNED"}) == {101}
+
+
+def test_purchased_product_ids_window_excludes_old() -> None:
+    """윈도우(since)보다 오래된 구매는 제외 목록에서 뺀다 — 영구 제외 방지(Codex #19)."""
+    rp = RecentPurchases(orders=[
+        OrderHistory(order_id=1, ordered_at="2026-07-15T00:00:00", items=[OrderHistoryItem(order_item_id=1, product_id=101)]),
+        OrderHistory(order_id=2, ordered_at="2025-01-01T00:00:00", items=[OrderHistoryItem(order_item_id=2, product_id=102)]),
+    ])
+    assert rp.purchased_product_ids(since=datetime(2026, 7, 1)) == {101}  # 오래된 102 제외
+    assert rp.purchased_product_ids() == {101, 102}  # since 없으면 전체
 
 
 async def test_get_recent_purchases_parses_and_collects_ids(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -18,6 +18,8 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
@@ -103,6 +105,17 @@ class OrderHistory(CamelModel):
     total_amount: int | None = None
 
 
+def _parse_ordered_at(value: str | None) -> datetime | None:
+    """ISO-8601 ordered_at 파싱(실패 시 None). tz-aware 는 naive 로 정규화(naive 비교)."""
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
+
+
 class RecentPurchases(CamelModel):
     """I-19 GET /internal/members/{id}/orders 응답 data (api-spec §4.7, BE 본문 재작성 v0.15.0).
 
@@ -113,9 +126,26 @@ class RecentPurchases(CamelModel):
 
     orders: list[OrderHistory] = Field(default_factory=list)
 
-    def purchased_product_ids(self) -> set[int]:
-        """전 주문 아이템의 productId 집합 — exact 제외 dedup(결정 14-F) 소스."""
-        return {item.product_id for order in self.orders for item in order.items}
+    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
+        """exact 제외 dedup(결정 14-F) 대상 productId 집합.
+
+        since 가 주어지면 그보다 오래된 주문은 제외한다(오래 전 구매를 영구 제외하지 않게).
+        exclude_statuses(예: CANCELED/RETURNED)의 아이템은 사용자가 보유하지 않으므로 제외 대상에서 뺀다.
+        ordered_at 파싱 실패 주문은 윈도우를 적용하지 않고 포함(보수적).
+        """
+        blocked = {s.upper() for s in exclude_statuses}
+        ids: set[int] = set()
+        for order in self.orders:
+            if since is not None:
+                dt = _parse_ordered_at(order.ordered_at)
+                if dt is not None and dt < since:
+                    continue
+            order_status = (order.status or "").upper()
+            for item in order.items:
+                if (item.status or order_status).upper() in blocked:
+                    continue
+                ids.add(item.product_id)
+        return ids
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
