@@ -522,3 +522,19 @@ async def test_recommendation_dedup_empty_message(monkeypatch: pytest.MonkeyPatc
     assert "최근에 구매" in token
     assert "products.ready" not in _types(events)
     assert events[-1]["data"]["finishReason"] == "zero_result"
+
+
+async def test_recommendation_skips_dedup_for_seller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """판매자 토큰(user_id=sub·seller_id=sub)은 sub 를 memberId 로 쓰지 않는다(IDOR 방지, Claude #19)."""
+    called = {"n": 0}
+
+    async def _spy(user_id, status=None):
+        called["n"] += 1
+        return RecentPurchases()
+
+    monkeypatch.setattr(_sc_mod, "get_recent_purchases", _spy)
+    seller = Identity(user_id="500", is_guest=False, seller_id="500", subject="500")
+    push = _RecordingPush()
+    await _collect(run_buyer_turn(_req(), seller, llm=FakeLLM(), search=_make_search(DEFAULT_PRODUCTS), push_fn=push))
+    assert called["n"] == 0  # 판매자 sub 로 I-19 조회 안 함
+    assert 101 in push.pushes[0].product_ids  # dedup 미적용

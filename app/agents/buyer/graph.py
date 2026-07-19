@@ -97,7 +97,7 @@ async def run_buyer_turn(
 
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
-    if not identity.is_guest and identity.user_id:
+    if not identity.is_guest and identity.user_id and not identity.seller_id:
         summary = read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
 

@@ -59,8 +59,10 @@ async def stream_recommendation(
             return None
 
     async def _fetch_exclude() -> list[int] | None:
-        # 게스트/비회원/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
-        if identity is None or identity.is_guest or not identity.user_id:
+        # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).
+        # [IDOR] role==SELLER 는 user_id=sub 이면서 seller_id 도 set — 판매자 sub 를 memberId 로
+        # I-19 에 쓰면 안 되므로 seller_id 있으면 dedup 스킵(신원 오용 방지, §2.6).
+        if identity is None or identity.is_guest or not identity.user_id or identity.seller_id:
             return None
         try:
             uid = int(identity.user_id)
