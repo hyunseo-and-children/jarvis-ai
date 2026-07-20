@@ -9,7 +9,7 @@
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-0.115-009688?logo=fastapi&logoColor=white">
   <img alt="LangGraph" src="https://img.shields.io/badge/LangGraph-0.2-1C3C3C">
   <img alt="PostgreSQL" src="https://img.shields.io/badge/PostgreSQL-pgvector-4169E1?logo=postgresql&logoColor=white">
-  <img alt="Anthropic" src="https://img.shields.io/badge/Anthropic-Claude%202--tier-D97757?logo=anthropic&logoColor=white">
+  <img alt="LLM" src="https://img.shields.io/badge/LLM-OpenAI%20%C2%B7%20Claude%20%ED%86%A0%EA%B8%80-412991?logo=openai&logoColor=white">
   <img alt="status" src="https://img.shields.io/badge/status-MVP%20개발%20중-yellow">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
 </p>
@@ -54,7 +54,7 @@ flowchart LR
         Profile --- PG
     end
     Spring["☕ Spring BE<br/>상품 · 주문 · 장바구니 · 회원"]
-    LLM["Claude 2-tier<br/>Haiku 4.5 · Sonnet 5"]
+    LLM["2-tier LLM · fast/smart<br/>OpenAI 기본 · Claude 토글"]
 
     User --> FE
     FE -- "① JWT 발급/재발급" --> Spring
@@ -82,7 +82,7 @@ flowchart LR
 | 언어/런타임 | **Python 3.12** | LLM·에이전트 생태계 표준, 타입 힌트 성숙 |
 | 웹 프레임워크 | **FastAPI** + Uvicorn | async 네이티브 → SSE 스트리밍·동시 LLM 호출에 적합 |
 | 에이전트 오케스트레이션 | **LangGraph** | 조건부 분기·멀티턴 상태·checkpointer를 그래프로 명시. intent router → 서브그래프 구조에 자연스러움 |
-| LLM | **Anthropic 2-tier**<br/>(Haiku 4.5 / Sonnet 5) | 비용/품질 분리 — 라우팅·분해·enrichment는 경량 Haiku, 재랭킹·응답 생성은 상위 Sonnet |
+| LLM | **2-tier provider 토글**<br/>(fast/smart · `LLM_PROVIDER`) | 호출부는 tier(fast/smart) 추상화, provider가 모델 해석. 기본 **OpenAI**(gpt-5-nano/gpt-5.6-luna) · **Claude**(haiku/sonnet) 토글. 비용/품질 분리 — 라우팅·분해·enrichment=fast, 재랭킹·응답=smart |
 | 데이터베이스 | **PostgreSQL ×2** + pgvector | 정확 필터(WHERE) + 벡터 유사도를 단일 SQL로. 카탈로그 인덱스 / 프로필 스토어 분리 |
 | 임베딩 | **한국어 특화 오픈소스**<br/>(self-host, 1024-dim, CPU) | 한국어 커머스 도메인 품질 + 비용 통제. `snowflake-arctic-embed-l-v2.0-ko` |
 | 인증 | **PyJWT + RS256/JWKS** | Spring 발급 토큰의 무상태 로컬 검증 (JWKS 공개키 캐싱) |
