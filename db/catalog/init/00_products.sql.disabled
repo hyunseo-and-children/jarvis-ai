@@ -1,9 +1,0 @@
--- products / HNSW 임베딩 인덱스는 고도화(post-MVP)로 이동했다 (확정 2026-07-15).
---
--- MVP 검색은 질의 시점 Spring 위임(POST /products/search)이므로 AI 서버는 카탈로그 미러·
--- 벡터 인덱스를 두지 않는다. 고도화(SPEC-RECOMMEND-001 amendment)에서 pgvector 백엔드가
--- 도입되면 products(product_id, ..., search_doc, embedding vector(1024)) + HNSW 인덱스를
--- 이 위치에 되살린다.
---
--- 파일 확장자를 .disabled 로 두어 Postgres init 러너가 실행하지 않게 한다
--- (docker-entrypoint-initdb.d 는 *.sql 만 실행). 고도화 시 01_products.sql 로 되살린다.

@@ -2,9 +2,10 @@
 # catalog=5433, profile=5434 로 호스트 포트를 분리한다.
 #
 # [변경 2026-07-15] MVP 검색은 Spring 위임(벡터/카탈로그 미러 없음)이라 pg-catalog 는
-# 이제 order_seed 테이블(판매자 통계·추천 dedup·프로필 신호)을 호스트하고, 고도화 시
-# 상품 스냅샷/로그 저장소로 확장된다. pgvector 확장은 고도화(products/HNSW) 대비 유지한다.
-# pg-profile 은 프로필 스토어로 계속 필요하다.
+# order_seed 테이블(판매자 통계·추천 dedup·프로필 신호)을 호스트한다.
+# [변경 2026-07-20, 이슈 #31] §4.8 I-17 배치 MVP 편입 + Google gemini-embedding-001 확정으로
+# products(AI 생성물: search_doc·embedding vector(1536)·extras) + HNSW 인덱스가 MVP 로 되살아남
+# (db/catalog/init/00_products.sql). pg-profile 은 프로필 스토어로 계속 필요하다.
 
 services:
   app:
