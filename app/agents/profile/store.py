@@ -234,10 +234,30 @@ def set_store(store: BaseStore | None) -> None:
 
 
 async def _drain_pending_cleanup() -> None:
+    """대기열의 이전 store ctx 들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어졌을 수 있다.
+
+    `AsyncPostgresStore`(AsyncBatchedBaseStore 상속)는 생성 루프에 묶인 백그라운드 배칭
+    태스크를 띄우므로, 다른/죽은 루프에 묶인 stale ctx 의 close(`__aexit__`)가 `CancelledError`
+    를 낼 수 있다. 옛 `suppress(Exception)` 은 `BaseException` 인 `CancelledError` 를 못 잡아
+    이 잔재까지 그대로 전파시켰고, 이 함수는 `_get_store()` 진입마다 실행되므로 그
+    CancelledError 가 `session_end`(get_profile_store 호출부) 상위로 새면 `except Exception:`
+    에도 안 잡혀 unmark 를 건너뛰고 이탈한다(멱등 마킹 영구 잔존·§3.5 항상-202 위반).
+    그렇다고 `BaseException` 째로 무조건 삼키면 이번엔 이 `await` 지점에서 **현재 태스크
+    자체**가 실제로 취소되는 경우까지 무시된다. 그래서 `task.cancelling()`(현재 태스크에
+    대기 중인 취소 요청 수)으로 "stale ctx 정리 중 새는 CancelledError"와 "이 태스크에 대한
+    실제 취소 요청"을 구분해, 후자만 다시 던진다(pg_store.py·processed_events.py·
+    conversation.py 와 동일 근거·수정, PR #47 후속 리뷰).
+    """
     while _pending_cleanup:
         ctx = _pending_cleanup.pop()
-        with contextlib.suppress(Exception):
+        try:
             await ctx.__aexit__(None, None, None)
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+        except Exception:
+            pass
 
 
 async def _get_store() -> BaseStore:
