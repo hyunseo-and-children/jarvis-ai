@@ -210,26 +210,49 @@ _store: ConversationStoreProtocol | None = None
 _pool_ctx: object | None = None  # AsyncConnectionPool cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
 _init_lock = asyncio.Lock()
+_pending_cleanup: list[
+    object
+] = []  # set_store() 가 못 닫은 이전 풀 — get_conversation_store() 진입 시 정리
 
 
 def set_store(store: ConversationStoreProtocol | None) -> None:
     """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
 
-    기존 `_pool_ctx`(실제 연결된 풀)가 있으면 백그라운드 태스크로 close 를 시도한다
-    — 이 함수는 sync 라 여기서 직접 await 할 수 없다(PR #46 리뷰와 동일 문제).
+    기존 `_pool_ctx`(실제 연결된 풀)가 있으면 정리 대기열에 넣는다. 이 함수는 sync 라
+    여기서 직접 await 할 수 없고, `asyncio.get_running_loop()` fire-and-forget 태스크
+    방식은 **실행 중인 루프가 없으면 조용히 스킵**된다 — `tests/conftest.py` 의 sync
+    autouse fixture 가 정확히 그 상황이라(이벤트 루프 시작 전) 풀이 정리 없이 영구
+    누수된다(app/core/pg_store.py·app/agents/profile/processed_events.py 에서 이미
+    고친 것과 동일 버그가 이 모듈에 재도입돼 있었다, PR #48 후속 리뷰). 대신 다음
+    `get_conversation_store()` 호출(반드시 async 컨텍스트) 시점에 확실히 정리한다.
     """
     global _store, _pool_ctx
     old_pool = _pool_ctx
     _store = store
     _pool_ctx = None
     if old_pool is not None:
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_running_loop().create_task(_close_pool(old_pool))
+        _pending_cleanup.append(old_pool)
 
 
-async def _close_pool(pool) -> None:  # noqa: ANN001 - psycopg_pool.AsyncConnectionPool
-    with contextlib.suppress(Exception):
-        await pool.close()
+async def _drain_pending_cleanup() -> None:
+    """대기열의 이전 풀들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어진 풀일 수 있다.
+
+    `AsyncConnectionPool` 은 백그라운드 워커 태스크를 그 풀을 만든 이벤트 루프에 묶어
+    두므로 cross-loop close 가 `CancelledError` 를 낼 수 있다. `BaseException` 째로
+    삼키면 이 await 지점에서 **현재 태스크 자체**가 실제로 취소되는 경우까지 함께
+    삼켜져 취소가 무시되는 안티패턴이 된다(processed_events.py 와 동일 근거·수정,
+    PR #47 후속 리뷰) — `task.cancelling()` 으로 구분해 실제 취소 요청만 다시 던진다.
+    """
+    while _pending_cleanup:
+        pool = _pending_cleanup.pop()
+        try:
+            await pool.close()
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+        except Exception:
+            pass
 
 
 async def get_conversation_store() -> ConversationStoreProtocol:
@@ -240,6 +263,7 @@ async def get_conversation_store() -> ConversationStoreProtocol:
     블록 전체를 직렬화한다(app/core/pg_store.py 와 동일 패턴, PR #48 리뷰).
     """
     global _store, _pool_ctx, _fallback_warned
+    await _drain_pending_cleanup()
     async with _init_lock:
         if _store is None:
             settings = get_settings()
