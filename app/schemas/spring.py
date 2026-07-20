@@ -257,6 +257,7 @@ class ProductChange(CamelModel):
     name: str | None = None
     description: str | None = None
     category: str | None = None
+    brand: str | None = None  # BE 07-18 확정 — enrichment·search_doc 입력(저장 안 함)
     attributes: dict | None = None
 
 

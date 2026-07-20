@@ -3,8 +3,10 @@
 프로젝트 원칙 "config 주입": 모든 튜너블(모델 ID, DB URL, 인증(JWKS/iss/aud),
 Spring base URL, 검색 파라미터)을 환경변수로 주입하여 코드 변경 없이 교체 가능하게 유지한다.
 
-[2026-07-15 확정] MVP 검색은 Spring 위임(POST /products/search)이며 벡터/카탈로그 미러/
-enrichment/임베딩은 고도화(post-MVP)로 이동했다. 임베딩 필드는 고도화 대비 유지만 한다.
+[2026-07-15] MVP 후보 검색은 Spring 위임(GET /internal/products/search, I-1)이며 상품 원본
+컬럼의 AI측 사본(카탈로그 미러)은 두지 않는다.
+[2026-07-20 정정] enrichment·임베딩(§4.8 I-17 배치)은 MVP 편입 확정 — 임베딩 검색 방식1·2를
+SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17). 구 "post-MVP" 표기 폐기.
 """
 
 from __future__ import annotations
@@ -31,10 +33,12 @@ class Settings(BaseSettings):
     haiku_model_id: str = "claude-haiku-4-5"
     sonnet_model_id: str = "claude-sonnet-5"
 
-    # ── 셀프호스트 한국어 임베딩 (고도화, post-MVP) ──
-    # MVP 검색은 Spring 위임이라 미사용. 고도화(pgvector 백엔드) 대비 설정만 유지.
+    # ── 셀프호스트 한국어 임베딩 (MVP, §4.8 배치 + 임베딩 검색) ──
+    # [2026-07-20 MVP 편입] 방식1(pgvector 벡터검색)·방식2(재정렬) 백엔드가 사용. torch 는 --group embedding.
     embedding_model_id: str = "dragonkue/snowflake-arctic-embed-l-v2.0-ko"
     embedding_dim: int = 1024
+    catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
+    catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).

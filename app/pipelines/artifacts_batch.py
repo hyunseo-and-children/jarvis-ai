@@ -1,0 +1,153 @@
+"""AI 생성물 갱신 배치 — I-17 pull 러너 (api-spec §4.8, C-4, 이슈 #7).
+
+fetch_product_changes 로 변경분을 커서 기반 pull(hasMore 루프) → DELISTED 는 생성물 삭제 →
+나머지는 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store upsert. 커서는 페이지 처리
+성공 후에만 전진(자연 복구, §4.8).
+
+증분(기본): 대상 스토어에 직접 upsert 하고 페이지마다 커서 전진.
+전체 재구축(full_rebuild): since="0" 부터 **임시 스토어**에 쌓은 뒤, 성공 시 원자 교체(replace_all)한다
+  — 재구축 중 실패해도 기존 정상 데이터가 보존되고, 더 이상 존재하지 않는 상품의 stale artifact 가 제거된다.
+
+fetch·llm·embed·store 는 주입형(테스트·오프라인 대체) — torch 미설치 환경에서도 embed 주입으로 동작.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+
+from app.core.config import Settings, get_settings
+from app.core.llm import LLMClient, get_llm
+from app.pipelines import embedding as _embedding
+from app.pipelines.artifact_store import (
+    CatalogArtifact,
+    CatalogArtifactStore,
+    get_catalog_store,
+)
+from app.pipelines.enrichment import enrich_product
+from app.schemas.spring import ProductChange, ProductChangesPage
+from app.services import spring_client
+
+_log = logging.getLogger(__name__)
+_DELISTED = "DELISTED"
+
+Fetch = Callable[[str | None, int], Awaitable[ProductChangesPage]]
+Embed = Callable[[list[str]], list[list[float]]]
+
+
+@dataclass
+class BatchResult:
+    processed: int
+    delisted: int
+    pages: int
+    cursor: str | None
+
+
+async def _process_change(
+    change: ProductChange,
+    *,
+    llm: LLMClient,
+    embed: Embed,
+    store: CatalogArtifactStore,
+    settings: Settings,
+) -> None:
+    product = {
+        "name": change.name,
+        "description": change.description,
+        "category": change.category,
+        "brand": change.brand,
+        "attributes": change.attributes,
+    }
+    extras = await enrich_product(product, llm=llm, settings=settings)
+    doc = _embedding.build_search_doc({**product, "extras": extras})
+    vec = embed([doc])[0]
+    store.upsert(
+        CatalogArtifact(
+            product_id=change.product_id,
+            search_doc=doc,
+            embedding=vec,
+            extras=extras,
+            name=change.name,
+            category=change.category,
+        )
+    )
+
+
+async def _drain(
+    fetch: Fetch,
+    start_cursor: str,
+    target: CatalogArtifactStore,
+    *,
+    llm: LLMClient,
+    embed: Embed,
+    settings: Settings,
+    persist_cursor: bool,
+) -> BatchResult:
+    """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
+
+    페이지 처리 중 예외는 그대로 전파 — 해당 페이지 커서 미전진으로 다음 주기 재개(자연 복구).
+    """
+    cursor = start_cursor
+    processed = delisted = pages = 0
+    while True:
+        page = await fetch(cursor, settings.catalog_batch_page_size)
+        for change in page.items:
+            if change.status == _DELISTED:
+                target.delete(change.product_id)
+                delisted += 1
+                continue
+            await _process_change(change, llm=llm, embed=embed, store=target, settings=settings)
+            processed += 1
+        pages += 1
+        if page.next_cursor:
+            cursor = page.next_cursor
+        if persist_cursor:
+            target.set_cursor(cursor)  # 페이지 처리 성공 후에만 전진(자연 복구)
+        if not page.has_more:
+            break
+        if not page.next_cursor:
+            _log.warning("hasMore=True 이나 nextCursor 없음 — 배치 중단(무한루프 방지)")
+            break
+    return BatchResult(processed=processed, delisted=delisted, pages=pages, cursor=cursor)
+
+
+async def run_artifacts_batch(
+    *,
+    fetch: Fetch | None = None,
+    llm: LLMClient | None = None,
+    embed: Embed | None = None,
+    store: CatalogArtifactStore | None = None,
+    settings: Settings | None = None,
+    full_rebuild: bool = False,
+) -> BatchResult:
+    """I-17 배치 1회 실행. full_rebuild=True 면 since="0" 초기 전체 구축(원자 교체)."""
+    settings = settings or get_settings()
+    fetch = fetch or spring_client.fetch_product_changes
+    llm = llm or get_llm()
+    embed = embed or _embedding.embed_texts
+    store = store or get_catalog_store()
+    if llm is None:
+        raise RuntimeError(
+            "run_artifacts_batch: LLM 미구성 — enrichment 불가(config anthropic_api_key)"
+        )
+
+    if full_rebuild:
+        # 임시 스토어에 전체 구축 후 성공 시 원자 교체 — 중간 실패해도 기존 데이터 보존 + stale 제거.
+        work = CatalogArtifactStore()
+        result = await _drain(
+            fetch, "0", work, llm=llm, embed=embed, settings=settings, persist_cursor=False
+        )
+        store.replace_all(work.all())
+        store.set_cursor(result.cursor)
+    else:
+        start = store.get_cursor() or "0"
+        result = await _drain(
+            fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
+        )
+
+    _log.info(
+        "artifacts batch: processed=%d delisted=%d pages=%d rebuild=%s",
+        result.processed, result.delisted, result.pages, full_rebuild,
+    )
+    return result
