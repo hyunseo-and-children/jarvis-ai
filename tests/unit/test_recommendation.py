@@ -298,7 +298,7 @@ async def test_multiturn_filters_persisted_and_fed_back() -> None:
             push_fn=_RecordingPush(),
         )
     )
-    decompose_calls = [u for (m, u) in llm.calls if "haiku" in m]
+    decompose_calls = [u for (m, u) in llm.calls if m == "fast"]
     assert decompose_calls and "무선이어폰" in decompose_calls[0]
 
 

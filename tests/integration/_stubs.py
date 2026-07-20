@@ -302,11 +302,11 @@ class ScriptedLLM:
         self._decompose_error = decompose_error
         self._rerank_error = rerank_error
         self._timeout = timeout
-        self.calls: list[tuple[str, str]] = []  # (kind, model)
+        self.calls: list[tuple[str, str]] = []  # (kind, tier)
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 1024) -> str:
-        kind = self._classify(system, model)
-        self.calls.append((kind, model))
+    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
+        kind = self._classify(system, tier)
+        self.calls.append((kind, tier))
         if kind == "enrich":
             return json.dumps(self._enrich, ensure_ascii=False)
         if kind == "delta":
@@ -321,19 +321,19 @@ class ScriptedLLM:
             raise LLMError("rerank boom")
         return json.dumps(self._rerank, ensure_ascii=False)
 
-    async def stream(self, *, system: str, user: str, model: str, max_tokens: int = 1024):
+    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
         yield "네, 도와드릴게요."
 
     @staticmethod
-    def _classify(system: str, model: str) -> str:
-        """system 프롬프트 시그니처 → 호출 용도. 미상은 모델 tier 로 decompose/rerank 판정."""
+    def _classify(system: str, tier: str) -> str:
+        """system 프롬프트 시그니처 → 호출 용도. 미상은 tier 로 decompose/rerank 판정."""
         if _ENRICH_MARK in system:
             return "enrich"
         if _DELTA_MARK in system:
             return "delta"
         if _CONSOLIDATE_MARK in system:
             return "consolidate"
-        return "decompose" if "haiku" in model else "rerank"
+        return "decompose" if tier == "fast" else "rerank"
 
     def calls_of(self, kind: str) -> int:
         """용도별 호출 횟수 — LLM 호출 예산(§llm_call_limit) 확인용."""

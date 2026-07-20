@@ -38,7 +38,7 @@ async def enrich_product(product: dict, *, llm: LLMClient, settings: Settings) -
     }
     user = json.dumps(payload, ensure_ascii=False)
     raw = await llm.complete(
-        system=_ENRICH_SYSTEM, user=user, model=settings.haiku_model_id, max_tokens=600
+        system=_ENRICH_SYSTEM, user=user, tier="fast", max_tokens=600
     )
     data = extract_json(raw)
     tags = data.get("tags")

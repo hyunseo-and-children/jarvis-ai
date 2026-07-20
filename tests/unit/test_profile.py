@@ -46,12 +46,12 @@ class _ProfileLLM:
         )
         self._summary = summary
 
-    async def complete(self, *, system, user, model, max_tokens=1024):
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
         if "델타 추출기" in system:
             return json.dumps({"deltas": self._deltas}, ensure_ascii=False)
         return self._summary
 
-    async def stream(self, *, system, user, model, max_tokens=1024):
+    async def stream(self, *, system, user, tier, max_tokens=1024):
         yield "x"
 
 

@@ -29,10 +29,23 @@ class Settings(BaseSettings):
         case_sensitive=False,
     )
 
-    # ── Anthropic 2-tier LLM ──
+    # ── LLM provider 토글 (이슈 #40) ──
+    # "openai"(기본) | "anthropic". 호출부는 tier("fast"|"smart")로 부르고 provider 가 모델을 해석한다.
+    # 실행 오버라이드: .env / OS 환경변수 LLM_PROVIDER 가 이 기본값을 덮는다(pydantic-settings).
+    llm_provider: str = "openai"
+
+    # ── Anthropic 2-tier LLM (fast=haiku / smart=sonnet) ──
     anthropic_api_key: str = ""
     haiku_model_id: str = "claude-haiku-4-5"
     sonnet_model_id: str = "claude-sonnet-5"
+
+    # ── OpenAI 2-tier LLM (fast=nano / smart=luna, 이슈 #40) ──
+    # ⚠️ 정확한 API 모델 문자열은 OpenAI 대시보드에서 확인해 주입할 것(값은 config 튜너블).
+    openai_api_key: str = ""
+    openai_fast_model_id: str = "gpt-5-nano"  # fast: 고빈도 JSON(초저가)
+    openai_smart_model_id: str = "gpt-5.6-luna"  # smart: 저빈도·품질(GPT-5.6 계열)
+    openai_fast_reasoning_effort: str = "low"  # fast: 낮은 reasoning 으로 비용·지연 안정
+    openai_smart_reasoning_effort: str = "medium"  # smart: 근거문 품질용
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
     # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
@@ -206,6 +219,20 @@ class Settings(BaseSettings):
                 "기동합니다 (C-1 확정 후 반드시 주입)"
             )
         return self
+
+    def model_for_tier(self, tier: str) -> str:
+        """활성 provider 기준 tier("fast"|"smart") → 모델 id. 관측(record_model_call)용.
+
+        get_llm 의 provider 분기와 동일한 config 필드를 읽는다 — telemetry 가 실제 호출 모델과 일치.
+        """
+        if self.llm_provider.lower() == "openai":
+            mapping = {"fast": self.openai_fast_model_id, "smart": self.openai_smart_model_id}
+        else:
+            mapping = {"fast": self.haiku_model_id, "smart": self.sonnet_model_id}
+        try:
+            return mapping[tier]
+        except KeyError:
+            raise ValueError(f"unknown tier: {tier!r}") from None
 
 
 @lru_cache

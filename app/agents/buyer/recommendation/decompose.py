@@ -51,7 +51,7 @@ async def decompose(
     query: str,
     prior_filters: ProductSearchFilters | None,
     profile_summary: str | None,
-    model: str,
+    tier: str,
     last_recommendations: list[tuple[int, str]] | None = None,
     pending_cart: dict | None = None,
 ) -> RouteDecision:
@@ -81,7 +81,7 @@ async def decompose(
         f"USER_MESSAGE: {query}"
     )
 
-    raw = await llm.complete(system=_SYSTEM, user=user, model=model, max_tokens=800)
+    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=800)
     data = extract_json(raw)
 
     intent_raw = data.get("intent")
