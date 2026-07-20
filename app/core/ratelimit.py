@@ -114,6 +114,8 @@ async def _verified_sub_scope(request: Request) -> str | None:
         return None
     settings = get_settings()
     try:
+        # deps.get_identity 와 동일 검증 항목(scope 포함)으로 단일 경로 유지 —
+        # 용도 불일치 토큰이 sub 버킷을 얻지 못하게 한다(§2.3/§2.8).
         identity = await run_in_threadpool(
             decode_token,
             token,
@@ -121,6 +123,9 @@ async def _verified_sub_scope(request: Request) -> str | None:
             jwks_url=settings.jwks_url,
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
+            scope=settings.jwt_scope,
+            jwks_timeout_s=settings.spring_timeout_s,
+            jwks_cache_ttl_s=settings.jwks_cache_ttl_s,
         )
     except AuthError:
         return None  # 서명/만료 검증 실패 → sub 스코프 불가(피해자 버킷 오염 차단).

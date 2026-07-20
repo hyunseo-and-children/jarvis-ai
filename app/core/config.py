@@ -61,6 +61,11 @@ class Settings(BaseSettings):
     jwks_url: str | None = None
     jwt_issuer: str | None = "shopping-spring-auth"
     jwt_audience: str | None = "shopping-fastapi-ai"
+    # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목 — 제안값 chat:stream,
+    # 실값은 C-1 확정 시 env 교체). None 이면 scope 검증 생략(전환기 호환).
+    jwt_scope: str | None = "chat:stream"
+    # JWKS tier-1 캐시 TTL(s) — 만료 전에는 kid miss 시에만 refetch(§2.3), 요청마다 왕복 금지.
+    jwks_cache_ttl_s: float = 300.0
 
     # [통일 2026-07-20 rebase 합류] 서비스 토큰은 팀 규약 `internal_api_token` 단일 키.
     # 인바운드(§3.5 verify_service_token — 프로필 write I-20)와 아웃바운드
@@ -177,6 +182,9 @@ class Settings(BaseSettings):
         # inbound write 엔드포인트(§3.5) 서비스 토큰 — 운영은 필수(미설정 시 조용히 fail-open 방지).
         if self.auth_mode == "jwks" and not self.internal_api_token:
             raise ValueError("INTERNAL_API_TOKEN must be set when auth_mode=jwks")
+        # jwks 모드의 검증 키 소스 — 미설정이면 전 요청 401 폭주라 기동 시점에 fail-fast(#34).
+        if self.auth_mode == "jwks" and not self.jwks_url:
+            raise ValueError("JWKS_URL must be set when auth_mode=jwks")
         return self
 
 

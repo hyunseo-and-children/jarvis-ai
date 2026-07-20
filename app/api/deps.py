@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from fastapi import Header, HTTPException, status
 
-from app.core.auth import AuthError, Identity, decode_token
+from app.core.auth import AuthError, Identity, TokenExpiredError, decode_token
 from app.core.config import Settings, get_settings
 
 
@@ -40,13 +40,21 @@ def get_identity(authorization: str | None = Header(default=None)) -> Identity:
             jwks_url=settings.jwks_url,
             issuer=settings.jwt_issuer,
             audience=settings.jwt_audience,
+            scope=settings.jwt_scope,
+            jwks_timeout_s=settings.spring_timeout_s,
+            jwks_cache_ttl_s=settings.jwks_cache_ttl_s,
         )
-    except AuthError as exc:
-        # §2.5: 401 코드는 TOKEN_EXPIRED / TOKEN_INVALID 2종. 만료는 메시지로 구분.
-        code = "TOKEN_EXPIRED" if "expired" in str(exc).lower() else "TOKEN_INVALID"
+    except TokenExpiredError as exc:
+        # §2.5: 만료는 TOKEN_EXPIRED — FE 가 CH-1b 재발급 후 1회 재시도하는 신호.
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": code, "message": "인증 실패"},
+            detail={"code": "TOKEN_EXPIRED", "message": "인증 실패"},
+        ) from exc
+    except AuthError as exc:
+        # §2.5: 그 외(없음/서명·형식·scope 불일치)는 TOKEN_INVALID.
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "TOKEN_INVALID", "message": "인증 실패"},
         ) from exc
 
 
