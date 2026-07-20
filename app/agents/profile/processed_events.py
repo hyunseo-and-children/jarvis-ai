@@ -53,14 +53,22 @@ async def _drain_pending_cleanup() -> None:
     `AsyncConnectionPool` 은 백그라운드 워커 태스크를 그 풀을 만든 이벤트 루프에 묶어
     두므로(app/core/pg_store.py 의 단일 커넥션과 다른 지점), pytest-asyncio 의 테스트
     함수별 새 이벤트 루프에서 이 큐를 비우면 다른 루프에 묶인 풀을 닫으려다
-    `CancelledError`(`BaseException`)가 날 수 있다 — `Exception` 만 삼키면 이게 새지므로
-    `BaseException` 까지 넓혀 잡는다. 여기는 "닫히면 좋고 안 닫혀도 그만"인 최선형
-    정리 경로라(참조는 이미 버림) 광범위 억제가 안전하다.
+    `CancelledError` 가 날 수 있다. 다만 이를 `BaseException` 째로 무조건 삼키면, 이
+    `await` 지점에서 **현재 태스크 자체**가 실제로 취소되는 경우(요청 타임아웃 등)까지
+    함께 삼켜져 취소가 무시된다(asyncio 안티패턴, PR #47 후속 리뷰). `task.cancelling()`
+    (현재 태스크에 대기 중인 취소 요청 수)로 "다른 루프에 묶인 pool 을 닫다 새는 잔재"와
+    "이 태스크에 대한 실제 취소 요청"을 구분해, 후자만 다시 던진다.
     """
     while _pending_cleanup:
         pool = _pending_cleanup.pop()
-        with contextlib.suppress(BaseException):  # noqa: BLE001
+        try:
             await pool.close()
+        except asyncio.CancelledError:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling() > 0:
+                raise
+        except Exception:
+            pass
 
 
 def reset() -> None:
