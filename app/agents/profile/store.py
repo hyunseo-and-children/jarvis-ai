@@ -64,8 +64,14 @@ class ProfileStore:
     def get_session_ctx(self, key: str) -> list[str]:
         return list(self._session_ctx.get(key, []))
 
-    def clear_session_ctx(self, key: str) -> None:
-        self._session_ctx.pop(key, None)
+    def clear_session_ctx_upto(self, key: str, count: int) -> None:
+        """세션 버퍼에서 앞의 count개(스냅샷 시점까지)만 제거 — 그 이후 추가된 항목은 보존."""
+        buf = self._session_ctx.get(key)
+        if not buf:
+            return
+        del buf[:count]
+        if not buf:
+            del self._session_ctx[key]
 
     # ── 멱등 (session-end eventId) ──
     def seen_event(self, event_id: str) -> bool:

@@ -32,9 +32,18 @@ class _ProfileLLM:
     """델타 추출(JSON)·consolidation(마크다운)을 system 프롬프트로 분기하는 fake."""
 
     def __init__(self, deltas=None, summary="# 취향 요약\n- 3~5만원 무선이어폰 선호") -> None:
-        self._deltas = deltas if deltas is not None else [
-            {"fact": "3~5만원 무선이어폰 선호", "salience": 0.9, "explicit": True, "repetitionEma": 0.0}
-        ]
+        self._deltas = (
+            deltas
+            if deltas is not None
+            else [
+                {
+                    "fact": "3~5만원 무선이어폰 선호",
+                    "salience": 0.9,
+                    "explicit": True,
+                    "repetitionEma": 0.0,
+                }
+            ]
+        )
         self._summary = summary
 
     async def complete(self, *, system, user, model, max_tokens=1024):
@@ -68,7 +77,9 @@ def test_should_promote_gate_rule() -> None:
     # salient AND (explicit OR repeated)
     assert should_promote(salience=0.8, explicit=True, repetition_ema=0.0)  # 명시
     assert should_promote(salience=0.8, explicit=False, repetition_ema=0.7)  # 반복
-    assert not should_promote(salience=0.8, explicit=False, repetition_ema=0.1)  # 현저하나 미반복·비명시
+    assert not should_promote(
+        salience=0.8, explicit=False, repetition_ema=0.1
+    )  # 현저하나 미반복·비명시
     assert not should_promote(salience=0.2, explicit=True, repetition_ema=0.9)  # 현저성 미달
 
 
@@ -80,7 +91,9 @@ def test_is_remember_command() -> None:
     assert not is_remember_command("이거 기억해두면 좋을까?")
     assert not is_remember_command("어제 일 기억해내려고 했는데 잘 안 되네")  # 비명령 부분매칭 제외
     assert is_remember_command("이거 기억해두세요")
-    assert is_remember_command("매운맛 좋아해요, 기억해줘! 다른 것도 추천해줄래?")  # 명령+질문 혼합도 인식
+    assert is_remember_command(
+        "매운맛 좋아해요, 기억해줘! 다른 것도 추천해줄래?"
+    )  # 명령+질문 혼합도 인식
     assert not is_remember_command("이거 안 잊게 기억해줘야 할 것 같아")  # 활용형(줘야) 제외
     assert not is_remember_command("기억해줘도 상관없어")  # 활용형(줘도) 제외
 
@@ -92,8 +105,11 @@ async def test_generate_session_delta_promotes_via_gate() -> None:
     store = get_profile_store()
     key = conversation_key("7", "s1")
     store.append_session_ctx(key, "3만원대 무선 이어폰 위주로 보고 있어요")
-    promoted = await generate_session_delta("7", key, llm=_ProfileLLM(), settings=get_settings())
+    promoted, processed_count = await generate_session_delta(
+        "7", key, llm=_ProfileLLM(), settings=get_settings()
+    )
     assert promoted == ["3~5만원 무선이어폰 선호"]
+    assert processed_count == 1
     assert "3~5만원 무선이어폰 선호" in store.get_facts("7")
 
 
@@ -101,18 +117,51 @@ async def test_generate_session_delta_gate_rejects_low_signal() -> None:
     store = get_profile_store()
     key = conversation_key("7", "s2")
     store.append_session_ctx(key, "음")
-    llm = _ProfileLLM(deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}])
-    promoted = await generate_session_delta("7", key, llm=llm, settings=get_settings())
+    llm = _ProfileLLM(
+        deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}]
+    )
+    promoted, processed_count = await generate_session_delta(
+        "7", key, llm=llm, settings=get_settings()
+    )
     assert promoted == [] and store.get_facts("7") == []  # 처리됨(non-None)이나 승격 0
+    assert processed_count == 1
+
+
+async def test_clear_session_ctx_upto_preserves_concurrent_append() -> None:
+    """LLM 호출(스냅샷~clear 사이)에 새로 추가된 발화는 clear_session_ctx_upto 가 지우지 않는다.
+
+    session-end 처리 중 같은 세션에 새 턴이 들어오는 레이스(§events.session_end) 회귀 테스트.
+    """
+    store = get_profile_store()
+    key = conversation_key("7", "race")
+    store.append_session_ctx(key, "A")
+    promoted, processed_count = await generate_session_delta(
+        "7", key, llm=_ProfileLLM(), settings=get_settings()
+    )
+    assert promoted == ["3~5만원 무선이어폰 선호"] and processed_count == 1
+    # LLM 호출이 끝나고 clear 하기 전, 그 사이에 새 턴이 도착했다고 가정.
+    store.append_session_ctx(key, "B")
+    store.clear_session_ctx_upto(key, processed_count)
+    assert store.get_session_ctx(key) == ["B"]  # A(스냅샷분)만 지워지고 B는 보존
 
 
 async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
     store = get_profile_store()
     # 버퍼 없음 → None(degrade 신호)
-    assert await generate_session_delta("7", conversation_key("7", "empty"), llm=_ProfileLLM(), settings=get_settings()) is None
+    assert (
+        await generate_session_delta(
+            "7", conversation_key("7", "empty"), llm=_ProfileLLM(), settings=get_settings()
+        )
+        is None
+    )
     # LLM 미구성 → None
     store.append_session_ctx(conversation_key("7", "s3"), "x")
-    assert await generate_session_delta("7", conversation_key("7", "s3"), llm=None, settings=get_settings()) is None
+    assert (
+        await generate_session_delta(
+            "7", conversation_key("7", "s3"), llm=None, settings=get_settings()
+        )
+        is None
+    )
 
 
 async def test_consolidate_writes_summary() -> None:
@@ -207,7 +256,9 @@ def test_session_end_service_token_enforced(monkeypatch: pytest.MonkeyPatch) -> 
 def test_session_end_degrades_without_llm() -> None:
     """LLM 미구성이어도 세션 종료는 202(best-effort, 프로필 미갱신)."""
     get_profile_store().append_session_ctx(conversation_key("55", "s"), "x")
-    r = client.post("/events/session-end", json={"eventId": "se-3", "userId": "55", "sessionId": "s"})
+    r = client.post(
+        "/events/session-end", json={"eventId": "se-3", "userId": "55", "sessionId": "s"}
+    )
     assert r.status_code == 202
     assert get_profile_store().get_summary("55") is None  # LLM 없어 미갱신
     # degrade 시 transient 버퍼는 보존(성공 시에만 정리) — 회수 여지
@@ -224,10 +275,16 @@ async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buy
     monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
     hdr = _member_bearer("888")
     # 회원 채팅 1턴 → transient 버퍼 누적
-    client.post("/chat", json={"sessionId": "e2e", "threadId": "t", "message": "3만원 무선이어폰 추천"}, headers=hdr)
+    client.post(
+        "/chat",
+        json={"sessionId": "e2e", "threadId": "t", "message": "3만원 무선이어폰 추천"},
+        headers=hdr,
+    )
     assert get_profile_store().get_session_ctx(conversation_key("888", "e2e"))  # 버퍼에 쌓임
     # 세션 종료 → 델타·consolidation
-    client.post("/events/session-end", json={"eventId": "e2e-end", "userId": "888", "sessionId": "e2e"})
+    client.post(
+        "/events/session-end", json={"eventId": "e2e-end", "userId": "888", "sessionId": "e2e"}
+    )
     # 조회
     body = client.get("/profile/me", headers=hdr).json()
     assert body["exists"] is True and "무선이어폰" in body["markdown"]
@@ -240,15 +297,21 @@ def test_session_end_rejects_oversized_identifier() -> None:
     assert r.status_code == 400  # 앱이 검증 오류를 400 봉투로 매핑(§2.5)
 
 
-async def test_session_end_clears_buffer_on_normal_rejection(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_end_clears_buffer_on_normal_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """LLM 이 정상 실행됐으나 게이트가 전부 반려한 경우도 '처리됨'이라 버퍼를 정리한다(무한 보존 방지)."""
     import app.api.events as ev
 
-    low = _ProfileLLM(deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}])
+    low = _ProfileLLM(
+        deltas=[{"fact": "잡담", "salience": 0.1, "explicit": False, "repetitionEma": 0.0}]
+    )
     monkeypatch.setattr(ev, "get_llm", lambda: low)
     key = conversation_key("66", "s")
     get_profile_store().append_session_ctx(key, "음 별로")
-    r = client.post("/events/session-end", json={"eventId": "rej-1", "userId": "66", "sessionId": "s"})
+    r = client.post(
+        "/events/session-end", json={"eventId": "rej-1", "userId": "66", "sessionId": "s"}
+    )
     assert r.status_code == 202
     assert get_profile_store().get_session_ctx(key) == []  # 정상 처리 → 버퍼 정리
 
@@ -287,7 +350,9 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(ev, "get_llm", lambda: _Raise())
     key = conversation_key("44", "s")
     get_profile_store().append_session_ctx(key, "취향 신호")
-    r = client.post("/events/session-end", json={"eventId": "f-1", "userId": "44", "sessionId": "s"})
+    r = client.post(
+        "/events/session-end", json={"eventId": "f-1", "userId": "44", "sessionId": "s"}
+    )
     assert r.status_code == 202
     assert not get_profile_store().seen_event("f-1")  # 언마크 → 재전송 시 재처리
     assert get_profile_store().get_session_ctx(key) != []  # 버퍼 보존
@@ -299,4 +364,6 @@ def test_internal_token_required_in_jwks_mode() -> None:
 
     with pytest.raises(Exception):
         Settings(auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="")
-    Settings(auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="tok")  # ok
+    Settings(
+        auth_mode="jwks", jwks_url="http://x", pii_hash_pepper="p", internal_api_token="tok"
+    )  # ok
