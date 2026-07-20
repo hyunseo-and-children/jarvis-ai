@@ -18,6 +18,12 @@ dependencies = [
     # crypto extra pulls `cryptography` — required for RS256 + JWKS verification (auth.py jwks mode).
     "pyjwt[crypto]>=2.9",
     "langchain>=1.3.14",
+    # Google gemini-embedding-001 API 클라이언트 (이슈 #31, api-spec §4.8 v0.15.14 — 셀프호스트 torch 폐기).
+    "google-genai>=1.0",
+    # pg-catalog(pgvector) 벡터 컬럼 psycopg3 코덱 등록 (이슈 #31).
+    "pgvector>=0.3",
+    # I-17 배치 주기 증분 pull 스케줄러 (이슈 #31, in-process). v4 는 아직 alpha 라 3.x 안정판 고정.
+    "apscheduler>=3.10,<4",
 ]
 
 [dependency-groups]
@@ -30,25 +36,15 @@ dev = [
     # cryptography is used by JWKS auth tests to generate a local RSA key pair (pulled by pyjwt[crypto] too).
     "cryptography>=43",
 ]
-# 고도화(post-MVP): 셀프호스트 임베딩. MVP 검색은 Spring 위임이라 미사용이나, 무해하게 유지한다.
-# 파이프라인/Docker 빌드에서 `--group embedding` 으로만 설치.
-embedding = [
-    "sentence-transformers>=3.3",
-    "torch>=2.5",
-]
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[tool.uv.sources]
-# Pin torch to the CPU wheel index — 고도화 셀프호스트 임베딩(1024-dim, CPU) 용.
-torch = { index = "pytorch-cpu" }
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "smoke: 실제 외부 API(Google 임베딩 등) 호출 — 기본 실행에서 제외, 명시적 실행시만 동작",
+    "integration: 실 인프라(pg-catalog 등) 필요 — 기본 실행에서 제외",
+]
+addopts = "-m 'not smoke and not integration'"
 
 [tool.ruff]
 target-version = "py312"

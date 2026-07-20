@@ -34,12 +34,15 @@ class Settings(BaseSettings):
     haiku_model_id: str = "claude-haiku-4-5"
     sonnet_model_id: str = "claude-sonnet-5"
 
-    # ── 셀프호스트 한국어 임베딩 (MVP, §4.8 배치 + 임베딩 검색) ──
-    # [2026-07-20 MVP 편입] 방식1(pgvector 벡터검색)·방식2(재정렬) 백엔드가 사용. torch 는 --group embedding.
-    embedding_model_id: str = "dragonkue/snowflake-arctic-embed-l-v2.0-ko"
-    embedding_dim: int = 1024
+    # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
+    # [2026-07-20 결정 6 개정, v0.15.14] 셀프호스트 torch → Google gemini-embedding-001 API.
+    # dim 1536(MRL 절단 — embedding.py 에서 수동 L2 정규화). 방식1(pgvector 벡터검색)·방식2(재정렬) 백엔드가 사용.
+    google_api_key: str = ""
+    embedding_model_id: str = "gemini-embedding-001"
+    embedding_dim: int = 1536
     catalog_batch_page_size: int = 500  # I-17 배치 페이지 크기(§4.8, config 주입)
     catalog_vector_overfetch: int = 4  # 방식1 hydrate 후 필터·품절 제거 대비 벡터 여유조회 배수
+    catalog_batch_interval_s: float = 300.0  # 주기 증분 pull 배치 스케줄러 간격(이슈 #31)
 
     # ── PostgreSQL / pgvector ×2 ──
     # catalog: AI 생성물(extras/search_doc/임베딩, §4.8 I-17 배치 upsert) 호스트, profile: 프로필 스토어+대화 저장(§6.3).
@@ -136,11 +139,11 @@ class Settings(BaseSettings):
     consumable_categories: list[str] = []
 
     # ── 프로필 (SPEC-PROFILE-001) ──
-    profile_recency_highlights: int = 3   # §5.1 최근 맥락 하이라이트 개수
-    profile_gate_threshold: float = 0.5   # §6.3 승격 게이트 임계(salience·repetition EMA)
-    profile_fact_char_cap: int = 200      # "기억해" hot-path fact 길이 상한(오탐·남용 방어)
-    profile_max_facts: int = 200          # 사용자별 fact 개수 상한(무제한 누적 방어) — 최신 우선 유지
-    profile_session_buffer_cap: int = 100 # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
+    profile_recency_highlights: int = 3  # §5.1 최근 맥락 하이라이트 개수
+    profile_gate_threshold: float = 0.5  # §6.3 승격 게이트 임계(salience·repetition EMA)
+    profile_fact_char_cap: int = 200  # "기억해" hot-path fact 길이 상한(오탐·남용 방어)
+    profile_max_facts: int = 200  # 사용자별 fact 개수 상한(무제한 누적 방어) — 최신 우선 유지
+    profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.
@@ -175,7 +178,6 @@ class Settings(BaseSettings):
     trust_forwarded_for: bool = False
     # 신뢰하는 프록시 홉 수(우측부터). 자사 프록시 1대면 1 = 최우측 값.
     forwarded_for_trusted_hops: int = 1
-
 
     @model_validator(mode="after")
     def _require_pepper_in_prod(self) -> "Settings":
