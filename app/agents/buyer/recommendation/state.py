@@ -7,6 +7,7 @@ decompose 산출(RouteDecision)·rerank 산출(RerankResult)·conditions 칩 파
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Literal
@@ -21,6 +22,19 @@ from app.schemas.spring import ProductSearchFilters
 
 _NAMESPACE_ROOT = "buyer_revert"
 _CATEGORIES_KEY = "categories"
+
+# key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
+# 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
+# 덮어써 되돌리기 카테고리가 유실될 수 있다(lost update, PR #46 리뷰).
+_add_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(key: str) -> asyncio.Lock:
+    lock = _add_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _add_locks[key] = lock
+    return lock
 
 
 @dataclass
@@ -127,11 +141,12 @@ class RevertStore:
     async def add(self, key: str, categories) -> None:
         if not categories:
             return
-        current = await self.get(key)
-        current.update(categories)
-        await self._store.aput(
-            (_NAMESPACE_ROOT, key), _CATEGORIES_KEY, {_CATEGORIES_KEY: sorted(current)}
-        )
+        async with _lock_for(key):  # get→put 원자성 보장(lost update 방지)
+            current = await self.get(key)
+            current.update(categories)
+            await self._store.aput(
+                (_NAMESPACE_ROOT, key), _CATEGORIES_KEY, {_CATEGORIES_KEY: sorted(current)}
+            )
 
 
 async def get_revert_store() -> RevertStore:
