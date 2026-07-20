@@ -104,6 +104,29 @@ async def test_partial_text_preserved_on_error() -> None:
     assert "조금" in turn.assistant_text
 
 
+async def test_stream_completes_when_finalize_assistant_fails() -> None:
+    """finish()(대화 저장 DB I/O)가 실패해도 스트림 소비 자체는 예외 없이 끝난다(PR #48 후속 리뷰).
+
+    _wrapped() 의 finally 는 이미 SSE 헤더/프레임이 전송된 뒤 실행된다 — 여기서 finish() 가
+    막히지 않고 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1 위반),
+    CancelledError 취소 전파 중이었다면 그 취소가 이 새 예외로 대체된다. finalize_assistant
+    가 raise 하도록 만들어도 body_iterator 소비 자체가 예외 없이 끝나는지 검증한다.
+    """
+    obs = await _obs("finalize-boom")
+
+    async def fail_finalize(*args, **kwargs):
+        raise RuntimeError("conversation store 일시 장애")
+
+    obs.store.finalize_assistant = fail_finalize
+
+    async def token_then_done():
+        yield 'data: {"type":"token","data":{"text":"응답"}}\n\n'
+
+    resp = await open_stream(_FakeRequest(), "member:finalize-boom", token_then_done, observer=obs)
+    chunks = [c async for c in resp.body_iterator]  # 예외 없이 끝나야 한다
+    assert any("응답" in c for c in chunks)
+
+
 # ─────────── §6.3 (b) 구조화 로그 + PII ───────────
 
 

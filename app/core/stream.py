@@ -300,7 +300,15 @@ async def open_stream(
             await agen.aclose()
             registry.release(session_id)
             if observer is not None:
-                await observer.finish(loop.time(), stream_status, error_type)
+                # 이 시점엔 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤다 — finish() 가
+                # 예외를 던지면 done/error 종결 프레임 없이 스트림이 끊기거나(§2.9/§3.1
+                # 위반), CancelledError 로 취소 전파 중이던 경우 그 취소가 이 새 예외로
+                # 대체돼 정상 client disconnect 가 엉뚱한 오류로 둔갑한다(PR #48 후속 리뷰).
+                # 관측 실패가 스트림 종료 자체를 막지 않도록 로그만 남기고 삼킨다.
+                try:
+                    await observer.finish(loop.time(), stream_status, error_type)
+                except Exception:
+                    logger.exception("observer.finish 실패 session=%s", session_id)
 
     return StreamingResponse(
         _wrapped(),

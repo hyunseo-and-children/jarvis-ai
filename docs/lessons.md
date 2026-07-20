@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
+- 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.
+- 원인: 이 프로젝트에서 인메모리→외부 스토어 이관은 반복적으로 "이전엔 실패할 수 없던 호출이 이제 실패할 수 있다"는 패턴을 만드는데(PR #47 의 `session_end()`도 동일 클래스), 이번엔 그 호출이 **이미 응답이 시작된 SSE 스트림의 finally** 안에 있어 파급이 더 크다 — 응답 시작 전 실패(그냥 500)와 응답 시작 후 finally 실패(스트림 자체가 깨짐)는 심각도가 다르다.
+- 규칙:
+  - **SSE/스트리밍 응답의 `finally` 블록은 "여기서 예외가 나면 이미 보낸 프레임들과 무관하게 스트림 자체가 깨진다"는 걸 항상 의식한다** — 정리 로직(레지스트리 해제 등)과 부가적 관측/저장 로직(finish, 로깅)을 구분해, 후자는 반드시 자체 try/except 로 격리한다.
+  - **같은 함수 안에 여러 `observer.finish()` 호출부가 있어도, 응답이 이미 시작된 뒤(스트림 본문 생성기 안)의 호출부와 응답 시작 전(핸들러 동기 구간)의 호출부는 심각도가 다르다** — 전부 동일하게 취급해 한 번에 고치려 하지 말고, "이미 클라이언트에 데이터가 나간 뒤인가"를 기준으로 우선순위를 가른다(이번엔 딱 하나, `_wrapped()` finally 만 진짜 취약점이었다).
+  - 리뷰가 "이 패턴이 다른 호출부에도 있다"고 폭넓게 지적해도, 그 다른 호출부들이 실제로 같은 심각도인지(예: 응답 시작 전이라 그냥 500이 되는지) 확인하고 나서 고칠 범위를 정한다 — 전부 고치는 게 항상 정답은 아니다.
+- 관련: `app/core/stream.py::open_stream()._wrapped()`, `tests/unit/test_observability.py::test_stream_completes_when_finalize_assistant_fails`, PR #48 후속 리뷰
+
 ## [2026-07-20] "실패할 수 없던 호출"이 인메모리→외부 스토어 이관 후 실패 가능 호출로 바뀌면 기존 try 범위가 새지 않는지 재점검해야 한다
 - 증상: PR #47 후속 리뷰가 `app/api/events.py::session_end()`에서 `get_profile_store()`/`processed_events.mark_if_new()`/`store.clear_session_ctx_upto()` 세 호출이 `try` 블록 밖(또는 뒤)에 있어 예외가 안 잡힌다고 지적. 이관 전(인메모리 싱글턴) 이 호출들은 절대 실패할 수 없었지만, 이슈 #33 이관 후 운영(`auth_mode=jwks`)에서는 pg-profile 연결 실패 시 폴백 없이 `raise`하므로, DB 일시 장애만으로 이 엔드포인트가 500을 반환 — `§3.5`("어떤 오류도 202를 막지 않는다")를 위반한다. `get_profile_store()`를 raise 하는 fake 로 재현 — 수정 전엔 테스트가 raw exception 으로 실패(=500), try 범위를 넓힌 수정 후엔 202 통과.
 - 원인: 원래 코드는 "이 호출은 안전하다"는 전제로 짜여 있었는데, 그 전제(인메모리라 실패 불가) 자체가 이관으로 깨졌다. 인메모리→외부 스토어 이관은 데이터 구조뿐 아니라 "이 호출이 실패할 수 있는가"라는 실패 모델 자체를 바꾼다 — 기존 에러 핸들링 경계(try 범위)가 새 실패 모델을 커버하는지 별도로 재검토해야 하는데 그걸 놓쳤다.
