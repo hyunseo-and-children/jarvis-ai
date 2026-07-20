@@ -39,10 +39,30 @@ _SUMMARY_KEY = "summary"
 _SESSION_KEY = "buffer"
 
 
-def _index_config() -> dict:
-    """facts semantic 인덱스 설정 — 카탈로그와 임베딩 함수·차원 공유(결정 16-A, config 주입)."""
+def _fake_embed(texts: list[str]) -> list[list[float]]:
+    """InMemoryStore 폴백 전용 — 실 임베딩 API 호출 없는 결정론적 벡터(배선만 유지).
+
+    google_api_key 미구성 환경(유닛 테스트·CI·DB 없는 dev)에서 add_fact 가 실제
+    Google API 를 호출하면 안 된다 — semantic 인덱스 자체의 유사도 검증은
+    tests/integration/test_pg_profile_store.py(fake embed 주입) 가 담당한다.
+    """
+    dim = get_settings().embedding_dim
+    return [[0.0] * dim for _ in texts]
+
+
+def _pg_index_config() -> dict:
+    """pg-profile(AsyncPostgresStore) 전용 semantic 인덱스 — 실 Google 임베딩 API.
+
+    카탈로그와 임베딩 함수·차원 공유(결정 16-A, config 주입).
+    """
     settings = get_settings()
     return {"dims": settings.embedding_dim, "embed": embed_texts, "fields": ["fact"]}
+
+
+def _fallback_index_config() -> dict:
+    """InMemoryStore 폴백(테스트 격리·DB 미가용 dev) 전용 — 실 API 호출 없는 fake embed."""
+    settings = get_settings()
+    return {"dims": settings.embedding_dim, "embed": _fake_embed, "fields": ["fact"]}
 
 
 @dataclass
@@ -57,7 +77,7 @@ class ProfileStore:
     """프로필 스토어 — LangGraph BaseStore(pg-profile) 백엔드(신원 스코프)."""
 
     def __init__(self, store: BaseStore | None = None) -> None:
-        self._store = store or InMemoryStore(index=_index_config())
+        self._store = store or InMemoryStore(index=_fallback_index_config())
 
     # ── 요약 (reader·GET·consolidation) ──
     async def get_summary(self, user_id: str) -> ProfileSummary | None:
@@ -156,11 +176,12 @@ async def _get_store() -> BaseStore:
     global _store, _store_ctx, _fallback_warned
     if _store is None:
         settings = get_settings()
-        index_config = _index_config()
         try:
             from langgraph.store.postgres.aio import AsyncPostgresStore  # noqa: PLC0415
 
-            ctx = AsyncPostgresStore.from_conn_string(settings.profile_db_url, index=index_config)
+            ctx = AsyncPostgresStore.from_conn_string(
+                settings.profile_db_url, index=_pg_index_config()
+            )
             store = await asyncio.wait_for(
                 ctx.__aenter__(), timeout=settings.state_store_connect_timeout_s
             )
@@ -177,7 +198,7 @@ async def _get_store() -> BaseStore:
                     exc,
                 )
                 _fallback_warned = True
-            _store = InMemoryStore(index=index_config)
+            _store = InMemoryStore(index=_fallback_index_config())
     return _store
 
 
@@ -187,6 +208,6 @@ async def get_profile_store() -> ProfileStore:
 
 
 def reset_profile_store() -> None:
-    """테스트 격리용 — 요약·fact·세션버퍼(InMemoryStore) + 멱등 상태(processed_events)를 비운다."""
-    set_store(InMemoryStore(index=_index_config()))
+    """테스트 격리용 — 요약·fact·세션버퍼(InMemoryStore, fake embed) + 멱등 상태(processed_events)를 비운다."""
+    set_store(InMemoryStore(index=_fallback_index_config()))
     processed_events.reset()
