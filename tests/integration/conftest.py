@@ -16,6 +16,31 @@ from app.main import app
 from app.services.spring_client import get_recent_purchases as _real_get_recent_purchases
 from tests.integration._stubs import ScriptedLLM, SpringStub
 
+# 하니스 표준 서비스 토큰 — Spring stub 이 검증하는 값과 동일(§2.3 레인 c).
+E2E_INTERNAL_TOKEN = "e2e-internal-token"
+
+
+@pytest.fixture
+def dev_settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
+    """인증 레인을 **dev 로 못박는다** — 앰비언트 `.env`/환경변수와 무관하게 결정적으로 돈다.
+
+    이 픽스처가 없으면 개발자·CI 환경이 `AUTH_MODE=jwks` 일 때 기본 하니스가 무너진다:
+    dev 전용 HS256 토큰(member_token)은 서명 검증에 걸려 401, `/events/session-end` 는
+    서비스 토큰 누락으로 401 — 흐름을 태워보기도 전에 실패한다(리뷰 지적, PR #41).
+    실인증 레인 검증은 `jwks_auth` 가 이 핀을 덮어써서 수행한다.
+
+    auth_mode 를 읽는 두 지점(요청 인증 deps · 레이트 리밋 미들웨어)을 함께 고정한다.
+    """
+    import app.core.ratelimit as ratelimit
+    from app.api import deps
+
+    settings = Settings(
+        _env_file=None, auth_mode="dev", internal_api_token=E2E_INTERNAL_TOKEN
+    )
+    monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    monkeypatch.setattr(ratelimit, "get_settings", lambda: settings)
+    return settings
+
 
 @pytest.fixture
 def spring(monkeypatch: pytest.MonkeyPatch) -> SpringStub:
@@ -28,7 +53,7 @@ def spring(monkeypatch: pytest.MonkeyPatch) -> SpringStub:
     import app.services.spring_client as sc
 
     stub = SpringStub()
-    settings = Settings(_env_file=None, internal_api_token="e2e-internal-token")
+    settings = Settings(_env_file=None, internal_api_token=E2E_INTERNAL_TOKEN)
 
     def _stub_client() -> httpx.AsyncClient:
         return httpx.AsyncClient(
@@ -70,8 +95,11 @@ def llm(monkeypatch: pytest.MonkeyPatch) -> ScriptedLLM:
 
 
 @pytest.fixture
-def client() -> TestClient:
-    """AI 서버 앱 클라이언트 (기본 dev 인증 모드 — 헤더 없으면 게스트)."""
+def client(dev_settings: Settings) -> TestClient:
+    """AI 서버 앱 클라이언트. 인증 레인은 dev 로 고정된다(dev_settings — 앰비언트 env 무관).
+
+    실인증 레인은 `jwks_auth` 가 이 핀을 덮어쓴다(같은 monkeypatch 대상, 나중 적용이 우선).
+    """
     with TestClient(app) as test_client:
         yield test_client
 

@@ -16,7 +16,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from app.api import deps
 from app.core import auth
 from app.core.config import Settings
-from tests.integration.conftest import event_types, first_of, parse_sse
+from tests.integration.conftest import E2E_INTERNAL_TOKEN, event_types, first_of, parse_sse
 from tests.unit._jwks import (
     JWKS_URL,
     KID,
@@ -38,17 +38,26 @@ def rsa_key() -> rsa.RSAPrivateKey:
 
 
 @pytest.fixture
-def jwks_auth(monkeypatch: pytest.MonkeyPatch, rsa_key: rsa.RSAPrivateKey):
-    """앱을 jwks 인증 모드로 전환하고 JWKS 를 로컬 키페어로 서빙한다 (운영 레인 재현)."""
+def jwks_auth(monkeypatch: pytest.MonkeyPatch, rsa_key: rsa.RSAPrivateKey, client):
+    """앱을 jwks 인증 모드로 전환하고 JWKS 를 로컬 키페어로 서빙한다 (운영 레인 재현).
+
+    `client`(→ dev_settings)에 의존해 **dev 핀이 먼저 걸린 뒤** 이 픽스처가 덮어쓰도록
+    순서를 고정한다 — 인자 나열 순서에 기대지 않는다(같은 monkeypatch 대상).
+    """
+    import app.core.ratelimit as ratelimit
+
     settings = Settings(
         _env_file=None,
         auth_mode="jwks",
         jwks_url=JWKS_URL,
         jwt_scope=SCOPE,
         pii_hash_pepper="e2e-pepper",
-        internal_api_token="e2e-internal-token",
+        internal_api_token=E2E_INTERNAL_TOKEN,
     )
+    # 운영 레인은 요청 인증(deps)과 레이트 리밋 sub 스코프가 **같은 검증 경로**를 탄다(#34) —
+    # 둘 다 jwks 로 올려야 실제 배포 형상과 같다(JWKS fetch 는 install_jwks_fetch 로 대역).
     monkeypatch.setattr(deps, "get_settings", lambda: settings)
+    monkeypatch.setattr(ratelimit, "get_settings", lambda: settings)
     auth._jwk_client.cache_clear()
     install_jwks_fetch(monkeypatch, lambda: jwks_of((rsa_key, KID)))
     yield settings
