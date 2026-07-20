@@ -39,7 +39,7 @@ def _now_iso() -> str:
 
 
 def record_remember(user_id: str, fact: str) -> None:
-    """"기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF).
+    """ "기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF).
 
     발화 원문을 그대로 저장하되 config 길이 상한으로 절단한다(오탐·남용 시 무제한 누적 방어).
     """
@@ -51,18 +51,25 @@ def record_remember(user_id: str, fact: str) -> None:
         get_profile_store().add_fact(user_id, cleaned, cap=settings.profile_max_facts)
 
 
-async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings) -> list[str] | None:
-    """세션 버퍼(transient)에서 후보 델타를 LLM 추출 → 게이트 승격. 승격된 fact 목록 반환.
+async def generate_session_delta(
+    user_id: str, thread_key: str, *, llm, settings
+) -> tuple[list[str], int] | None:
+    """세션 버퍼(transient)에서 후보 델타를 LLM 추출 → 게이트 승격. (승격 fact 목록, 스냅샷 워터마크) 반환.
 
-    반환: None = degrade(버퍼 없음/LLM 미구성, 버퍼 보존 신호), list = 처리됨(승격 fact, 빈 목록 가능).
+    반환: None = degrade(버퍼 없음/LLM 미구성, 버퍼 보존 신호), tuple = 처리됨(승격 fact 빈 목록 가능 + 워터마크).
+    워터마크는 호출자가 clear_session_ctx_upto 로 "처리한 만큼만" 지우는 데 쓴다 — LLM 호출이 진행되는
+    동안 버퍼에 새로 추가된 항목까지 통째로 삭제되는 레이스를 막기 위함(cap 트리밍으로 스냅샷 항목이
+    먼저 밀려나도 seq 기준이라 안전).
     LLMError 는 전파 — 상위가 degrade 처리. 게스트는 호출 안 함(상위 책임).
     """
     store = get_profile_store()
-    buffer = store.get_session_ctx(thread_key)
+    buffer, watermark = store.get_session_ctx_snapshot(thread_key)
     if not buffer or llm is None:
         return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
     # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
-    raw = await llm.complete(system=_DELTA_SYSTEM, user="\n".join(buffer), model=settings.sonnet_model_id, max_tokens=800)
+    raw = await llm.complete(
+        system=_DELTA_SYSTEM, user="\n".join(buffer), model=settings.sonnet_model_id, max_tokens=800
+    )
     data = extract_json(raw)
     promoted: list[str] = []
     for delta in data.get("deltas", []) if isinstance(data, dict) else []:
@@ -79,7 +86,7 @@ async def generate_session_delta(user_id: str, thread_key: str, *, llm, settings
         ):
             store.add_fact(user_id, fact, cap=settings.profile_max_facts)
             promoted.append(fact)
-    return promoted
+    return promoted, watermark
 
 
 async def consolidate(user_id: str, *, llm, settings) -> bool:
@@ -92,7 +99,12 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
     if not facts or llm is None:
         return False
     try:
-        raw = await llm.complete(system=_CONSOLIDATE_SYSTEM, user="\n".join(facts), model=settings.sonnet_model_id, max_tokens=1000)
+        raw = await llm.complete(
+            system=_CONSOLIDATE_SYSTEM,
+            user="\n".join(facts),
+            model=settings.sonnet_model_id,
+            max_tokens=1000,
+        )
     except LLMError:
         return False
     markdown = (raw or "").strip()[: settings.profile_summary_max_chars]

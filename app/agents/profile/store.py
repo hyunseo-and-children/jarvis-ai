@@ -30,7 +30,8 @@ class ProfileStore:
     def __init__(self) -> None:
         self._summary: dict[str, ProfileSummary] = {}
         self._facts: dict[str, list[str]] = {}
-        self._session_ctx: dict[str, list[str]] = {}
+        self._session_ctx: dict[str, list[tuple[int, str]]] = {}
+        self._session_seq: dict[str, int] = {}
         self._processed: set[str] = set()
 
     # ── 요약 (reader·GET·consolidation) ──
@@ -56,16 +57,32 @@ class ProfileStore:
     def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
         if not text:
             return
+        seq = self._session_seq.get(key, 0) + 1
+        self._session_seq[key] = seq
         buf = self._session_ctx.setdefault(key, [])
-        buf.append(text)
+        buf.append((seq, text))
         if cap and cap > 0 and len(buf) > cap:
             del buf[: len(buf) - cap]  # 최신 cap 개만 유지(무제한 누적 방어)
 
     def get_session_ctx(self, key: str) -> list[str]:
-        return list(self._session_ctx.get(key, []))
+        return [text for _, text in self._session_ctx.get(key, [])]
 
-    def clear_session_ctx(self, key: str) -> None:
-        self._session_ctx.pop(key, None)
+    def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
+        """(발화 목록, 스냅샷 워터마크 seq) 반환 — 워터마크는 clear_session_ctx_upto 인자로 그대로 넘긴다."""
+        buf = self._session_ctx.get(key, [])
+        return [text for _, text in buf], (buf[-1][0] if buf else 0)
+
+    def clear_session_ctx_upto(self, key: str, watermark: int) -> None:
+        """watermark(seq) 이하 항목만 제거 — cap 트리밍으로 스냅샷 항목이 먼저 밀려나 있어도,
+        그 사이 새로 추가된 항목(seq > watermark)은 위치와 무관하게 항상 보존된다."""
+        buf = self._session_ctx.get(key)
+        if not buf:
+            return
+        remaining = [(seq, text) for seq, text in buf if seq > watermark]
+        if remaining:
+            self._session_ctx[key] = remaining
+        else:
+            del self._session_ctx[key]
 
     # ── 멱등 (session-end eventId) ──
     def seen_event(self, event_id: str) -> bool:
@@ -89,6 +106,7 @@ class ProfileStore:
         self._summary.clear()
         self._facts.clear()
         self._session_ctx.clear()
+        self._session_seq.clear()
         self._processed.clear()
 
 

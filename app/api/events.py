@@ -36,18 +36,21 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     settings = get_settings()
     llm = get_llm()
     ran = False
+    watermark = 0
     try:
-        # generate 반환: None=degrade(버퍼 보존), list=LLM 정상 실행(게이트 반려로 빈 목록이어도 처리됨).
+        # generate 반환: None=degrade(버퍼 보존), tuple=LLM 정상 실행(게이트 반려로 빈 목록이어도 처리됨).
         result = await generate_session_delta(event.user_id, key, llm=llm, settings=settings)
         if result is not None:
+            _, watermark = result
             await consolidate(event.user_id, llm=llm, settings=settings)
             ran = True
     except Exception:  # noqa: BLE001 — best-effort inbound 통지(§3.5): 절대 500 금지. 실패 시 버퍼 보존.
         ran = False
 
     if ran:
-        # LLM 이 실제 처리한 경우에만 버퍼 정리(정상 반려 포함).
-        store.clear_session_ctx(key)
+        # LLM 이 실제 처리한 경우에만, 그 스냅샷 워터마크 이하만 버퍼 정리(정상 반려 포함) — LLM 호출 중
+        # 새로 추가된 항목까지 통째로 삭제되지 않게 한다(cap 트리밍 상황에서도 seq 기준이라 안전).
+        store.clear_session_ctx_upto(key, watermark)
     else:
         # degrade/오류 → 마킹 해제(멱등은 성공에만) + 버퍼 보존 → 재전송·다음 배치가 재처리(REQ-PROF-050/051).
         store.unmark_event(event.event_id)
