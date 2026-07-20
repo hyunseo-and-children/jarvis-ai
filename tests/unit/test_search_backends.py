@@ -10,7 +10,7 @@ import pytest
 from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
 from app.pipelines.compare import GoldenCase, compare_backends, recall_at_k
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
-from app.services import spring_client
+from app.services import search_service, spring_client
 from app.services.search_service import (
     EmbeddingRerankBackend,
     VectorSearchBackend,
@@ -27,9 +27,33 @@ def _embed(texts):
 
 def _seed_store():
     store = CatalogArtifactStore()
-    store.upsert(CatalogArtifact(product_id=1, search_doc="여행 방수 파우치", embedding=_embed(["여행 방수"])[0], name="파우치", category="여행용품"))
-    store.upsert(CatalogArtifact(product_id=2, search_doc="무선 이어폰", embedding=_embed(["무선 이어폰"])[0], name="이어폰", category="이어폰"))
-    store.upsert(CatalogArtifact(product_id=3, search_doc="린넨 셔츠", embedding=_embed(["린넨 셔츠"])[0], name="셔츠", category="의류"))
+    store.upsert(
+        CatalogArtifact(
+            product_id=1,
+            search_doc="여행 방수 파우치",
+            embedding=_embed(["여행 방수"])[0],
+            name="파우치",
+            category="여행용품",
+        )
+    )
+    store.upsert(
+        CatalogArtifact(
+            product_id=2,
+            search_doc="무선 이어폰",
+            embedding=_embed(["무선 이어폰"])[0],
+            name="이어폰",
+            category="이어폰",
+        )
+    )
+    store.upsert(
+        CatalogArtifact(
+            product_id=3,
+            search_doc="린넨 셔츠",
+            embedding=_embed(["린넨 셔츠"])[0],
+            name="셔츠",
+            category="의류",
+        )
+    )
     return store
 
 
@@ -64,11 +88,36 @@ async def test_embedding_rerank_backend_reorders(monkeypatch):
     assert [p.product_id for p in result.products][0] == 1  # 재정렬로 여행 방수가 최상위
 
 
+async def test_embedding_rerank_offloads_scoring_to_thread(monkeypatch):
+    store = _seed_store()
+    calls = []
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(search_service.asyncio, "to_thread", fake_to_thread)
+
+    async def fake_search(filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=1, name="파우치", price=30)], total_count=1
+        )
+
+    monkeypatch.setattr(spring_client, "search_products", fake_search)
+    backend = EmbeddingRerankBackend(store=store, embed=_embed)
+    result = await backend.search(ProductSearchFilters(keyword="여행 방수", limit=10))
+
+    assert len(calls) == 1  # 블로킹 store 조회·정렬이 스레드로 오프로드됨(PR #42 리뷰)
+    assert result.products[0].product_id == 1
+
+
 async def test_embedding_rerank_passthrough_without_keyword(monkeypatch):
     store = _seed_store()
 
     async def fake_search(filters):
-        return ProductSearchResult(products=[SpringProduct(product_id=9, name="x", price=1)], total_count=1)
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=9, name="x", price=1)], total_count=1
+        )
 
     monkeypatch.setattr(spring_client, "search_products", fake_search)
     backend = EmbeddingRerankBackend(store=store, embed=_embed)
@@ -96,9 +145,34 @@ async def test_vector_backend_with_hydrate_returns_ranked_and_receives_filters()
         )
 
     backend = VectorSearchBackend(store=store, embed=_embed, hydrate=hydrate, over_fetch=4)
-    result = await backend.search(ProductSearchFilters(keyword="무선 이어폰", limit=3, category="이어폰"))
+    result = await backend.search(
+        ProductSearchFilters(keyword="무선 이어폰", limit=3, category="이어폰")
+    )
     assert result.products[0].product_id == 2
     assert seen["filters"].category == "이어폰"  # 필터가 hydrate 로 전달됨(리뷰 반영, finding 2)
+
+
+async def test_vector_backend_offloads_ranking_to_thread(monkeypatch):
+    store = _seed_store()
+    calls = []
+
+    async def fake_to_thread(func, /, *args, **kwargs):
+        calls.append(func)
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(search_service.asyncio, "to_thread", fake_to_thread)
+
+    async def hydrate(ids, filters):
+        return ProductSearchResult(
+            products=[SpringProduct(product_id=i, name="n", price=1) for i in ids[: filters.limit]],
+            total_count=len(ids),
+        )
+
+    backend = VectorSearchBackend(store=store, embed=_embed, hydrate=hydrate)
+    result = await backend.search(ProductSearchFilters(keyword="무선 이어폰", limit=3))
+
+    assert calls == [vector_rank]  # 블로킹 store.all() 스캔이 스레드로 오프로드됨(PR #42 리뷰)
+    assert result.products
 
 
 def test_cosine_dim_mismatch_excluded():
