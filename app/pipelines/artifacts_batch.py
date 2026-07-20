@@ -21,6 +21,7 @@ from app.core.config import Settings, get_settings
 from app.core.llm import LLMClient, get_llm
 from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import (
+    ArtifactStore,
     CatalogArtifact,
     CatalogArtifactStore,
     get_catalog_store,
@@ -49,7 +50,7 @@ async def _process_change(
     *,
     llm: LLMClient,
     embed: Embed,
-    store: CatalogArtifactStore,
+    store: ArtifactStore,
     settings: Settings,
 ) -> None:
     product = {
@@ -77,7 +78,7 @@ async def _process_change(
 async def _drain(
     fetch: Fetch,
     start_cursor: str,
-    target: CatalogArtifactStore,
+    target: ArtifactStore,
     *,
     llm: LLMClient,
     embed: Embed,
@@ -117,7 +118,7 @@ async def run_artifacts_batch(
     fetch: Fetch | None = None,
     llm: LLMClient | None = None,
     embed: Embed | None = None,
-    store: CatalogArtifactStore | None = None,
+    store: ArtifactStore | None = None,
     settings: Settings | None = None,
     full_rebuild: bool = False,
 ) -> BatchResult:
@@ -148,6 +149,9 @@ async def run_artifacts_batch(
 
     _log.info(
         "artifacts batch: processed=%d delisted=%d pages=%d rebuild=%s",
-        result.processed, result.delisted, result.pages, full_rebuild,
+        result.processed,
+        result.delisted,
+        result.pages,
+        full_rebuild,
     )
     return result

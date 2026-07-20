@@ -11,10 +11,15 @@ import pytest
 
 from app.core.config import get_settings
 from app.pipelines import embedding as _embedding
-from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
+from app.pipelines.artifact_store import ArtifactStore, CatalogArtifact, CatalogArtifactStore
 from app.pipelines.artifacts_batch import run_artifacts_batch
 from app.pipelines.enrichment import enrich_product
 from app.schemas.spring import ProductChange, ProductChangesPage
+
+
+def test_catalog_artifact_store_satisfies_shared_protocol():
+    """CatalogArtifactStore(인메모리)·PgCatalogArtifactStore(pg-catalog) 공유 계약 정합 (이슈 #31)."""
+    assert isinstance(CatalogArtifactStore(), ArtifactStore)
 
 
 class _EnrichLLM:
@@ -30,8 +35,14 @@ def _embed(texts):
 
 def _change(pid, status="ACTIVE", name="여행 방수 파우치"):
     return ProductChange(
-        product_id=pid, status=status, updated_at="2026-07-20T00:00:00Z",
-        name=name, description="설명", category="여행용품", brand="트래블", attributes={"방수": True},
+        product_id=pid,
+        status=status,
+        updated_at="2026-07-20T00:00:00Z",
+        name=name,
+        description="설명",
+        category="여행용품",
+        brand="트래블",
+        attributes={"방수": True},
     )
 
 
@@ -76,7 +87,9 @@ async def test_enrich_product_returns_extras():
 def test_build_search_doc_includes_fields_and_tags():
     doc = _embedding.build_search_doc(
         {
-            "name": "여행 파우치", "category": "여행용품", "brand": "트래블",
+            "name": "여행 파우치",
+            "category": "여행용품",
+            "brand": "트래블",
             "attributes": {"방수": True},
             "extras": {"tags": ["기내반입"], "attributes": {"소재": "나일론"}},
         }
@@ -152,8 +165,12 @@ async def test_batch_full_rebuild_starts_from_zero():
         return ProductChangesPage(items=[], next_cursor=None, has_more=False)
 
     await run_artifacts_batch(
-        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store,
-        settings=get_settings(), full_rebuild=True,
+        fetch=fetch,
+        llm=_EnrichLLM(),
+        embed=_embed,
+        store=store,
+        settings=get_settings(),
+        full_rebuild=True,
     )
     assert seen[0] == "0"
 
@@ -203,8 +220,12 @@ async def test_batch_full_rebuild_replaces_stale():
         return ProductChangesPage(items=[_change(1)], next_cursor="c1", has_more=False)
 
     result = await run_artifacts_batch(
-        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store,
-        settings=get_settings(), full_rebuild=True,
+        fetch=fetch,
+        llm=_EnrichLLM(),
+        embed=_embed,
+        store=store,
+        settings=get_settings(),
+        full_rebuild=True,
     )
     assert store.get(99) is None  # stale 원자 교체로 제거(finding 1)
     assert store.get(1) is not None
@@ -222,8 +243,12 @@ async def test_batch_full_rebuild_preserves_on_failure():
 
     with pytest.raises(RuntimeError):
         await run_artifacts_batch(
-            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store,
-            settings=get_settings(), full_rebuild=True,
+            fetch=fetch,
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=store,
+            settings=get_settings(),
+            full_rebuild=True,
         )
     assert store.get(99) is not None  # 재구축 실패 시 기존 데이터 보존(원자 교체)
 
@@ -231,7 +256,9 @@ async def test_batch_full_rebuild_preserves_on_failure():
 async def test_fetch_product_changes_failure_envelope_raises(monkeypatch):
     import app.services.spring_client as sc
 
-    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, {"success": False, "data": None})))
+    monkeypatch.setattr(
+        sc, "_client", lambda: _Client(_Resp(200, {"success": False, "data": None}))
+    )
     with pytest.raises(sc.SpringUnavailableError):
         await sc.fetch_product_changes("0", 500)
 

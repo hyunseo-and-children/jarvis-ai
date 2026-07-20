@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol, runtime_checkable
 
 
 @dataclass
@@ -21,6 +22,24 @@ class CatalogArtifact:
     extras: dict = field(default_factory=dict)
     name: str | None = None
     category: str | None = None
+
+
+@runtime_checkable
+class ArtifactStore(Protocol):
+    """CatalogArtifactStore(인메모리)·PgCatalogArtifactStore(pg-catalog) 공유 계약 (이슈 #31).
+
+    인터페이스가 바뀌면 양쪽 구현체를 함께 고쳐야 한다 — 타입체커가 시그니처 드리프트를 잡아준다.
+    """
+
+    def upsert(self, artifact: CatalogArtifact) -> None: ...
+    def delete(self, product_id: int) -> None: ...
+    def clear(self) -> None: ...
+    def replace_all(self, artifacts: list[CatalogArtifact]) -> None: ...
+    def get(self, product_id: int) -> CatalogArtifact | None: ...
+    def all(self) -> list[CatalogArtifact]: ...
+    def count(self) -> int: ...
+    def get_cursor(self) -> str | None: ...
+    def set_cursor(self, cursor: str | None) -> None: ...
 
 
 class CatalogArtifactStore:

@@ -18,7 +18,7 @@ from typing import Protocol
 
 from app.core.config import get_settings
 from app.pipelines import embedding as _embedding
-from app.pipelines.artifact_store import CatalogArtifactStore, get_catalog_store
+from app.pipelines.artifact_store import ArtifactStore, get_catalog_store
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult
 from app.services import spring_client
 
@@ -46,15 +46,13 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return num / (na * nb)
 
 
-def vector_rank(query_vec: list[float], store: CatalogArtifactStore, *, k: int) -> list[int]:
+def vector_rank(query_vec: list[float], store: ArtifactStore, *, k: int) -> list[int]:
     """query 임베딩과 저장 임베딩의 코사인으로 상위 k productId 를 반환한다 (방식1 코어, 오프라인 안전).
 
     라이브 가용성(재고·활성) 확인은 별도(C-17 hydrate). 오프라인 골든셋 비교는 이 랭킹만 사용한다.
     """
     scored = [
-        (_cosine(query_vec, art.embedding), art.product_id)
-        for art in store.all()
-        if art.embedding
+        (_cosine(query_vec, art.embedding), art.product_id) for art in store.all() if art.embedding
     ]
     scored.sort(key=lambda t: t[0], reverse=True)
     return [pid for _, pid in scored[:k]]
@@ -75,7 +73,7 @@ class EmbeddingRerankBackend:
     맨 뒤로(−1.0). keyword 없거나 후보 없으면 Spring 순서 그대로 반환.
     """
 
-    def __init__(self, *, store: CatalogArtifactStore | None = None, embed=None) -> None:
+    def __init__(self, *, store: ArtifactStore | None = None, embed=None) -> None:
         self._store = store or get_catalog_store()
         self._embed = embed or _embedding.embed_texts
 
@@ -106,19 +104,25 @@ class VectorSearchBackend:
     def __init__(
         self,
         *,
-        store: CatalogArtifactStore | None = None,
+        store: ArtifactStore | None = None,
         embed=None,
         hydrate=None,
         over_fetch: int | None = None,
     ) -> None:
         self._store = store or get_catalog_store()
         self._embed = embed or _embedding.embed_texts
-        self._hydrate = hydrate  # Callable[[list[int], ProductSearchFilters], Awaitable[...]] | None
-        self._over_fetch = over_fetch if over_fetch is not None else get_settings().catalog_vector_overfetch
+        self._hydrate = (
+            hydrate  # Callable[[list[int], ProductSearchFilters], Awaitable[...]] | None
+        )
+        self._over_fetch = (
+            over_fetch if over_fetch is not None else get_settings().catalog_vector_overfetch
+        )
 
     async def search(self, filters: ProductSearchFilters) -> ProductSearchResult:
         qvec = self._embed([filters.keyword or ""])[0]
-        k = max(filters.limit, filters.limit * self._over_fetch)  # hydrate 필터/품절 제거 대비 여유조회
+        k = max(
+            filters.limit, filters.limit * self._over_fetch
+        )  # hydrate 필터/품절 제거 대비 여유조회
         ids = vector_rank(qvec, self._store, k=k)
         if self._hydrate is None:
             raise spring_client.SpringUnavailableError(
