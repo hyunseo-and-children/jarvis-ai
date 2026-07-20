@@ -42,6 +42,12 @@ _SESSION_KEY = "buffer"
 # key(conversation_key)별 asyncio.Lock — append_session_ctx/clear_session_ctx_upto 의
 # get→put(read-modify-write) 구간을 직렬화한다. 동일 세션에 연속 발화가 빠르게 들어오면
 # lost update 로 앞선 발화가 통째로 유실될 수 있다(RevertStore.add() 와 동일 근거, PR #47 리뷰).
+#
+# [한계, PR #47 후속 리뷰 — RevertStore._add_locks 와 동일 전제] 이 락도 프로세스 로컬이라
+# 다중 인스턴스 배포에서는 직렬화되지 않고(app/core/stream.py 의 ActiveStreamRegistry 와
+# 동일 "MVP 단일 인스턴스" 전제), conversation_key 마다 항목이 쌓이기만 하고 제거되지
+# 않아 장시간 구동 시 완만한 메모리 누수다 — MVP 규모에서 실질적 위험 낮음으로 판단해
+# TTL/LRU 정리는 미구현(reset_profile_store() 는 테스트 격리용으로만 비운다).
 _session_locks: dict[str, asyncio.Lock] = {}
 
 
@@ -50,6 +56,28 @@ def _session_lock(key: str) -> asyncio.Lock:
     if lock is None:
         lock = asyncio.Lock()
         _session_locks[key] = lock
+    return lock
+
+
+# user_id 별 asyncio.Lock — add_fact() 의 cap 트리밍(asearch→sort→adelete) 구간을 직렬화한다.
+#
+# [검증 결과, PR #47 후속 리뷰] append_session_ctx 와 달리 이 트리밍은 단일 값을 덮어쓰는
+# get→put 이 아니라, 시간에 따라 계속 늘어나는 항목 집합에서 "가장 오래된 초과분만 지우는"
+# 연산이다 — 임의 시점의 부분 스냅샷은 항상 그 시점까지 커밋된 항목들의 시간순 앞부분(prefix)
+# 이므로, 서로 다른 스냅샷을 본 동시 호출들의 삭제 대상은 항상 서로 부분집합 관계이고
+# adelete 는 멱등이라 실제 데이터 유실로 이어지지 않는다(포워스트-인터리브 fake store 와
+# 실 Postgres 양쪽으로 재현 시도했으나 락 없이도 cap 을 넘기지 않음을 확인). 즉 이 락은
+# 증명된 버그의 수정이 아니라 _session_locks 와의 패턴 일관성을 위한 방어적 비용-제로 조치.
+# 한계는 _session_locks 와 동일(프로세스 로컬, user_id 별 무제한 누적) — reset_profile_store()
+# 로만 정리.
+_fact_locks: dict[str, asyncio.Lock] = {}
+
+
+def _fact_lock(key: str) -> asyncio.Lock:
+    lock = _fact_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _fact_locks[key] = lock
     return lock
 
 
@@ -122,11 +150,12 @@ class ProfileStore:
         key = uuid.uuid4().hex
         await self._store.aput((_FACTS_NS_ROOT, user_id), key, {"fact": fact})
         if cap and cap > 0:
-            items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=10_000)
-            if len(items) > cap:
-                items.sort(key=lambda it: it.created_at)
-                for stale in items[: len(items) - cap]:  # 최신 cap 개만 유지(recency-wins)
-                    await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
+            async with _fact_lock(user_id):  # asearch→adelete 구간 직렬화(방어적, 아래 참조)
+                items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=10_000)
+                if len(items) > cap:
+                    items.sort(key=lambda it: it.created_at)
+                    for stale in items[: len(items) - cap]:  # 최신 cap 개만 유지(recency-wins)
+                        await self._store.adelete((_FACTS_NS_ROOT, user_id), stale.key)
 
     # ── transient 세션 버퍼 (승격 전 격리, REQ-PROF transient) ──
     async def append_session_ctx(self, key: str, text: str, *, cap: int | None = None) -> None:
@@ -179,27 +208,33 @@ _store: BaseStore | None = None
 _store_ctx: object | None = None  # AsyncPostgresStore cm — 앱 수명 동안 GC 방지
 _fallback_warned = False
 _init_lock = asyncio.Lock()
+_pending_cleanup: list[object] = []  # set_store() 가 못 닫은 이전 ctx — _get_store() 진입 시 정리
 
 
 def set_store(store: BaseStore | None) -> None:
     """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
 
-    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 백그라운드 태스크로
-    close 를 시도한다 — 이 함수는 sync 라 여기서 직접 await 할 수 없다
-    (app/core/pg_store.py 와 동일 패턴, PR #46 리뷰).
+    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 정리 대기열에 넣는다.
+    이 함수는 sync 라 여기서 직접 await 할 수 없고, `asyncio.get_running_loop()`
+    fire-and-forget 태스크 방식은 **실행 중인 루프가 없으면 조용히 스킵**된다 —
+    `tests/conftest.py` 의 sync autouse fixture 가 정확히 그 상황이라(이벤트 루프
+    시작 전) 실제로는 한 번도 정리가 안 됐었다(app/core/pg_store.py 와 동일 버그,
+    PR #46 후속 리뷰). 대신 다음 `_get_store()` 호출(반드시 async 컨텍스트) 시점에
+    확실히 정리한다.
     """
     global _store, _store_ctx
     old_ctx = _store_ctx
     _store = store
     _store_ctx = None
     if old_ctx is not None:
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_running_loop().create_task(_close_ctx(old_ctx))
+        _pending_cleanup.append(old_ctx)
 
 
-async def _close_ctx(ctx) -> None:  # noqa: ANN001 - AsyncPostgresStore 의 async context manager
-    with contextlib.suppress(Exception):
-        await ctx.__aexit__(None, None, None)
+async def _drain_pending_cleanup() -> None:
+    while _pending_cleanup:
+        ctx = _pending_cleanup.pop()
+        with contextlib.suppress(Exception):
+            await ctx.__aexit__(None, None, None)
 
 
 async def _get_store() -> BaseStore:
@@ -210,6 +245,7 @@ async def _get_store() -> BaseStore:
     와 동일 패턴, PR #47 리뷰).
     """
     global _store, _store_ctx, _fallback_warned
+    await _drain_pending_cleanup()
     async with _init_lock:
         if _store is None:
             settings = get_settings()
@@ -263,3 +299,4 @@ def reset_profile_store() -> None:
     processed_events.reset()
     _init_lock = asyncio.Lock()
     _session_locks.clear()
+    _fact_locks.clear()
