@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-20] 공유 락을 쥔 채 실행되는 초기화 블록은 모든 await 지점에 상한이 있어야 한다
+- 증상: PR #46 후속 리뷰가 `app/core/pg_store.py::get_store()`에서 `ctx.__aenter__()`(커넥션 수립)만 `state_store_connect_timeout_s`로 감싸져 있고, 바로 다음의 `await store.setup()`(스키마 DDL)에는 타임아웃이 없다고 지적. 이 블록 전체가 `_init_lock`을 쥔 채 실행되는데, 이 락은 `CartStateStore`·`ThreadFilterStore`·`RevertStore`가 전부 공유한다 — `setup()`이 (Postgres 락 경합 등으로) 멈추면 이후 들어오는 모든 buyer 요청이 함께 무한 대기한다. fake 스토어(`setup()`이 영원히 안 끝남)로 재현 — 수정 전엔 테스트가 실제로 타임아웃/hang, 수정 후(동일 timeout 으로 `setup()`도 wait_for)엔 통과.
+- 원인: "커넥션 수립에 타임아웃을 걸었으니 초기화가 안전하다"고 안이하게 판단 — 같은 try 블록 안에 있는 **다른 await 지점**(`setup()`)은 별도로 감싸지 않으면 보호받지 않는다는 걸 놓쳤다. 공유 락 안에서 실행되는 코드는 그 블록의 "가장 느린 await"가 전체의 상한이 된다.
+- 규칙:
+  - **공유 락(`asyncio.Lock` 등)을 쥔 채 실행되는 코드 블록은, 그 안의 모든 외부 I/O await 지점에 개별적으로 타임아웃을 건다** — 하나만 걸고 나머지는 "그 정도면 되겠지"로 넘기지 않는다.
+  - **"이론상 우려"를 리뷰가 지적하면, 실제 hang을 재현하는 fake/mock 으로 검증한다** — 실 DB로는 인위적으로 멈추는 상황을 안정적으로 재현하기 어려우므로, `setup()` 자체를 무한 `sleep()` 하는 fake 로 교체해 결정론적으로 재현.
+  - 반면 같은 리뷰 라운드의 다른 지적(`entered_ctx`가 `__aenter__` 타임아웃 시 정리를 스킵)은, 라이브러리 내부(`@asynccontextmanager`로 감싼 `async with await AsyncConnection.connect(...) as conn:`)가 취소 시 자체적으로 정리할 가능성이 높아 "증명된 버그"로 보기 어려웠다 — 그래도 `entered_ctx` 대신 `ctx`로 통일해 비대칭을 없애는 비용 제로 방어 조치는 유지했다. **모든 리뷰 지적이 같은 확신도를 갖는 건 아니다** — 재현 가능한 것과 방어적으로만 유지하는 것을 구분해서 기록한다.
+- 관련: `app/core/pg_store.py::get_store()`, `tests/unit/test_pg_store.py::test_get_store_bounds_hanging_setup_by_timeout`, PR #46 후속 리뷰
+
 ## [2026-07-20] fire-and-forget 정리(`asyncio.get_running_loop().create_task`)는 sync autouse fixture 컨텍스트에서 매번 조용히 스킵됨
 - 증상: `set_store(None)`이 기존 실 연결을 "백그라운드 태스크로 정리"하도록 고쳤는데(이전 lessons 항목 — 당시엔 fire-and-forget 방식 자체의 검증 실패만 기록하고 원인 규명은 못 함), claude[bot] 후속 리뷰가 "`set_store()`는 sync 함수라 실행 중인 이벤트 루프가 없으면(`asyncio.get_running_loop()`가 RuntimeError) 정리가 스킵되는데, `tests/conftest.py`의 sync autouse fixture가 정확히 그 상황"이라고 지적. 직접 프로브 테스트로 확인한 결과 **실제로 conftest의 autouse fixture(setup 단계)는 항상 실행 중인 이벤트 루프가 없는 상태**였다 — 즉 이 정리 로직은 테스트 환경에서 단 한 번도 실제로 실행된 적이 없었다.
 - 원인: pytest-asyncio 는 async 테스트 함수 실행을 위해 그 함수 안에서만 이벤트 루프를 돌리고, sync autouse fixture(테스트 함수 진입 전 setup)는 그 루프 시작 **전**에 실행된다. `contextlib.suppress(RuntimeError)`로 감싸 "실행 중 루프 없으면 조용히 스킵"하게 만든 게, 겉보기엔 안전한 방어 코드처럼 보이지만 실제로는 "이 정리 코드가 의도한 경로에서 단 한 번도 실행되지 않는다"는 뜻이었다 — 예외를 삼키는 코드가 있으면 "잘 동작하는 중"과 "매번 조용히 실패하는 중"을 로그 없이는 구분할 수 없다.
