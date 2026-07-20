@@ -85,6 +85,8 @@ Spring I-1 검색은 필터·리랭킹용 최소 필드만 반환할 수 있고 
 
 이미 임베딩된 벡터를 넣으므로 이 작업 자체는 Google API를 다시 호출하지 않는다.
 
+> ⚠️ **`sample_100` 번들은 이 repo에 포함되지 않는다.** 로더 기본 경로는 워크스페이스 형제 경로 `../sample_100`(`ai/documents.jsonl`·`products/*.json`)다. 번들을 그 위치에 두거나 `--documents`/`--products-dir` 로 명시 경로를 넘겨야 하며, 없으면 로더가 명확한 에러로 종료한다.
+
 ```bash
 uv run python scripts/load_sample_100.py --dry-run
 uv run python scripts/load_sample_100.py
@@ -157,6 +159,7 @@ cd jarvis-ai
 uv sync
 docker compose up -d pg-catalog pg-profile
 cp .env.example .env   # 최초 1회, 이후 위 값 수정
+# sample_100 번들을 ../sample_100 에 배치(또는 아래 명령에 --documents/--products-dir 지정) — repo 미포함
 uv run python scripts/load_sample_100.py --dry-run
 uv run python scripts/load_sample_100.py
 uv run uvicorn app.main:app --reload --port 8000

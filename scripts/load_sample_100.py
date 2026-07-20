@@ -108,6 +108,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    for label, path in (("--documents", args.documents), ("--products-dir", args.products_dir)):
+        if not path.exists():
+            raise SystemExit(
+                f"{label} 경로가 없습니다: {path}\n"
+                "sample_100 번들(ai/documents.jsonl·products/*.json)은 이 repo에 포함되지 않습니다. "
+                f"워크스페이스 형제 경로 ../sample_100 에 배치하거나 {label} 로 명시 경로를 넘기세요."
+            )
+
     settings = get_settings()
     documents = load_documents(
         args.documents.resolve(),
