@@ -239,11 +239,17 @@ def _apply_binop(op: ast.operator, left: float, right: float) -> float:
     if isinstance(op, ast.Mod):
         return left % right
     if isinstance(op, ast.Pow):
-        # DoS 방어(리뷰 반영): LLM 생성식의 거대 거듭제곱(9**9**9**9·10**9999999 등)은
-        # 결과가 순식간에 수백만 자리로 커져 동기 평가가 이벤트 루프를 블로킹한다(프로세스를
-        # 공유하는 타 판매자 세션까지 정지). 결과 자릿수 추정이 상한을 넘으면 거부한다.
-        if left not in (0, 1, -1) and right != 0 and abs(left) > 1:
-            est_digits = abs(right) * math.log10(abs(left))
+        # DoS 방어(리뷰 반영): 동기 블로킹은 int**int(CPython 임의정밀도, 결과가 수백만
+        # 자리로 커짐)에서만 발생한다 — 9**9**9**9·10**9999999 등이 이벤트 루프를 막아
+        # 프로세스 공유 세션까지 정지시킨다. float 가 섞이면 C pow(O(1))라 블로킹이 없고
+        # 과대 지수는 OverflowError 로 빠르게 종결되므로 가드 대상에서 제외한다(오탐 방지).
+        if (
+            isinstance(left, int)
+            and isinstance(right, int)
+            and right > 0
+            and left not in (0, 1, -1)
+        ):
+            est_digits = right * math.log10(abs(left))
             max_digits = get_settings().seller_calc_max_result_digits
             if est_digits > max_digits:
                 raise ValueError(

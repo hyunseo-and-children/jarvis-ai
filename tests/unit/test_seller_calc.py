@@ -200,3 +200,11 @@ def test_safe_eval_allows_normal_power() -> None:
     """정상 범위 거듭제곱은 그대로 평가된다(가드 오탐 없음)."""
     assert calc.safe_eval("2**10") == 1024
     assert calc.safe_eval("1000**3") == 1_000_000_000
+
+
+def test_safe_eval_float_base_not_false_rejected() -> None:
+    """float 밑수는 C pow(O(1))라 DoS 가 아니다 — 큰 지수여도 오탐 거부하지 않는다(리뷰 반영).
+
+    1.1**5000 ≈ 10^207 은 유한 float 이고 즉시 계산된다(int**int 만 가드 대상)."""
+    result = calc.safe_eval("1.1**5000")
+    assert result > 0  # ValueError 로 오탐 거부되지 않고 유한값 반환
