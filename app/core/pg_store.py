@@ -49,8 +49,15 @@ async def _close_ctx(ctx) -> None:  # noqa: ANN001 - AsyncPostgresStore 의 asyn
 
 
 def reset_store() -> None:
-    """테스트 격리용 — InMemoryStore 로 초기화(실제 연결 시도 없이 즉시 blank)."""
+    """테스트 격리용 — InMemoryStore 로 초기화(실제 연결 시도 없이 즉시 blank).
+
+    `_init_lock` 도 새로 만든다 — pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를
+    쓰는데, 모듈 전역 asyncio.Lock 을 여러 루프에 걸쳐 재사용하면 이전 루프에 묶인
+    내부 상태로 다음 테스트에서 락 획득이 영원히 안 풀리는 hang 이 발생할 수 있다.
+    """
+    global _init_lock
     set_store(InMemoryStore())
+    _init_lock = asyncio.Lock()
 
 
 async def get_store() -> BaseStore:
