@@ -148,6 +148,21 @@ def test_token_without_identity_claims_rejected(rsa_key, jwks_calls) -> None:
         _decode(token)
 
 
+@pytest.mark.parametrize("empty_role", ["", "   "])
+def test_empty_role_without_sub_type_rejected(rsa_key, jwks_calls, empty_role) -> None:
+    """role 이 빈/공백 문자열이고 sub_type 없음 → 거부 (fail-closed 가드 우회 방지, 리뷰 3R).
+
+    ""(빈 문자열)는 None 이 아니라 `role is None` 가드를 지나칠 수 있다 — _norm_role 이
+    빈/공백을 "role 없음"(None)으로 정규화해 회원 기본 승인 구멍을 막는다.
+    """
+    claims = ticket_claims()
+    del claims["sub_type"]
+    claims["role"] = empty_role
+    token = sign_ticket(rsa_key, KID, claims)
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
 def test_unrecognized_role_falls_back_to_member(rsa_key, jwks_calls) -> None:
     """미지 role 값(예: MEMBER)은 회원 관용 폴백 — C-1 값 집합 미확정 상태에서
     회원 role 실값이 예상과 달라도 전면 401 이 되지 않게 한다 (의도된 관용, 리뷰 반영)."""

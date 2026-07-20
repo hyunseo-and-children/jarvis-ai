@@ -83,7 +83,12 @@ def _norm_role(role: object) -> str | None:
     비교**로 두 표기를 모두 수용한다 (PR #39 리뷰 반영 — 소문자 발급 시 판매자
     전면 403 방지). C-1 확정 시 상수/비교를 실값으로 고정한다.
     """
-    return role.strip().upper() if isinstance(role, str) else None
+    if not isinstance(role, str):
+        return None
+    normalized = role.strip().upper()
+    # 빈/공백 문자열은 "role 없음"으로 취급 — "" 가 None 이 아니라서 fail-closed
+    # 가드(require_identity_claim)를 우회해 회원으로 승인되는 구멍 방지 (리뷰 3R 반영).
+    return normalized or None
 
 
 def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -> Identity:
