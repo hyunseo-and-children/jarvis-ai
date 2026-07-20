@@ -111,3 +111,35 @@ def test_get_llm_defaults_to_openai(monkeypatch) -> None:
     # llm_provider 미지정 → config.py 기본값(openai)
     monkeypatch.setattr(llm_mod, "get_settings", lambda: _settings(openai_api_key="k"))
     assert isinstance(get_llm(), OpenAILLM)
+
+
+# ─────────── OpenAI json_output 토글 + 캐시 키 (리뷰 #44 회귀) ───────────
+
+
+def _openai(**kw) -> OpenAILLM:
+    base = dict(
+        fast_model="gpt-x", smart_model="gpt-x", timeout=5.0, max_retries=0,
+        fast_reasoning_effort="low", smart_reasoning_effort="medium",
+    )
+    base.update(kw)
+    return OpenAILLM("sk-test", **base)
+
+
+def test_openai_json_output_toggles_response_format() -> None:
+    """complete(json_output=False) 는 response_format 을 붙이지 않는다 — 마크다운 태스크(consolidate)용."""
+    llm = _openai()
+    c_json = llm._chat("fast", 100, json_mode=True)
+    c_plain = llm._chat("fast", 100, json_mode=False)
+    assert c_json.model_kwargs.get("response_format") == {"type": "json_object"}
+    assert "response_format" not in c_plain.model_kwargs
+    assert c_json is not c_plain  # json 여부가 캐시 키에 반영
+
+
+def test_openai_cache_key_includes_tier_effort() -> None:
+    """fast/smart 가 같은 모델이어도 reasoning_effort 가 tier 별로 유지된다(캐시 키에 tier 포함)."""
+    llm = _openai()  # fast/smart 모두 gpt-x, effort 만 low/medium
+    c_fast = llm._chat("fast", 100, json_mode=True)
+    c_smart = llm._chat("smart", 100, json_mode=True)
+    assert c_fast is not c_smart
+    assert c_fast.reasoning_effort == "low"
+    assert c_smart.reasoning_effort == "medium"

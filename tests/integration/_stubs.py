@@ -304,7 +304,7 @@ class ScriptedLLM:
         self._timeout = timeout
         self.calls: list[tuple[str, str]] = []  # (kind, tier)
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
+    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
         kind = self._classify(system, tier)
         self.calls.append((kind, tier))
         if kind == "enrich":

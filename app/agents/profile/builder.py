@@ -104,6 +104,7 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
             user="\n".join(facts),
             tier="smart",
             max_tokens=1000,
+            json_output=False,  # 마크다운 요약 — OpenAI response_format=json 강제 금지(리뷰 #44)
         )
     except LLMError:
         return False

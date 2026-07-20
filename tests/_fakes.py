@@ -53,7 +53,7 @@ class FakeLLM:
         self._timeout = timeout
         self.calls: list[tuple[str, str]] = []  # (tier, user) 기록
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
+    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
         self.calls.append((tier, user))
         if tier == "fast":
             if self._decompose_error:

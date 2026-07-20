@@ -27,8 +27,10 @@ class LLMError(Exception):
 class LLMClient(Protocol):
     """LLM 호출 계약. tier("fast"|"smart")로 호출 — decompose·enrichment·delta(fast) / rerank·consolidate(smart)."""
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
-        """단발 완성 텍스트를 반환한다."""
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
+        """단발 완성 텍스트를 반환한다. json_output=False 는 마크다운/평문 태스크(예: 프로필 요약)."""
         ...
 
     def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> AsyncIterator[str]:
@@ -84,7 +86,10 @@ class AnthropicLLM:
             )
         return self._cache[key]
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
+        # json_output: Anthropic 은 프롬프트 기반 JSON 이라 무시(시그니처 정합용).
         from langchain_core.messages import HumanMessage, SystemMessage
 
         try:
@@ -149,7 +154,7 @@ class OpenAILLM:
         from langchain_openai import ChatOpenAI
 
         model, effort = self._resolve(tier)
-        key = (model, max_tokens, json_mode)
+        key = (tier, max_tokens, json_mode)  # tier→(model,effort) 결정적 — effort 구분 위해 tier 로 키
         if key not in self._cache:
             kwargs: dict[str, Any] = {
                 "model": model,
@@ -165,11 +170,13 @@ class OpenAILLM:
             self._cache[key] = ChatOpenAI(**kwargs)
         return self._cache[key]
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> str:
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         try:
-            resp = await self._chat(tier, max_tokens, json_mode=True).ainvoke(
+            resp = await self._chat(tier, max_tokens, json_mode=json_output).ainvoke(
                 [SystemMessage(content=system), HumanMessage(content=user)]
             )
         except LLMError:
