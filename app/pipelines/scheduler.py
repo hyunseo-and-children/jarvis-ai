@@ -52,12 +52,24 @@ def _run_incremental_batch() -> None:
         _log.exception("scheduler 증분 배치 실패 — 다음 주기 재개")
 
 
-def start_scheduler() -> BackgroundScheduler:
-    """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환)."""
+def start_scheduler() -> BackgroundScheduler | None:
+    """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환).
+
+    google_api_key 미구성이면 아예 기동하지 않는다 — 시작해봐야 매 주기 EmbeddingError 로
+    조용히 실패만 반복하기 때문이다(원래 문제, PR #42 리뷰). auth_mode=jwks(운영)는
+    config.py 검증으로 기동 자체가 막히지만, dev 모드는 그 검증을 안 타므로 여기서
+    별도로 막는다.
+    """
     global _scheduler
     if _scheduler is not None:
         return _scheduler
     settings = get_settings()
+    if not settings.google_api_key:
+        _log.warning(
+            "GOOGLE_API_KEY 미설정 — I-17 배치 스케줄러를 기동하지 않습니다 "
+            "(설정 후 재기동하면 활성화됩니다)"
+        )
+        return None
     scheduler = BackgroundScheduler()
     scheduler.add_job(
         _run_incremental_batch,

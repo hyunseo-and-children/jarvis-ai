@@ -23,7 +23,7 @@ def _reset_scheduler():
 
 
 def test_start_scheduler_registers_job_with_configured_interval(monkeypatch):
-    settings = Settings(_env_file=None, catalog_batch_interval_s=123.0)
+    settings = Settings(_env_file=None, catalog_batch_interval_s=123.0, google_api_key="test-key")
     monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
 
     scheduler = sched_mod.start_scheduler()
@@ -34,7 +34,7 @@ def test_start_scheduler_registers_job_with_configured_interval(monkeypatch):
 
 
 def test_start_scheduler_is_idempotent(monkeypatch):
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, google_api_key="test-key")
     monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
 
     first = sched_mod.start_scheduler()
@@ -45,7 +45,7 @@ def test_start_scheduler_is_idempotent(monkeypatch):
 
 
 def test_stop_scheduler_allows_fresh_restart(monkeypatch):
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None, google_api_key="test-key")
     monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
 
     first = sched_mod.start_scheduler()
@@ -53,6 +53,18 @@ def test_stop_scheduler_allows_fresh_restart(monkeypatch):
     second = sched_mod.start_scheduler()
 
     assert first is not second
+
+
+def test_start_scheduler_skips_when_google_api_key_missing(monkeypatch):
+    """PR #42 리뷰 — dev 모드는 config.py fail-fast(jwks 전용)를 안 타므로, 스케줄러가
+    google_api_key 없이 기동되면 5분마다 조용히 EmbeddingError 만 반복하던 원래 문제가
+    dev 모드에서 재현된다. 아예 기동하지 않는다."""
+    settings = Settings(_env_file=None, google_api_key="")
+    monkeypatch.setattr(sched_mod, "get_settings", lambda: settings)
+
+    result = sched_mod.start_scheduler()
+
+    assert result is None
 
 
 def test_run_incremental_batch_calls_run_artifacts_batch_with_full_rebuild_false(monkeypatch):
