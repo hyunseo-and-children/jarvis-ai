@@ -78,7 +78,7 @@ async def get_store() -> BaseStore:
     async with _init_lock:
         if _store is None:
             settings = get_settings()
-            entered_ctx = None
+            ctx = None
             try:
                 from langgraph.store.postgres.aio import AsyncPostgresStore  # noqa: PLC0415
 
@@ -86,15 +86,23 @@ async def get_store() -> BaseStore:
                 store = await asyncio.wait_for(
                     ctx.__aenter__(), timeout=settings.state_store_connect_timeout_s
                 )
-                entered_ctx = ctx  # __aenter__ 성공 후에만 __aexit__ 대상(부분 실패 정리용)
-                await store.setup()
+                # setup()(DDL)도 동일 상한으로 감싼다 — 이 블록은 _init_lock 을 쥔 채 실행되어
+                # CartStateStore·ThreadFilterStore·RevertStore 가 공유하므로, 무제한 대기라면
+                # setup() 하나가 멈출 때 전체 buyer 파이프라인이 함께 멈춘다(PR #46 후속 리뷰).
+                await asyncio.wait_for(
+                    store.setup(), timeout=settings.state_store_connect_timeout_s
+                )
                 _store_ctx = ctx
                 _store = store
             except Exception as exc:
-                if entered_ctx is not None:
-                    # setup() 실패 등 부분 실패 — 이미 연 연결을 닫아 커넥션 누수를 막는다.
+                if ctx is not None:
+                    # __aenter__ 타임아웃으로 취소된 경우도 포함해 항상 정리를 시도한다 —
+                    # "__aenter__ 성공 후에만 정리"로 좁히면, wait_for 가 __aenter__ 실행 도중
+                    # 취소시켜 커넥션이 이미 부분적으로 열려 있었을 때 그 정리 시도 자체가
+                    # 스킵된다(PR #46 후속 리뷰). ctx.__aexit__ 는 이미 suppress 로 감싸져
+                    # 있어 __aenter__ 가 아예 진입도 못한 경우 호출해도 안전하다.
                     with contextlib.suppress(Exception):
-                        await entered_ctx.__aexit__(type(exc), exc, exc.__traceback__)
+                        await ctx.__aexit__(type(exc), exc, exc.__traceback__)
                 if settings.auth_mode == "jwks":
                     raise  # 운영 — 폴백 금지(멀티턴 상태가 조용히 증발하면 안 된다)
                 if not _fallback_warned:
