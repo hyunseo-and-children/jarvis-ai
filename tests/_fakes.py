@@ -1,7 +1,7 @@
 """추천 그래프 테스트용 fake LLM / 검색 백엔드 / push (이슈 #2).
 
 라이브 Anthropic·Spring 없이 그래프를 결정론적으로 구동한다. FakeLLM 은 모델 id 로
-decompose(haiku) vs rerank(sonnet) 를 구분해 사전 정의 JSON 을 돌려준다.
+tier(fast=decompose / smart=rerank)로 구분해 사전 정의 JSON 을 돌려준다.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ DEFAULT_PRODUCTS = [
 
 
 class FakeLLM:
-    """모델 id 로 decompose/rerank 를 분기하는 fake. error 플래그로 실패도 주입."""
+    """tier(fast/smart)로 decompose/rerank 를 분기하는 fake. error 플래그로 실패도 주입."""
 
     def __init__(
         self,
@@ -51,11 +51,11 @@ class FakeLLM:
         self._decompose_error = decompose_error
         self._rerank_error = rerank_error
         self._timeout = timeout
-        self.calls: list[tuple[str, str]] = []  # (model, user) 기록
+        self.calls: list[tuple[str, str]] = []  # (tier, user) 기록
 
-    async def complete(self, *, system: str, user: str, model: str, max_tokens: int = 1024) -> str:
-        self.calls.append((model, user))
-        if "haiku" in model:
+    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
+        self.calls.append((tier, user))
+        if tier == "fast":
             if self._decompose_error:
                 raise LLMError("timeout" if self._timeout else "decompose boom")
             return json.dumps(self._decompose, ensure_ascii=False)
@@ -63,7 +63,7 @@ class FakeLLM:
             raise LLMError("rerank boom")
         return json.dumps(self._rerank, ensure_ascii=False)
 
-    async def stream(self, *, system: str, user: str, model: str, max_tokens: int = 1024):
+    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024):
         yield "x"
 
 

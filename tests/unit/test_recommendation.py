@@ -231,7 +231,7 @@ async def test_multiturn_filters_persisted_and_fed_back() -> None:
     # 2턴 — decompose user 프롬프트에 직전 필터(PRIOR_FILTERS)가 실렸는지 확인.
     llm.calls.clear()
     await _collect(run_buyer_turn(_req(message="그중에 5만원 이하"), ident, llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=_RecordingPush()))
-    decompose_calls = [u for (m, u) in llm.calls if "haiku" in m]
+    decompose_calls = [u for (m, u) in llm.calls if m == "fast"]
     assert decompose_calls and "무선이어폰" in decompose_calls[0]
 
 

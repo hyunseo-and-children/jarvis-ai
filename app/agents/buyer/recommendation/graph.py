@@ -141,14 +141,14 @@ async def stream_recommendation(
 
     # rerank — Sonnet 1회. 실패/타임아웃/유효후보 0건 시 검색순서 상위 N 으로 degrade(하드 제약 유지).
     if observer is not None:
-        observer.record_model_call(settings.sonnet_model_id)
+        observer.record_model_call(settings.model_for_tier("smart"))
     try:
         rr = await rerank(
             llm,
             query=request.message,
             candidates=candidates,
             profile_summary=profile,
-            model=settings.sonnet_model_id,
+            tier="smart",
             expose_max=settings.expose_max,
         )
         ranked_ids = [pid for pid, _ in rr.ranked]

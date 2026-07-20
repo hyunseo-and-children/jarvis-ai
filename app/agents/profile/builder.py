@@ -68,7 +68,7 @@ async def generate_session_delta(
         return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
     # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
     raw = await llm.complete(
-        system=_DELTA_SYSTEM, user="\n".join(buffer), model=settings.sonnet_model_id, max_tokens=800
+        system=_DELTA_SYSTEM, user="\n".join(buffer), tier="smart", max_tokens=800
     )
     data = extract_json(raw)
     promoted: list[str] = []
@@ -102,8 +102,9 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
         raw = await llm.complete(
             system=_CONSOLIDATE_SYSTEM,
             user="\n".join(facts),
-            model=settings.sonnet_model_id,
+            tier="smart",
             max_tokens=1000,
+            json_output=False,  # 마크다운 요약 — OpenAI response_format=json 강제 금지(리뷰 #44)
         )
     except LLMError:
         return False

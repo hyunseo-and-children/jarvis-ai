@@ -123,14 +123,14 @@ async def run_buyer_turn(
 
     # decompose — Haiku 1회 (intent 4-way 라우팅 + 필터 + 장바구니 의도)
     if observer is not None:
-        observer.record_model_call(settings.haiku_model_id)
+        observer.record_model_call(settings.model_for_tier("fast"))
     try:
         decision = await decompose(
             llm,
             query=request.message,
             prior_filters=prior,
             profile_summary=profile,
-            model=settings.haiku_model_id,
+            tier="fast",
             last_recommendations=cart_store.get_last_reco(thread_key),
             pending_cart=pending_dict,
         )

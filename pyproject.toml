@@ -24,6 +24,8 @@ dependencies = [
     "pgvector>=0.3",
     # I-17 배치 주기 증분 pull 스케줄러 (이슈 #31, in-process). v4 는 아직 alpha 라 3.x 안정판 고정.
     "apscheduler>=3.10,<4",
+    # OpenAI provider (이슈 #40, LLM_PROVIDER=openai). ChatOpenAI 래퍼.
+    "langchain-openai>=1.3.5",
 ]
 
 [dependency-groups]

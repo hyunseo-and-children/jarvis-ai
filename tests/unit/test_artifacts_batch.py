@@ -23,7 +23,7 @@ def test_catalog_artifact_store_satisfies_shared_protocol():
 
 
 class _EnrichLLM:
-    async def complete(self, *, system, user, model, max_tokens=1024):
+    async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
         return json.dumps(
             {"tags": ["여행", "방수"], "attributes": {"소재": "나일론"}}, ensure_ascii=False
         )

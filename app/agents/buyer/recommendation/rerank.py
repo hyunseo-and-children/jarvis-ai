@@ -29,7 +29,7 @@ async def rerank(
     query: str,
     candidates: list[SpringProduct],
     profile_summary: str | None,
-    model: str,
+    tier: str,
     expose_max: int,
 ) -> RerankResult:
     """Sonnet 1회 호출로 재랭킹 결과를 산출한다(후보 외 id 는 코드로 제거)."""
@@ -50,7 +50,7 @@ async def rerank(
         f"CANDIDATES: {json.dumps(cand, ensure_ascii=False)}"
     )
 
-    raw = await llm.complete(system=_SYSTEM, user=user, model=model, max_tokens=1500)
+    raw = await llm.complete(system=_SYSTEM, user=user, tier=tier, max_tokens=1500)
     data = extract_json(raw)
 
     valid_ids = {c.product_id for c in candidates}
