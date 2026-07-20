@@ -29,10 +29,23 @@ _init_lock = asyncio.Lock()
 
 
 def set_store(store: BaseStore | None) -> None:
-    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다."""
+    """store 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
+
+    기존 `_store_ctx`(실제 연결된 AsyncPostgresStore)가 있으면 백그라운드 태스크로
+    close 를 시도한다 — 이 함수는 sync 라 여기서 직접 await 할 수 없다(PR #46 리뷰).
+    """
     global _store, _store_ctx
+    old_ctx = _store_ctx
     _store = store
     _store_ctx = None
+    if old_ctx is not None:
+        with contextlib.suppress(RuntimeError):
+            asyncio.get_running_loop().create_task(_close_ctx(old_ctx))
+
+
+async def _close_ctx(ctx) -> None:  # noqa: ANN001 - AsyncPostgresStore 의 async context manager
+    with contextlib.suppress(Exception):
+        await ctx.__aexit__(None, None, None)
 
 
 def reset_store() -> None:
