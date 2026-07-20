@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     seller_conversion_drop_pct: float = 20.0  # 전환율 하락 이상 임계(%)
     seller_churn_inactive_days: int = 30  # 이탈 코호트 무활동 일수(I-16 inactiveDays 기본)
     seller_recent_days_default: int = 7  # normalize_period "최근 N일" 기본 N
+    # safe_eval `**` 결과 자릿수 상한(DoS 방어) — 초과 식은 ValueError 로 거부(리뷰 반영).
+    seller_calc_max_result_digits: int = 100
     # 도구 반환 상세도 상한(안 1+차등, 2026-07-17 사용자 확정) — 컨텍스트 폭주 방지.
     seller_summary_max_points: int = 60  # 시계열 상세 나열 상한(포인트 수)
     seller_summary_max_events: int = 5  # I-13/I-14 이벤트 kv 나열 상한(건)

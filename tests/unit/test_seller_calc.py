@@ -187,3 +187,16 @@ def test_calc_uses_injected_thresholds() -> None:
     # 동일 데이터, 다른 threshold_pct → 이상 판정이 달라져야 한다.
     assert strict[2][2] is True
     assert lenient[2][2] is False
+
+
+def test_safe_eval_rejects_giant_power_dos() -> None:
+    """LLM 생성식의 거대 거듭제곱은 평가 전에 ValueError 로 차단한다(DoS 방어, 리뷰 반영)."""
+    for expr in ("9**9**9**9", "10**9999999", "2**1000000"):
+        with pytest.raises(ValueError):
+            calc.safe_eval(expr)
+
+
+def test_safe_eval_allows_normal_power() -> None:
+    """정상 범위 거듭제곱은 그대로 평가된다(가드 오탐 없음)."""
+    assert calc.safe_eval("2**10") == 1024
+    assert calc.safe_eval("1000**3") == 1_000_000_000

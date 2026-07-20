@@ -204,6 +204,23 @@ def test_confirm_executed_result_streams_token_done(monkeypatch: pytest.MonkeyPa
     assert "반영했습니다" in events[0]["data"]["text"]
 
 
+def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
+    """confirm 결과 text 도 다른 레인처럼 mask_output 을 거친다(리뷰 반영 — 마스킹 우회 차단)."""
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        return hitl.ConfirmOutcome("executed", "반영 완료. 키는 sk-abcdefghijklmnop1234 입니다")
+
+    monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
+
+    events = _collect_seller(_request('{"action": "confirm", "draftId": "d-9"}'))
+
+    assert [e["type"] for e in events] == ["token", "done"]
+    text = events[0]["data"]["text"]
+    assert "sk-abcdefghijklmnop1234" not in text
+    assert "[민감 정보 차단]" in text
+
+
 def test_confirm_spring_down_maps_to_apology_and_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

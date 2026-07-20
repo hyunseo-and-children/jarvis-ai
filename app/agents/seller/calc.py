@@ -14,10 +14,12 @@ stdlib `statistics`만 사용한다(pandas 미설치, §0.1 C) — 부작용 없
 from __future__ import annotations
 
 import ast
+import math
 import re
 import statistics
 from datetime import date, timedelta
 
+from app.core.config import get_settings
 from app.schemas.spring import FunnelResult, SalesSeriesPoint
 
 # "최근 N일" 표현에서 N 을 추출하는 패턴 (normalize_period).
@@ -237,5 +239,15 @@ def _apply_binop(op: ast.operator, left: float, right: float) -> float:
     if isinstance(op, ast.Mod):
         return left % right
     if isinstance(op, ast.Pow):
+        # DoS 방어(리뷰 반영): LLM 생성식의 거대 거듭제곱(9**9**9**9·10**9999999 등)은
+        # 결과가 순식간에 수백만 자리로 커져 동기 평가가 이벤트 루프를 블로킹한다(프로세스를
+        # 공유하는 타 판매자 세션까지 정지). 결과 자릿수 추정이 상한을 넘으면 거부한다.
+        if left not in (0, 1, -1) and right != 0 and abs(left) > 1:
+            est_digits = abs(right) * math.log10(abs(left))
+            max_digits = get_settings().seller_calc_max_result_digits
+            if est_digits > max_digits:
+                raise ValueError(
+                    f"계산 결과가 너무 큽니다(약 {int(est_digits)}자리, 상한 {max_digits}자리)"
+                )
         return left**right
     raise ValueError(f"허용되지 않는 연산자: {type(op).__name__}")

@@ -369,7 +369,7 @@ async def _confirm_stream(draft_id: str, identity: Identity) -> AsyncIterator[st
             ),
         )
         return
-    yield _token(outcome.text)
+    yield _token(mask_output(outcome.text))
     yield _done()
 
 

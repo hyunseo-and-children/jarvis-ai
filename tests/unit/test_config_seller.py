@@ -18,6 +18,7 @@ def test_seller_settings_defaults() -> None:
     assert settings.seller_conversion_drop_pct == 20.0
     assert settings.seller_churn_inactive_days == 30
     assert settings.seller_recent_days_default == 7
+    assert settings.seller_calc_max_result_digits == 100
     assert settings.seller_report_score_threshold == 21
     assert settings.seller_report_max_retries == 3
     assert settings.seller_draft_ttl_minutes == 10
