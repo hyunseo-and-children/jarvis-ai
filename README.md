@@ -163,6 +163,44 @@ uv run ruff check
 
 SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`budget`·`products.ready`·`done`·`error` / 판매자: `token`·`draft`·`done`·`error` (camelCase).
 
+### 환경변수 · 키 세팅
+
+전체 목록은 [`.env.example`](.env.example) 참조. **AI 서버는 단독 실행이 불가하다** — 후보 검색·장바구니·이력·목록 push를 Spring에 역호출하므로(api-spec §1.2 레인 c), 실행 모드에 따라 필요한 값이 다르다.
+
+| 변수 | 로컬/CI | 운영 | 설명 |
+|---|---|---|---|
+| `ANTHROPIC_API_KEY` | 불필요 | **필수** | 미설정 시 `/chat`은 네트워크 호출 없이 `LLM_UNAVAILABLE` 반환 (E2E는 주입형 fake로 대체) |
+| `AUTH_MODE` | `dev` | `jwks` | `dev`=서명 검증 없이 클레임만 읽고 헤더 없으면 게스트(로컬 전용) |
+| `JWKS_URL` | — | **필수** | Spring `/.well-known/jwks.json` — `jwks` 모드에서 미설정 시 기동 실패 |
+| `JWT_ISSUER`·`JWT_AUDIENCE` | 기본값 | 확정값 주입 | 스트림 티켓 `iss`/`aud` 검증(§2.3) |
+| `JWT_SCOPE` | 미설정 | **주입 권장** | 미설정 시 scope 검증 생략 + 기동 경고. 값은 C-1 확정 후(제안 `chat:stream`) |
+| `INTERNAL_API_TOKEN` | 선택 | **필수** | AI→Spring `X-Internal-Token`(아웃바운드) + Spring→AI 이벤트 검증(인바운드) 공용 |
+| `SPRING_BASE_URL` | 기본 `localhost:8080` | 필수 | 역호출 대상. AI→Spring 타임아웃은 전 구간 3s |
+| `PII_HASH_PEPPER` | 선택 | **필수** | 로그 PII 지문용 — `jwks` 모드에서 미설정 시 기동 실패 |
+
+```bash
+cp .env.example .env    # 이후 위 표를 참고해 채운다 (.env 는 커밋 금지)
+```
+
+### E2E 스모크 하니스 (구매자 라인)
+
+`tests/integration/`은 **라이브 Spring·Anthropic 없이** AI↔Spring 전 구간을 결정적으로 돌린다 — Spring은 `httpx.MockTransport` stub(`_stubs.py`), LLM은 주입형 `ScriptedLLM`. `spring_client` 함수를 patch하지 않고 **HTTP 경계에서만** 대역을 넣으므로 URL 조립·`X-Internal-Token` 헤더·응답 envelope 파싱이 실코드로 검증된다.
+
+```bash
+uv run pytest tests/integration -q          # 전체 스모크
+uv run pytest tests/integration/test_buyer_flow_e2e.py -q
+```
+
+| 파일 | 검증 범위 |
+|---|---|
+| `test_buyer_flow_e2e.py` | 발화→decompose→검색(I-1)→rerank→push(I-21)→`products.ready`→**카드 조회(CH-5)** — 경로 B 종단, dedup(I-19), 멀티턴, 담기(I-2)·조회(I-18) |
+| `test_profile_flow_e2e.py` | 발화 누적→`session-end`(I-20)→델타·게이트 승격→consolidation→`GET /profile/me`, 멱등·"기억해" hot-path |
+| `test_batch_flow_e2e.py` | I-17 pull→enrich→search_doc→임베딩→upsert, `hasMore` 페이지네이션·커서 전진·`DELISTED`·full_rebuild |
+| `test_degrade_e2e.py` | `SEARCH_FAILED`·`LLM_UNAVAILABLE`/`LLM_TIMEOUT`·rerank 폴백·push 실패(`done` 종료)·이력 실패·옵션 되물음 |
+| `test_auth_e2e_flow.py` | **운영 인증 레인** — RS256 스트림 티켓 + JWKS 로컬 검증 위에서 같은 흐름 완주, 신원=검증된 `sub`(IDOR), 무토큰 401 |
+
+실 Spring·실 Anthropic 키로 돌리는 수동 검증은 위 환경변수를 채우고 `docker compose up -d pg-catalog pg-profile` 후 `uv run uvicorn app.main:app --reload`로 서버를 띄워 진행한다 — CI 스모크는 항상 fake/stub 경로로 결정적으로 돈다.
+
 ---
 
 ## 🔀 Git 워크플로 & 커밋 규칙
