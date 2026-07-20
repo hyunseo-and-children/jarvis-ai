@@ -39,6 +39,13 @@ _SESSION_NS_ROOT = "session_ctx"
 _SUMMARY_KEY = "summary"
 _SESSION_KEY = "buffer"
 
+# get_facts/add_fact 의 asearch 조회 상한 여유치 — 트리밍 직후에도 asearch 가 즉시 cap
+# 이하로 수렴한다는 보장이 없어(동시 add_fact 레이스 등) cap 을 그대로 쓰면 경계에서
+# 최신 fact 가 잘릴 수 있다. 두 메서드가 각자 다른 매직넘버(1000 / 10_000)를 하드코딩해
+# settings.profile_max_facts 와 무관하게 놀던 것을 이 여유치 하나로 통일한다
+# (CLAUDE.md "튜너블 하드코딩 금지", PR #47 후속 리뷰).
+_FACTS_QUERY_MARGIN = 50
+
 # key(conversation_key)별 asyncio.Lock — append_session_ctx/clear_session_ctx_upto 의
 # get→put(read-modify-write) 구간을 직렬화한다. 동일 세션에 연속 발화가 빠르게 들어오면
 # lost update 로 앞선 발화가 통째로 유실될 수 있다(RevertStore.add() 와 동일 근거, PR #47 리뷰).
@@ -140,7 +147,8 @@ class ProfileStore:
 
     # ── 장기 fact (승격 결과·consolidation 입력) — fact 1개 = store item 1개(semantic 인덱스) ──
     async def get_facts(self, user_id: str) -> list[str]:
-        items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=1000)
+        limit = get_settings().profile_max_facts + _FACTS_QUERY_MARGIN
+        items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=limit)
         items.sort(key=lambda it: it.created_at)
         return [it.value["fact"] for it in items]
 
@@ -151,7 +159,9 @@ class ProfileStore:
         await self._store.aput((_FACTS_NS_ROOT, user_id), key, {"fact": fact})
         if cap and cap > 0:
             async with _fact_lock(user_id):  # asearch→adelete 구간 직렬화(방어적, 아래 참조)
-                items = await self._store.asearch((_FACTS_NS_ROOT, user_id), limit=10_000)
+                items = await self._store.asearch(
+                    (_FACTS_NS_ROOT, user_id), limit=cap + _FACTS_QUERY_MARGIN
+                )
                 if len(items) > cap:
                     items.sort(key=lambda it: it.created_at)
                     for stale in items[: len(items) - cap]:  # 최신 cap 개만 유지(recency-wins)
