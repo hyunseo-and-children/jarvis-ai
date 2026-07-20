@@ -11,17 +11,24 @@ from app.agents.profile.store import reset_profile_store
 from app.core.conversation import reset_store
 from app.core.ratelimit import reset_limiter
 from app.core.stream import get_registry
+from app.pipelines.artifact_store import reset_catalog_store
 
 
 @pytest.fixture(autouse=True)
 def _reset_infra_state():
-    """각 테스트 전후로 인메모리 카운터·레지스트리를 비워 테스트 간 누수를 막는다."""
+    """각 테스트 전후로 인메모리 카운터·레지스트리를 비워 테스트 간 누수를 막는다.
+
+    reset_catalog_store(): get_catalog_store() 싱글턴은 이제 pg-catalog 연결 풀을 여는데,
+    유닛 테스트는 항상 store 를 직접 주입해 이 경로를 타지 않는다 — 혹시 실수로 호출됐을
+    커넥션 풀이 다음 테스트로 새지 않게 방어적으로 리셋한다(이슈 #31).
+    """
     reset_limiter()
     reset_store()
     reset_thread_store()
     reset_cart_store()
     reset_revert_store()
     reset_profile_store()
+    reset_catalog_store()
     get_registry()._active.clear()
     yield
     reset_limiter()
@@ -30,6 +37,7 @@ def _reset_infra_state():
     reset_cart_store()
     reset_revert_store()
     reset_profile_store()
+    reset_catalog_store()
     get_registry()._active.clear()
 
 
