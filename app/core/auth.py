@@ -75,17 +75,33 @@ class TokenExpiredError(AuthError):
     """
 
 
-def _claims_to_identity(claims: dict) -> Identity:
+def _norm_role(role: object) -> str | None:
+    """role 클레임 정규화(대문자 비교용).
+
+    api-spec §2.3 표기는 `role == "seller"`(소문자)인데 구 코드 상수는 대문자였고,
+    실값 대소문자 형식은 🔴 C-1 잔여다. 값을 지어내지 않는 선에서 **대소문자 무관
+    비교**로 두 표기를 모두 수용한다 (PR #39 리뷰 반영 — 소문자 발급 시 판매자
+    전면 403 방지). C-1 확정 시 상수/비교를 실값으로 고정한다.
+    """
+    return role.strip().upper() if isinstance(role, str) else None
+
+
+def _claims_to_identity(claims: dict, *, require_identity_claim: bool = False) -> Identity:
     """검증된 클레임 dict → Identity 매핑.
 
     우선순위 (§2.3 v0.10.0):
-      1. role == SELLER            → 판매자 (seller_id = sub, brand_id = brandId 클레임).
-                                     판매자 티켓의 정확한 클레임 형식은 🔴 C-1 잔여.
-      2. sub_type == member|guest  → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
-      3. 구 role 폴백 (GUEST/USER) → C-1 형식 확정 전 호환 유지.
+      1. role == seller(대소문자 무관) → 판매자 (seller_id = sub, brand_id = brandId 클레임).
+                                         판매자 티켓의 정확한 클레임 형식은 🔴 C-1 잔여.
+      2. sub_type == member|guest      → 티켓 정본 클레임. 그 외 값은 fail-closed 거부.
+      3. 구 role 폴백 (GUEST/USER 등)  → C-1 값 집합 확정 전 호환 유지(미지 role 은 회원 관용).
+
+    require_identity_claim=True(jwks 실배선 레인)면 sub_type·role 이 **둘 다 없는**
+    서명 유효 토큰을 거부한다 — §2.3 은 sub_type 을 티켓 필수 클레임으로 확정했고,
+    신원 유형 클레임이 전무한 토큰을 회원으로 기본 승인하면 미지 sub_type 거부와
+    방어 원칙이 어긋난다 (PR #39 리뷰 반영). dev 모드는 로컬 편의 레인이라 관용 유지.
     """
     subject = claims.get(CLAIM_SUBJECT)
-    role = claims.get(CLAIM_ROLE)
+    role = _norm_role(claims.get(CLAIM_ROLE))
     sub_type = claims.get(CLAIM_SUB_TYPE)
 
     if role == ROLE_SELLER:
@@ -106,7 +122,11 @@ def _claims_to_identity(claims: dict) -> Identity:
         raise AuthError(f"unknown sub_type: {sub_type}")
     if role == ROLE_GUEST:
         return Identity(user_id=None, is_guest=True, seller_id=None, subject=subject)
-    # 기본: 일반 회원.
+    if role is None and require_identity_claim:
+        # 신원 유형 클레임(sub_type·role) 전무 — 실배선 레인은 회원 기본 승인 금지.
+        raise AuthError("missing sub_type/role claim")
+    # 구 role 폴백: 값 집합이 C-1 미확정이라 미지 role(USER 등)은 회원으로 관용 —
+    # sub 는 서명 검증을 통과했고, 회원 role 실값이 달라도 전면 401 이 되지 않게 한다.
     return Identity(user_id=subject, is_guest=False, seller_id=None, subject=subject)
 
 
@@ -208,6 +228,7 @@ def decode_token(
             raise AuthError("invalid token") from exc
         if scope is not None:
             _verify_scope(claims, scope)
-        return _claims_to_identity(claims)
+        # 실배선 레인 — 신원 유형 클레임(sub_type·role) 전무 토큰은 fail-closed.
+        return _claims_to_identity(claims, require_identity_claim=True)
 
     raise AuthError(f"unknown auth_mode: {auth_mode}")

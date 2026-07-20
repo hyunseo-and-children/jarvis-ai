@@ -122,6 +122,43 @@ def test_seller_role_with_brand_id(rsa_key, jwks_calls) -> None:
     assert identity.is_guest is False
 
 
+def test_lowercase_seller_role_accepted(rsa_key, jwks_calls) -> None:
+    """§2.3 표기 그대로 role="seller"(소문자) → 판매자 스코프 (대소문자 무관 비교, 리뷰 반영).
+
+    C-1 로 role 실값 형식이 미확정이라 소문자 발급 시 전면 403 이 되지 않게 한다.
+    """
+    claims = ticket_claims(sub="9")
+    claims["role"] = "seller"
+    claims["brandId"] = "77"
+    identity = _decode(sign_ticket(rsa_key, KID, claims))
+    assert identity.seller_id == "9"
+    assert identity.brand_id == "77"
+
+
+def test_token_without_identity_claims_rejected(rsa_key, jwks_calls) -> None:
+    """sub_type·role 둘 다 없는 서명 유효 토큰 → 거부 (jwks 레인 fail-closed, 리뷰 반영).
+
+    §2.3 은 sub_type 을 티켓 필수 클레임으로 확정 — 신원 유형 클레임이 전무한 토큰을
+    회원으로 기본 승인하지 않는다 (미지 sub_type 거부와 방어 원칙 일관).
+    """
+    claims = ticket_claims()
+    del claims["sub_type"]
+    token = sign_ticket(rsa_key, KID, claims)
+    with pytest.raises(AuthError):
+        _decode(token)
+
+
+def test_unrecognized_role_falls_back_to_member(rsa_key, jwks_calls) -> None:
+    """미지 role 값(예: MEMBER)은 회원 관용 폴백 — C-1 값 집합 미확정 상태에서
+    회원 role 실값이 예상과 달라도 전면 401 이 되지 않게 한다 (의도된 관용, 리뷰 반영)."""
+    claims = ticket_claims(sub="42")
+    del claims["sub_type"]
+    claims["role"] = "MEMBER"
+    identity = _decode(sign_ticket(rsa_key, KID, claims))
+    assert identity.user_id == "42"
+    assert identity.is_guest is False
+
+
 # ── 검증 항목: signature / exp / iss / aud / scope (§2.3 확정) ──
 
 
