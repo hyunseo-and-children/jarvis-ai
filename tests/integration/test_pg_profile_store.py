@@ -136,6 +136,44 @@ async def test_processed_events_get_pool_concurrent_calls_single_connection() ->
         processed_events.set_pool(None)
 
 
+async def test_processed_events_set_pool_none_defers_cleanup_to_next_get_pool_call() -> None:
+    """set_pool(None) 이 sync 컨텍스트에서 놓친 정리를 다음 _get_pool() 이 확실히 처리한다.
+
+    fire-and-forget(asyncio.get_running_loop().create_task) 방식은 실행 중인 이벤트
+    루프가 없으면(예: conftest 의 sync autouse fixture) 조용히 스킵돼 실제로 한 번도
+    정리가 안 됐었다(app/core/pg_store.py 와 동일 버그, PR #47 후속 리뷰) — 지연 정리
+    큐로 교체 후, 다음 _get_pool() 호출 시 확실히 close() 가 실행되는지 검증한다.
+    """
+    processed_events.set_pool(None)
+    pool = await processed_events._get_pool()
+    assert pool is not None
+    assert not pool.closed
+
+    processed_events.set_pool(None)  # sync 호출 — 정리는 아직 큐에만 쌓인 상태
+    assert not pool.closed  # 아직 정리 안 됨(다음 _get_pool() 전까지)
+
+    await processed_events._get_pool()  # 이 호출 진입 시 _drain_pending_cleanup() 이 실행됨
+    assert pool.closed
+
+    processed_events.set_pool(None)
+
+
+async def test_processed_events_reset_defers_cleanup_to_next_get_pool_call() -> None:
+    """reset() 도 set_pool(None) 과 동일하게 기존 풀을 정리 대기열에 넣고 다음 호출에서 닫는다."""
+    processed_events.set_pool(None)
+    pool = await processed_events._get_pool()
+    assert pool is not None
+    assert not pool.closed
+
+    processed_events.reset()  # sync — 정리는 아직 큐에만 쌓인 상태
+    assert not pool.closed
+
+    await processed_events._get_pool()
+    assert pool.closed
+
+    processed_events.set_pool(None)
+
+
 async def test_state_persists_across_store_instances() -> None:
     """재시작·다중 인스턴스 스모크 — 새 연결로도 이전에 쓴 값이 보인다."""
     user_id = _user()

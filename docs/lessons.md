@@ -22,6 +22,15 @@
   - 리뷰가 "이 패턴이 다른 호출부에도 있다"고 폭넓게 지적해도, 그 다른 호출부들이 실제로 같은 심각도인지(예: 응답 시작 전이라 그냥 500이 되는지) 확인하고 나서 고칠 범위를 정한다 — 전부 고치는 게 항상 정답은 아니다.
 - 관련: `app/core/stream.py::open_stream()._wrapped()`, `tests/unit/test_observability.py::test_stream_completes_when_finalize_assistant_fails`, PR #48 후속 리뷰
 
+## [2026-07-20] 지연 정리 큐 패턴을 그대로 복사하면 안 되는 리소스가 있다 — AsyncConnectionPool 은 백그라운드 워커 태스크가 있어 cross-loop 정리가 그 자체로 새 버그다
+- 증상: PR #47 후속 리뷰가 `app/agents/profile/processed_events.py`의 `set_pool()`/`reset()`이 `app/core/pg_store.py`(PR #46 후속 리뷰)와 동일한 fire-and-forget 스킵 버그를 갖고 있다고 지적 — `_pending_cleanup` 큐 패턴을 그대로 복사해 적용했더니, `tests/integration/test_pg_profile_store.py`를 전체 실행하면(개별 실행은 통과) 엉뚱한 다른 테스트(`test_processed_events_unmark_allows_reprocessing`)까지 `CancelledError`로 실패했다.
+- 원인: `pg_store.py`가 감싸는 `AsyncPostgresStore`/`AsyncConnection`은 단일 커넥션이라 정리(`__aexit__`)가 비교적 단순하지만, `processed_events.py`의 `AsyncConnectionPool`은 **백그라운드 워커 태스크**를 그 풀을 만든 이벤트 루프에 묶어 둔다. pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를 쓰므로, 이전 테스트(다른 루프)에서 큐에 쌓인 풀을 다음 테스트(새 루프)의 `_get_pool()`이 드레인하려 하면 이미 죽은 루프에 묶인 워커 태스크를 `await agather(...)`로 기다리게 되어 `CancelledError`(`asyncio.CancelledError`는 `BaseException` 상속 — `except Exception`으로 안 잡힘)가 새어 나온다. **"같은 이름의 버그"라고 반드시 같은 수정이 안전한 건 아니다** — 리소스의 내부 구현(워커 태스크 유무)에 따라 cross-loop 정리의 안전성이 다르다.
+- 규칙:
+  - **`_pending_cleanup` 류의 "다음 async 호출 때 정리" 패턴을 다른 리소스 타입에 이식하기 전에, 그 리소스가 정리 시점에 실제로 무엇을 하는지(백그라운드 태스크가 있는지, 자신을 만든 이벤트 루프에 의존하는지) 확인한다** — 겉보기엔 동일한 "sync 함수 안에서 async 리소스 정리" 문제여도, 커넥션 풀처럼 내부에 태스크를 갖는 리소스는 원래 만들어진 루프가 사라지면 정상적으로 닫을 방법이 없다.
+  - **최선형(best-effort) 정리 경로에서 `contextlib.suppress(Exception)`은 `asyncio.CancelledError`를 잡지 못한다** — `CancelledError`는 `BaseException` 서브클래스라 별도 처리가 필요하다. "닫히면 좋고 안 닫혀도 그만"인 게 명확한 경로(참조를 이미 버려 재사용 안 함)라면 `suppress(BaseException)`으로 넓혀도 안전하다.
+  - 수정 직후 반드시 **전체 파일을 통째로(개별이 아니라) 여러 번 반복 실행**해 안정성을 확인한다(이번엔 3회 반복으로 검증) — 개별 테스트 통과만으로는 순서 의존 회귀를 놓친다(같은 이유로 이전에 이미 한 번 겪은 교훈이기도 하다).
+- 관련: `app/agents/profile/processed_events.py::_drain_pending_cleanup()`, `tests/integration/test_pg_profile_store.py::test_processed_events_set_pool_none_defers_cleanup_to_next_get_pool_call`, PR #47 후속 리뷰
+
 ## [2026-07-20] "실패할 수 없던 호출"이 인메모리→외부 스토어 이관 후 실패 가능 호출로 바뀌면 기존 try 범위가 새지 않는지 재점검해야 한다
 - 증상: PR #47 후속 리뷰가 `app/api/events.py::session_end()`에서 `get_profile_store()`/`processed_events.mark_if_new()`/`store.clear_session_ctx_upto()` 세 호출이 `try` 블록 밖(또는 뒤)에 있어 예외가 안 잡힌다고 지적. 이관 전(인메모리 싱글턴) 이 호출들은 절대 실패할 수 없었지만, 이슈 #33 이관 후 운영(`auth_mode=jwks`)에서는 pg-profile 연결 실패 시 폴백 없이 `raise`하므로, DB 일시 장애만으로 이 엔드포인트가 500을 반환 — `§3.5`("어떤 오류도 202를 막지 않는다")를 위반한다. `get_profile_store()`를 raise 하는 fake 로 재현 — 수정 전엔 테스트가 raw exception 으로 실패(=500), try 범위를 넓힌 수정 후엔 202 통과.
 - 원인: 원래 코드는 "이 호출은 안전하다"는 전제로 짜여 있었는데, 그 전제(인메모리라 실패 불가) 자체가 이관으로 깨졌다. 인메모리→외부 스토어 이관은 데이터 구조뿐 아니라 "이 호출이 실패할 수 있는가"라는 실패 모델 자체를 바꾼다 — 기존 에러 핸들링 경계(try 범위)가 새 실패 모델을 커버하는지 별도로 재검토해야 하는데 그걸 놓쳤다.

@@ -26,40 +26,60 @@ _pool: AsyncConnectionPool | None = None
 _fallback_pool: set[str] | None = None  # dev 폴백 — InMemory set
 _fallback_warned = False
 _init_lock = asyncio.Lock()
+_pending_cleanup: list[AsyncConnectionPool] = []  # set_pool()/reset() 이 못 닫은 이전 풀
 
 
 def set_pool(pool: AsyncConnectionPool | None) -> None:
     """풀 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
 
-    기존 실 연결 풀이 있으면 백그라운드 태스크로 close 를 시도한다 — 이 함수는
-    sync 라 여기서 직접 await 할 수 없다(app/core/pg_store.py 와 동일 패턴, PR #46 리뷰).
+    기존 실 연결 풀이 있으면 정리 대기열에 넣는다. 이 함수는 sync 라 여기서 직접
+    await 할 수 없고, `asyncio.get_running_loop()` fire-and-forget 태스크 방식은
+    **실행 중인 루프가 없으면 조용히 스킵**된다 — `tests/conftest.py` 의 sync
+    autouse fixture 가 정확히 그 상황이라 실제로는 한 번도 정리가 안 됐었다
+    (app/core/pg_store.py 와 동일 버그, PR #47 후속 리뷰). 대신 다음 `_get_pool()`
+    호출(반드시 async 컨텍스트) 시점에 확실히 정리한다.
     """
     global _pool, _fallback_pool
     old_pool = _pool
     _pool = pool
     _fallback_pool = None
     if old_pool is not None:
-        with contextlib.suppress(RuntimeError):
-            asyncio.get_running_loop().create_task(_close_pool(old_pool))
+        _pending_cleanup.append(old_pool)
 
 
-async def _close_pool(pool: AsyncConnectionPool) -> None:
-    with contextlib.suppress(Exception):
-        await pool.close()
+async def _drain_pending_cleanup() -> None:
+    """대기열의 이전 풀들을 닫는다 — 다른(이미 소멸한) 이벤트 루프에서 만들어진 풀일 수 있다.
+
+    `AsyncConnectionPool` 은 백그라운드 워커 태스크를 그 풀을 만든 이벤트 루프에 묶어
+    두므로(app/core/pg_store.py 의 단일 커넥션과 다른 지점), pytest-asyncio 의 테스트
+    함수별 새 이벤트 루프에서 이 큐를 비우면 다른 루프에 묶인 풀을 닫으려다
+    `CancelledError`(`BaseException`)가 날 수 있다 — `Exception` 만 삼키면 이게 새지므로
+    `BaseException` 까지 넓혀 잡는다. 여기는 "닫히면 좋고 안 닫혀도 그만"인 최선형
+    정리 경로라(참조는 이미 버림) 광범위 억제가 안전하다.
+    """
+    while _pending_cleanup:
+        pool = _pending_cleanup.pop()
+        with contextlib.suppress(BaseException):  # noqa: BLE001
+            await pool.close()
 
 
 def reset() -> None:
     """테스트 격리용 — InMemory 폴백으로 초기화(실제 연결 시도 없이 즉시 blank).
 
+    기존 실 연결 풀은 (set_pool() 과 동일 이유로) close 시도 없이 그냥 버리면 안 된다 —
+    정리 대기열에 넣어 다음 `_get_pool()` 호출 시 확실히 닫는다(PR #47 후속 리뷰).
     `_init_lock` 도 새로 만든다 — pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를
     쓰는데(function-scoped), 모듈 전역 asyncio.Lock 을 여러 루프에 걸쳐 재사용하면
     이전 루프에 묶인 내부 상태로 인해 다음 테스트에서 락 획득이 영원히 안 풀리는
     hang 이 발생할 수 있다.
     """
     global _pool, _fallback_pool, _init_lock
+    old_pool = _pool
     _pool = None
     _fallback_pool = set()
     _init_lock = asyncio.Lock()
+    if old_pool is not None:
+        _pending_cleanup.append(old_pool)
 
 
 async def _get_pool() -> AsyncConnectionPool | None:
@@ -70,6 +90,7 @@ async def _get_pool() -> AsyncConnectionPool | None:
     패턴, PR #47 리뷰).
     """
     global _pool, _fallback_pool, _fallback_warned
+    await _drain_pending_cleanup()
     async with _init_lock:
         if _pool is None and _fallback_pool is None:
             settings = get_settings()
