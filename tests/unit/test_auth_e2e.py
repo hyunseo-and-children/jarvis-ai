@@ -204,3 +204,13 @@ def test_settings_jwt_scope_defaults_to_none() -> None:
     Spring 발급 티켓과 어긋나는 순간 전면 401 장애가 된다 (PR #39 리뷰 반영).
     운영 전환 시 확정값을 env JWT_SCOPE 로 명시 주입한다."""
     assert Settings(_env_file=None).jwt_scope is None
+
+
+def test_settings_jwks_without_scope_warns(caplog: pytest.LogCaptureFixture) -> None:
+    """jwks 모드 + JWT_SCOPE 미설정 → 기동 경고 로그 — scope 검증이 조용히 비활성인 채
+    운영되는 것을 드러낸다 (fail-fast 는 C-1 미확정이라 불가, PR #39 4R 리뷰 반영)."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="app.core.config"):
+        _jwks_settings(jwt_scope=None)
+    assert any("JWT_SCOPE" in record.message for record in caplog.records)

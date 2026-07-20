@@ -11,6 +11,7 @@ SearchBackend로 구현해 골든셋 확정(api-spec §4.8 말미·§4.6, C-17).
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Literal
 
@@ -187,6 +188,14 @@ class Settings(BaseSettings):
         # jwks 모드의 검증 키 소스 — 미설정이면 전 요청 401 폭주라 기동 시점에 fail-fast(#34).
         if self.auth_mode == "jwks" and not self.jwks_url:
             raise ValueError("JWKS_URL must be set when auth_mode=jwks")
+        # scope 는 §2.3 확정 검증 항목이지만 값이 C-1 미확정이라 fail-fast 로 막지 않는다
+        # (미확정 추정값 강제 시 전면 401 장애 — PR #39 1R 리뷰). 대신 설정 누락이 조용히
+        # 지나가지 않게 기동 경고를 남긴다(4R 리뷰). C-1 확정 후 JWT_SCOPE 주입 시 활성화.
+        if self.auth_mode == "jwks" and not self.jwt_scope:
+            logging.getLogger(__name__).warning(
+                "auth_mode=jwks 인데 JWT_SCOPE 미설정 — §2.3 scope 검증이 비활성 상태로 "
+                "기동합니다 (C-1 확정 후 반드시 주입)"
+            )
         return self
 
 
