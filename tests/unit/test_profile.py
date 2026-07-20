@@ -388,6 +388,27 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     assert await store.get_session_ctx(key) != []  # 버퍼 보존
 
 
+async def test_session_end_returns_202_when_profile_store_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_profile_store() 자체가 실패해도(pg-profile 일시 장애) 500 이 아니라 202(PR #47 후속 리뷰).
+
+    이관 전엔 인메모리 싱글턴이라 이 호출이 실패할 수 없었지만, 운영(jwks)은 pg-profile 연결
+    실패 시 폴백 없이 raise 한다 — try 밖에 있으면 일시적 DB 장애만으로 §3.5(항상 202) 위반.
+    """
+    import app.api.events as ev
+
+    async def _raise() -> None:
+        raise RuntimeError("pg-profile 일시 장애")
+
+    monkeypatch.setattr(ev, "get_profile_store", _raise)
+    r = client.post(
+        "/events/session-end", json={"eventId": "store-down-1", "userId": "44", "sessionId": "s"}
+    )
+    assert r.status_code == 202 and r.json()["status"] == "accepted"
+    assert not await processed_events.seen_event("store-down-1")  # 언마크 → 재전송 시 재처리
+
+
 def test_internal_token_required_in_jwks_mode() -> None:
     """운영(jwks)에서 internal_api_token 미주입이면 Settings 기동 실패(inbound fail-open 방지)."""
     from app.core.config import Settings
