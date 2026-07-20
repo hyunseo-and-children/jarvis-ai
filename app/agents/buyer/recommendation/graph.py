@@ -31,7 +31,9 @@ from app.schemas.chat import (
 from app.schemas.spring import ProductSearchResult, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
 
-_INACTIVE_STATUSES = frozenset({"CANCELED", "CANCELLED", "RETURNED"})  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
+_INACTIVE_STATUSES = frozenset(
+    {"CANCELED", "CANCELLED", "RETURNED"}
+)  # 보유 아님(철자 양쪽 — spec §4.7 혼용) → dedup 제외 대상 아님
 
 
 def _now() -> datetime:
@@ -85,7 +87,12 @@ async def stream_recommendation(
 
     search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())
     if search_result is None:  # 검색 실패 → SEARCH_FAILED(종료)
-        yield sse("error", ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(by_alias=True))
+        yield sse(
+            "error",
+            ErrorData(code="SEARCH_FAILED", message="상품 검색에 실패했어요.").model_dump(
+                by_alias=True
+            ),
+        )
         return
 
     # 최근 구매(윈도우·취소반품 필터) → exact 제외 + 소모품 카테고리 억제(결정 14-F).
@@ -119,7 +126,11 @@ async def stream_recommendation(
     # estCount 는 **이번 검색 응답 내 억제 수**(page-local 근사) — I-1 엔 totalCount 가 없어(C-15 🔴)
     # DB 전체 매칭 수를 알 수 없으므로 가용한 최선의 추정치를 쓴다.
     revert_chips = [
-        SuggestionChip(label=f"{cat_samples[c]}은 최근 구매 — 다시 추천받기", revert=RevertRef(category=c), est_count=n)
+        SuggestionChip(
+            label=f"{cat_samples[c]}은 최근 구매 — 다시 추천받기",
+            revert=RevertRef(category=c),
+            est_count=n,
+        )
         for c, n in suppressed_by_cat.items()
         if n > 0
     ]
@@ -177,21 +188,35 @@ async def stream_recommendation(
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
     list_id = uuid4().hex
-    push = RecommendationPush(session_id=request.session_id, list_id=list_id, product_ids=ranked_ids)
+    push = RecommendationPush(
+        session_id=request.session_id, list_id=list_id, product_ids=ranked_ids
+    )
     try:
         pushed = bool(await push_fn(push))
     except SpringUnavailableError:
         pushed = False
     if pushed:
-        yield sse("products.ready", ProductsReadyData(session_id=request.session_id, list_id=list_id).model_dump(by_alias=True))
+        yield sse(
+            "products.ready",
+            ProductsReadyData(session_id=request.session_id, list_id=list_id).model_dump(
+                by_alias=True
+            ),
+        )
         # 직전 추천을 장바구니 담기(productId 해소, 경로 B)용으로 보관 — **push 성공 후에만**.
         # push 실패로 카드가 노출되지 않았으면 저장하지 않아 "그거 담아줘"가 미노출 상품을 담지 않는다.
         if cart_store is not None and thread_key is not None:
             name_by_id = {p.product_id: p.name for p in candidates}
-            cart_store.set_last_reco(thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids])
+            await cart_store.set_last_reco(
+                thread_key, [(pid, name_by_id.get(pid, "")) for pid in ranked_ids]
+            )
     else:
         # push 실패 → products.ready 없음. rerank 코멘트가 "찾았다"고 했으니 목록 지연을 고지하고
         # 정상 종료한다(경로 B 실패 계약 — error 아님, done 유지).
-        yield sse("token", TokenData(text="목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요.").model_dump(by_alias=True))
+        yield sse(
+            "token",
+            TokenData(
+                text="목록을 준비하는 데 문제가 있었어요. 잠시 후 다시 시도해 주세요."
+            ).model_dump(by_alias=True),
+        )
 
     yield sse("done", DoneData(finish_reason="stop").model_dump(by_alias=True))

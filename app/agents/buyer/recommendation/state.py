@@ -11,9 +11,16 @@ import json
 from dataclasses import dataclass, field
 from typing import Literal
 
+from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
+
+from app.core import pg_store
 from app.core.llm import LLMError
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
+
+_NAMESPACE_ROOT = "buyer_revert"
+_CATEGORIES_KEY = "categories"
 
 
 @dataclass
@@ -72,49 +79,66 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
     """
     chips: list[ConditionChip] = []
     if filters.category:
-        chips.append(ConditionChip(field="category", label=f"카테고리 · {filters.category}", value=filters.category))
+        chips.append(
+            ConditionChip(
+                field="category", label=f"카테고리 · {filters.category}", value=filters.category
+            )
+        )
     if filters.price_max is not None:
-        chips.append(ConditionChip(field="priceMax", label=f"{filters.price_max:,}원 이하", value=filters.price_max))
+        chips.append(
+            ConditionChip(
+                field="priceMax", label=f"{filters.price_max:,}원 이하", value=filters.price_max
+            )
+        )
     if filters.price_min is not None:
-        chips.append(ConditionChip(field="priceMin", label=f"{filters.price_min:,}원 이상", value=filters.price_min))
+        chips.append(
+            ConditionChip(
+                field="priceMin", label=f"{filters.price_min:,}원 이상", value=filters.price_min
+            )
+        )
     if filters.brand:
-        chips.append(ConditionChip(field="brand", label=" · ".join(filters.brand), value=filters.brand))
+        chips.append(
+            ConditionChip(field="brand", label=" · ".join(filters.brand), value=filters.brand)
+        )
     if filters.rating_min is not None:
-        chips.append(ConditionChip(field="ratingMin", label=f"평점 {filters.rating_min}+", value=filters.rating_min))
+        chips.append(
+            ConditionChip(
+                field="ratingMin", label=f"평점 {filters.rating_min}+", value=filters.rating_min
+            )
+        )
     if filters.keyword:
         chips.append(ConditionChip(field="keyword", label=filters.keyword, value=filters.keyword))
     return chips
 
 
 class RevertStore:
-    """스레드별 소모품 억제 되돌리기 카테고리 집합 — 인메모리 placeholder(신원 스코프 키).
+    """스레드별 소모품 억제 되돌리기 카테고리 집합 — LangGraph BaseStore(pg-profile) 백엔드(신원 스코프 키).
 
     사용자가 "다시 추천받기"(되돌리기 칩)한 카테고리는 이후 턴에서도 억제하지 않는다(결정 14-F).
-    프로덕션은 LangGraph 체크포인터로 이관(ThreadFilterStore 와 동일 패턴).
     """
 
-    def __init__(self) -> None:
-        self._reverted: dict[str, set[str]] = {}
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
 
-    def get(self, key: str) -> set[str]:
-        return set(self._reverted.get(key, set()))
+    async def get(self, key: str) -> set[str]:
+        item = await self._store.aget((_NAMESPACE_ROOT, key), _CATEGORIES_KEY)
+        return set(item.value[_CATEGORIES_KEY]) if item else set()
 
-    def add(self, key: str, categories) -> None:
-        if categories:
-            self._reverted.setdefault(key, set()).update(categories)
+    async def add(self, key: str, categories) -> None:
+        if not categories:
+            return
+        current = await self.get(key)
+        current.update(categories)
+        await self._store.aput(
+            (_NAMESPACE_ROOT, key), _CATEGORIES_KEY, {_CATEGORIES_KEY: sorted(current)}
+        )
 
-    def clear(self) -> None:
-        self._reverted.clear()
 
-
-_revert_store = RevertStore()
-
-
-def get_revert_store() -> RevertStore:
-    """되돌리기 스토어 싱글턴."""
-    return _revert_store
+async def get_revert_store() -> RevertStore:
+    """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
+    return RevertStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:
-    """테스트 격리용."""
-    _revert_store.clear()
+    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)를 비운다."""
+    pg_store.reset_store()

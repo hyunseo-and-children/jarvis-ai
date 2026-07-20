@@ -76,9 +76,13 @@ async def test_cart_add_success() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -94,13 +98,19 @@ async def test_cart_add_merge_notice_when_existing() -> None:
         return AddToCartResult(success=True, cart_item_id=56)
 
     async def get_cart_fn(*, user_id=None, guest_id=None):
-        return CartView(items=[CartViewItem(cart_item_id=9, product_id=1, option_id=None, quantity=2)])
+        return CartView(
+            items=[CartViewItem(cart_item_id=9, product_id=1, option_id=None, quantity=2)]
+        )
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=get_cart_fn,
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=get_cart_fn,
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -115,81 +125,115 @@ async def test_cart_add_option_required_reasks_and_sets_pending() -> None:
     store = CartStateStore()
 
     async def add_fn(req):
-        raise CartOptionRequired([CartOption(option_id=3, name="블루"), CartOption(option_id=4, name="레드")])
+        raise CartOptionRequired(
+            [CartOption(option_id=3, name="블루"), CartOption(option_id=4, name="레드")]
+        )
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     types = _types(events)
     assert "action" not in types  # 되물음은 실패 action 이 아니다(§4.1)
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "블루" in token and "레드" in token
-    pending = store.get_pending("m:t")
+    pending = await store.get_pending("m:t")
     assert pending is not None and pending.product_id == 1
 
 
 async def test_cart_add_reask_then_success_clears_pending() -> None:
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=2, options=[CartOption(option_id=3, name="블루")]))
+    await store.set_pending(
+        "m:t", PendingAdd(product_id=1, quantity=2, options=[CartOption(option_id=3, name="블루")])
+    )
 
     async def add_fn(req):
-        assert req.product_id == 1 and req.option_id == 3 and req.quantity == 2  # pending 상품/수량 + 이번 optionId
+        assert (
+            req.product_id == 1 and req.option_id == 3 and req.quantity == 2
+        )  # pending 상품/수량 + 이번 optionId
         return AddToCartResult(success=True, cart_item_id=77)
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, option_id=3, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=3, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADDED" and action["cartItemId"] == 77
-    assert store.get_pending("m:t") is None  # 성공 후 정리
+    assert await store.get_pending("m:t") is None  # 성공 후 정리
 
 
-async def test_cart_add_option_invalid_exhausts_to_cart_error(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_cart_add_option_invalid_exhausts_to_cart_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     settings = get_settings()
     monkeypatch.setattr(settings, "cart_option_reask_max", 1)
     store = CartStateStore()
     # 이미 1회 재질문한 상태(attempts=1) → 다음 INVALID 는 상한 초과 → CART_ERROR
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1))
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1
+        ),
+    )
 
     async def add_fn(req):
         raise CartOptionInvalid([CartOption(option_id=3, name="블루")])
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, option_id=9, quantity=1),
-            cart_store=store, thread_key="m:t", settings=settings,
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=9, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=settings,
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
-    assert store.get_pending("m:t") is None
+    assert await store.get_pending("m:t") is None
 
 
 async def test_cart_add_option_invalid_reasks_within_limit() -> None:
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=0))
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=0
+        ),
+    )
 
     async def add_fn(req):
         raise CartOptionInvalid([CartOption(option_id=3, name="블루")])
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, option_id=9, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=9, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert "action" not in _types(events)  # 아직 상한 내 → 재질문
-    assert store.get_pending("m:t").attempts == 1
+    assert (await store.get_pending("m:t")).attempts == 1
 
 
 # ─────────── 담기 오류 매핑 ───────────
@@ -203,9 +247,13 @@ async def test_cart_add_product_not_found() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=999, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=999, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -220,9 +268,13 @@ async def test_cart_add_error_maps_to_cart_error() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -241,9 +293,13 @@ async def test_cart_add_degrades_when_get_cart_fails() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=get_cart_fn,
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=get_cart_fn,
         )
     )
     assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
@@ -257,9 +313,13 @@ async def test_cart_add_no_product_asks_clarify() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=None, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=None, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert "action" not in _types(events)
@@ -274,9 +334,13 @@ async def test_cart_add_anon_requires_login() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_anon(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="a:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_anon(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="a:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -294,9 +358,13 @@ async def test_cart_add_guest_uses_guest_id() -> None:
 
     await _collect(
         stream_cart_add(
-            identity=_guest(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="g:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_guest(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="g:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert captured["userId"] is None and captured["guestId"] == "guest-uuid-1"
@@ -307,7 +375,17 @@ async def test_cart_add_guest_uses_guest_id() -> None:
 
 async def test_cart_view_lists_items() -> None:
     async def get_cart_fn(*, user_id=None, guest_id=None):
-        return CartView(items=[CartViewItem(cart_item_id=1, product_id=1, product_name="방수 파우치", option_name="블루", quantity=2)])
+        return CartView(
+            items=[
+                CartViewItem(
+                    cart_item_id=1,
+                    product_id=1,
+                    product_name="방수 파우치",
+                    option_name="블루",
+                    quantity=2,
+                )
+            ]
+        )
 
     events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
@@ -349,7 +427,9 @@ async def test_route_cart_add(monkeypatch: pytest.MonkeyPatch) -> None:
     # 직전 추천이 있어야 담기 가능(경로 B) — last_reco 시드.
     from app.agents.buyer.cart.state import get_cart_store
     from app.core.conversation import conversation_key
-    get_cart_store().set_last_reco(conversation_key("123", "t1"), [(101, "이어폰")])
+
+    seed_store = await get_cart_store()
+    await seed_store.set_last_reco(conversation_key("123", "t1"), [(101, "이어폰")])
     llm = FakeLLM(decompose={"intent": "cart_add", "cart": {"productId": 101, "quantity": 1}})
     events = await _collect(run_buyer_turn(_req(), _member(), llm=llm))
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -361,7 +441,9 @@ async def test_route_cart_view(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.services.spring_client as sc
 
     async def fake_get(*, user_id=None, guest_id=None):
-        return CartView(items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)])
+        return CartView(
+            items=[CartViewItem(cart_item_id=1, product_id=1, product_name="키보드", quantity=1)]
+        )
 
     monkeypatch.setattr(sc, "get_cart", fake_get)
     llm = FakeLLM(decompose={"intent": "cart_view", "cart": {}})
@@ -382,8 +464,17 @@ async def test_last_reco_stored_after_recommendation() -> None:
     async def push(p):
         return True
 
-    await _collect(run_buyer_turn(_req(message="무선 이어폰 추천", thread_id="t9"), _member(), llm=FakeLLM(), search=search, push_fn=push))
-    reco = get_cart_store().get_last_reco(conversation_key("123", "t9"))
+    await _collect(
+        run_buyer_turn(
+            _req(message="무선 이어폰 추천", thread_id="t9"),
+            _member(),
+            llm=FakeLLM(),
+            search=search,
+            push_fn=push,
+        )
+    )
+    cart_store = await get_cart_store()
+    reco = await cart_store.get_last_reco(conversation_key("123", "t9"))
     assert [pid for pid, _ in reco] == [101, 102, 103]
 
 
@@ -426,20 +517,33 @@ async def test_add_to_cart_success_parses(monkeypatch: pytest.MonkeyPatch) -> No
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, {"success": True, "data": {"cartItemId": 55}})))
+    monkeypatch.setattr(
+        sc,
+        "_client",
+        lambda: _CartClient(_CartResp(200, {"success": True, "data": {"cartItemId": 55}})),
+    )
     res = await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
     assert res.success and res.cart_item_id == 55
 
 
-async def test_add_to_cart_option_required_raises_with_options(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_add_to_cart_option_required_raises_with_options(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """[BE 확정 2026-07-18] error.detail.options = [{optionId, name, extraPrice}] 를 파싱한다."""
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
-        {"optionId": 3, "name": "블루", "extraPrice": 0},
-        {"optionId": 4, "name": "레드", "extraPrice": 1000},
-    ]}}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {
+                "options": [
+                    {"optionId": 3, "name": "블루", "extraPrice": 0},
+                    {"optionId": 4, "name": "레드", "extraPrice": 1000},
+                ]
+            },
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -454,7 +558,12 @@ async def test_add_to_cart_option_required_legacy_location(monkeypatch: pytest.M
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "options": [{"optionId": 9, "optionName": "그린"}]}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "options": [{"optionId": 9, "optionName": "그린"}],
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -465,7 +574,9 @@ async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPa
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(404, {"error": {"code": "PRODUCT_NOT_FOUND"}})))
+    monkeypatch.setattr(
+        sc, "_client", lambda: _CartClient(_CartResp(404, {"error": {"code": "PRODUCT_NOT_FOUND"}}))
+    )
     with pytest.raises(sc.CartProductNotFound):
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=999, quantity=1))
 
@@ -473,11 +584,30 @@ async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPa
 async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.services.spring_client as sc
 
-    body = {"success": True, "data": {"items": [{"cartItemId": 55, "productId": 1, "productName": "파우치", "optionId": 3, "optionName": "블루", "quantity": 2, "price": 12900}]}}
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {
+                    "cartItemId": 55,
+                    "productId": 1,
+                    "productName": "파우치",
+                    "optionId": 3,
+                    "optionName": "블루",
+                    "quantity": 2,
+                    "price": 12900,
+                }
+            ]
+        },
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(200, body)))
     view = await sc.get_cart(user_id=1)
     assert len(view.items) == 1
-    assert view.items[0].product_name == "파우치" and view.items[0].option_name == "블루" and view.items[0].quantity == 2
+    assert (
+        view.items[0].product_name == "파우치"
+        and view.items[0].option_name == "블루"
+        and view.items[0].quantity == 2
+    )
 
 
 # ─────────── 리뷰 수정 회귀 (Fix 1~4) ───────────
@@ -501,9 +631,14 @@ async def test_cart_add_rejects_out_of_context_product() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=777, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            allowed_product_ids={101, 102}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=777, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            allowed_product_ids={101, 102},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert "action" not in _types(events)
@@ -519,9 +654,14 @@ async def test_cart_add_allows_in_context_product() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=101, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            allowed_product_ids={101, 102}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=101, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            allowed_product_ids={101, 102},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
@@ -536,9 +676,13 @@ async def test_cart_add_invalid_quantity_maps_cart_error() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1000),  # 클램프 우회(직접 주입)
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1000),  # 클램프 우회(직접 주입)
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -558,9 +702,19 @@ async def test_last_reco_stored_in_ranked_display_order() -> None:
         return True
 
     # rerank 가 검색순서(101,102,103)와 다르게 재정렬(103 먼저).
-    llm = FakeLLM(rerank={"ranked": [{"productId": 103, "rationale": "a"}, {"productId": 101, "rationale": "b"}], "overallComment": "c"})
-    await _collect(run_buyer_turn(_req(message="추천", thread_id="tR"), _member(), llm=llm, search=search, push_fn=push))
-    reco = get_cart_store().get_last_reco(conversation_key("123", "tR"))
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 103, "rationale": "a"}, {"productId": 101, "rationale": "b"}],
+            "overallComment": "c",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(message="추천", thread_id="tR"), _member(), llm=llm, search=search, push_fn=push
+        )
+    )
+    cart_store = await get_cart_store()
+    reco = await cart_store.get_last_reco(conversation_key("123", "tR"))
     # 노출 순서: rerank [103,101] + expose_min 보충 102 → [103,101,102] (검색순서 아님)
     assert [pid for pid, _ in reco][:2] == [103, 101]
 
@@ -582,35 +736,55 @@ async def test_last_reco_not_stored_when_push_fails() -> None:
 
         raise SpringUnavailableError("push down")
 
-    await _collect(run_buyer_turn(_req(message="추천", thread_id="tNo"), _member(), llm=FakeLLM(), search=search, push_fn=failing_push))
-    reco = get_cart_store().get_last_reco(conversation_key("123", "tNo"))
+    await _collect(
+        run_buyer_turn(
+            _req(message="추천", thread_id="tNo"),
+            _member(),
+            llm=FakeLLM(),
+            search=search,
+            push_fn=failing_push,
+        )
+    )
+    cart_store = await get_cart_store()
+    reco = await cart_store.get_last_reco(conversation_key("123", "tNo"))
     assert reco == []  # 저장 안 됨 → 다음 턴 "그거 담아줘"가 미노출 상품을 담지 못함
 
 
 async def test_cart_add_option_required_is_uncapped() -> None:
     """api-spec §4.1 — REQUIRED 는 상한 없는 되물음 멀티턴(INVALID 상한과 분리). 반복돼도 재질문."""
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1))
+    await store.set_pending(
+        "m:t",
+        PendingAdd(
+            product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")], attempts=1
+        ),
+    )
 
     async def add_fn(req):
         raise CartOptionRequired([CartOption(option_id=3, name="블루")])
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, option_id=None, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=None, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert "action" not in _types(events)  # CART_ERROR 아님 — 계속 재질문(§4.1)
-    pending = store.get_pending("m:t")
+    pending = await store.get_pending("m:t")
     assert pending is not None and pending.attempts == 1  # INVALID 카운터 보존(리셋 안 함)
 
 
 async def test_cart_add_reask_prefers_new_quantity() -> None:
     """옵션 답변과 함께 수량을 다시 말하면("레드로 5개") 새 수량을 우선한다(라운드5)."""
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=4, name="레드")]))
+    await store.set_pending(
+        "m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=4, name="레드")])
+    )
     captured = {}
 
     async def add_fn(req):
@@ -619,9 +793,13 @@ async def test_cart_add_reask_prefers_new_quantity() -> None:
 
     await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, option_id=4, quantity=5),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, option_id=4, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert captured["quantity"] == 5  # pending 의 1 이 아니라 이번 턴 5
@@ -630,7 +808,9 @@ async def test_cart_add_reask_prefers_new_quantity() -> None:
 async def test_cart_add_reask_ignores_quantity_for_other_target() -> None:
     """전환이 성립 안 한(미추천 상품 언급) 턴의 수량은 옛 pending 상품에 적용하지 않는다(라운드6)."""
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=2, options=[CartOption(option_id=4, name="레드")]))
+    await store.set_pending(
+        "m:t", PendingAdd(product_id=1, quantity=2, options=[CartOption(option_id=4, name="레드")])
+    )
     captured = {}
 
     async def add_fn(req):
@@ -641,9 +821,14 @@ async def test_cart_add_reask_ignores_quantity_for_other_target() -> None:
     # cart.product_id=99(미추천 → allowed 밖, 전환 미성립), quantity=5 는 옛 상품(1)에 적용 금지.
     await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=99, option_id=4, quantity=5),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            allowed_product_ids={1, 2}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=99, option_id=4, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            allowed_product_ids={1, 2},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert captured["productId"] == 1  # 옛 pending 상품
@@ -668,7 +853,9 @@ def test_parse_cart_coerces_float_and_string() -> None:
 async def test_cart_add_switches_product_during_pending() -> None:
     """되물음 중 다른 추천 상품으로 전환하면 pending 을 버리고 새 상품을 담는다(라운드3)."""
     store = CartStateStore()
-    store.set_pending("m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")]))
+    await store.set_pending(
+        "m:t", PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")])
+    )
     captured = {}
 
     async def add_fn(req):
@@ -677,14 +864,19 @@ async def test_cart_add_switches_product_during_pending() -> None:
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=2, quantity=1),  # 다른 상품으로 전환
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            allowed_product_ids={1, 2}, add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=2, quantity=1),  # 다른 상품으로 전환
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            allowed_product_ids={1, 2},
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     assert captured["productId"] == 2  # 옛 상품(1) 아닌 새 상품(2)
     assert next(e for e in events if e["type"] == "action")["data"]["type"] == "CART_ADDED"
-    assert store.get_pending("m:t") is None
+    assert await store.get_pending("m:t") is None
 
 
 # ─────────── 리뷰 라운드 4 회귀 ───────────
@@ -710,9 +902,13 @@ async def test_cart_add_non_numeric_member_maps_cart_error() -> None:
     bad = Identity(user_id="abc", is_guest=False, seller_id=None, subject="abc")
     events = await _collect(
         stream_cart_add(
-            identity=bad, cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="b:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=bad,
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="b:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     action = next(e for e in events if e["type"] == "action")["data"]
@@ -726,10 +922,13 @@ async def test_general_intent_clears_pending(monkeypatch: pytest.MonkeyPatch) ->
     from tests._fakes import FakeLLM
 
     key = conversation_key("123", "t1")
-    get_cart_store().set_pending(key, PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")]))
+    cart_store = await get_cart_store()
+    await cart_store.set_pending(
+        key, PendingAdd(product_id=1, quantity=1, options=[CartOption(option_id=3, name="블루")])
+    )
     llm = FakeLLM(decompose={"intent": "general", "reply": "네, 취소할게요."})
     await _collect(run_buyer_turn(_req(message="그만할래"), _member(), llm=llm))
-    assert get_cart_store().get_pending(key) is None  # 정리됨
+    assert await cart_store.get_pending(key) is None  # 정리됨
 
 
 # ─────────── #18 리뷰 수정 회귀 ───────────
@@ -740,25 +939,42 @@ async def test_cart_add_reask_shows_option_surcharge() -> None:
     store = CartStateStore()
 
     async def add_fn(req):
-        raise CartOptionRequired([CartOption(option_id=3, name="블루", extra_price=0), CartOption(option_id=4, name="레드", extra_price=1000)])
+        raise CartOptionRequired(
+            [
+                CartOption(option_id=3, name="블루", extra_price=0),
+                CartOption(option_id=4, name="레드", extra_price=1000),
+            ]
+        )
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "레드(+1,000원)" in token and "블루" in token
 
 
-async def test_add_to_cart_empty_detail_options_no_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_add_to_cart_empty_detail_options_no_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """detail.options 가 빈 배열이면 구버전 위치의 잔재 options 로 폴백하지 않는다(Claude #18)."""
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": []}, "options": [{"optionId": 99, "name": "stale"}]}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {"options": []},
+            "options": [{"optionId": 99, "name": "stale"}],
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -770,10 +986,17 @@ async def test_add_to_cart_malformed_option_skipped(monkeypatch: pytest.MonkeyPa
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
-        {"optionId": "not-int", "name": "깨짐"},          # optionId 변환 불가 → 건너뜀
-        {"optionId": 3, "name": "블루", "extraPrice": 0},  # 정상
-    ]}}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {
+                "options": [
+                    {"optionId": "not-int", "name": "깨짐"},  # optionId 변환 불가 → 건너뜀
+                    {"optionId": 3, "name": "블루", "extraPrice": 0},  # 정상
+                ]
+            },
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -785,17 +1008,23 @@ async def test_cart_add_reask_formats_surcharge_by_sign() -> None:
     store = CartStateStore()
 
     async def add_fn(req):
-        raise CartOptionRequired([
-            CartOption(option_id=4, name="레드", extra_price=-1000),  # 할인
-            CartOption(option_id=5, name="블랙", extra_price=0),       # 추가금 없음
-            CartOption(option_id=6, name="화이트", extra_price=2000),  # 추가금
-        ])
+        raise CartOptionRequired(
+            [
+                CartOption(option_id=4, name="레드", extra_price=-1000),  # 할인
+                CartOption(option_id=5, name="블랙", extra_price=0),  # 추가금 없음
+                CartOption(option_id=6, name="화이트", extra_price=2000),  # 추가금
+            ]
+        )
 
     events = await _collect(
         stream_cart_add(
-            identity=_member(), cart=CartIntent(product_id=1, quantity=1),
-            cart_store=store, thread_key="m:t", settings=get_settings(),
-            add_fn=add_fn, get_cart_fn=_empty_cart(),
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
         )
     )
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
@@ -812,8 +1041,14 @@ def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptur
 
     class _R:
         status_code = 400
+
         def json(self):
-            return {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [{"optionId": "bad"}]}}}
+            return {
+                "error": {
+                    "code": "CART_OPTION_REQUIRED",
+                    "detail": {"options": [{"optionId": "bad"}]},
+                }
+            }
 
     with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
         code, options = sc._parse_cart_error(_R())
@@ -826,9 +1061,20 @@ async def test_add_to_cart_bad_extra_price_keeps_option(monkeypatch: pytest.Monk
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
-        {"optionId": 3, "name": "블루", "extraPrice": "weird"},  # extraPrice 이상 → None 으로, 옵션 유지
-    ]}}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {
+                "options": [
+                    {
+                        "optionId": 3,
+                        "name": "블루",
+                        "extraPrice": "weird",
+                    },  # extraPrice 이상 → None 으로, 옵션 유지
+                ]
+            },
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -841,10 +1087,21 @@ async def test_add_to_cart_float_extra_price_coerced(monkeypatch: pytest.MonkeyP
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
-        {"optionId": 7, "name": "골드", "extraPrice": 1500.0},
-        {"optionId": 8, "name": "실버", "extraPrice": 999.9999999998},  # BigDecimal.doubleValue 오차
-    ]}}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {
+                "options": [
+                    {"optionId": 7, "name": "골드", "extraPrice": 1500.0},
+                    {
+                        "optionId": 8,
+                        "name": "실버",
+                        "extraPrice": 999.9999999998,
+                    },  # BigDecimal.doubleValue 오차
+                ]
+            },
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
@@ -857,11 +1114,22 @@ async def test_add_to_cart_naninf_extra_price_survives(monkeypatch: pytest.Monke
     import app.services.spring_client as sc
     from app.schemas.spring import AddToCartRequest
 
-    body = {"error": {"code": "CART_OPTION_REQUIRED", "detail": {"options": [
-        {"optionId": 9, "name": "네온", "extraPrice": float("nan")},
-        {"optionId": 10, "name": "무한", "extraPrice": float("inf")},
-        {"optionId": 11, "name": "초대형", "extraPrice": 10 ** 400},  # float 변환 OverflowError
-    ]}}}
+    body = {
+        "error": {
+            "code": "CART_OPTION_REQUIRED",
+            "detail": {
+                "options": [
+                    {"optionId": 9, "name": "네온", "extraPrice": float("nan")},
+                    {"optionId": 10, "name": "무한", "extraPrice": float("inf")},
+                    {
+                        "optionId": 11,
+                        "name": "초대형",
+                        "extraPrice": 10**400,
+                    },  # float 변환 OverflowError
+                ]
+            },
+        }
+    }
     monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
     with pytest.raises(sc.CartOptionRequired) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=1))
