@@ -11,7 +11,8 @@ from app.core.config import Settings
 def test_seller_settings_defaults() -> None:
     """§5 표의 판매자 임계값 기본값이 그대로 로드된다 (env 미설정 시)."""
     settings = Settings(_env_file=None)
-    assert settings.internal_token is None
+    # [통일 2026-07-20] 서비스 토큰은 팀 규약 internal_api_token 단일 키(기본 미설정).
+    assert settings.internal_api_token == ""
     assert settings.seller_ma_window == 7
     assert settings.seller_anomaly_deviation_pct == 30.0
     assert settings.seller_conversion_drop_pct == 20.0

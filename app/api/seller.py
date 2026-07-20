@@ -29,7 +29,7 @@ import logging
 from collections.abc import AsyncIterator
 from datetime import date
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.messages import AIMessageChunk, HumanMessage
 
@@ -44,6 +44,10 @@ from app.agents.seller.workers import build_general_agent, build_product_agent
 from app.api.deps import require_seller_internal
 from app.core.auth import Identity
 from app.core.config import get_settings
+from app.core.conversation import get_conversation_store
+from app.core.errors import get_request_id
+from app.core.observability import start_observation
+from app.core.stream import open_stream, registry_key
 from app.schemas.chat import ChatRequest, DoneData, ErrorData, TokenData
 from app.services.spring_client import SpringUnavailableError
 
@@ -420,18 +424,29 @@ async def _seller_stream(request: ChatRequest, identity: Identity) -> AsyncItera
 @router.post("/seller/chat")
 async def seller_chat(
     request: ChatRequest,
+    http_request: Request,
     identity: Identity = Depends(require_seller_internal),
 ) -> StreamingResponse:
     """판매자 챗봇 SSE 스트리밍 (S-4, api-spec §3.2 — Spring 패스스루).
 
     신원(sellerId/brandId)은 require_seller_internal 이 Spring 주입 헤더에서
     확보를 보장한다(결손 400). 4-1b 부터 supervisor 3분기 디스패치가 배선됐다.
+
+    [합류 2026-07-20 rebase] 스트림 수명주기(§2.9)는 팀 공통 래퍼 open_stream 소관 —
+    (a) sessionId 당 동시 1스트림(409) (b) 연결 종료 취소 (c) first-token/전체 타임아웃.
+    대화 저장·구조화 로그(obs #8)는 start_observation 이 담당한다(chat 과 동일 패턴).
     """
-    return StreamingResponse(
-        _seller_stream(request, identity),
-        media_type="text/event-stream; charset=utf-8",
-        headers={
-            "Cache-Control": "no-cache",
-            "X-Accel-Buffering": "no",
-        },
+    observation = start_observation(
+        request_id=get_request_id(http_request),
+        identity=identity,
+        conversation_id=request.session_id,
+        message=request.message,
+        store=get_conversation_store(),
+        now=asyncio.get_running_loop().time(),
+    )
+    return await open_stream(
+        http_request,
+        registry_key(identity, request.session_id),
+        lambda: _seller_stream(request, identity),
+        observer=observation,
     )

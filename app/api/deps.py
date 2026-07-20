@@ -73,7 +73,8 @@ def require_seller_internal(
     """판매자 챗 Spring 패스스루 인증 의존성 (REALIGN-SELLER-20260719 D1).
 
     Spring 이 S-4({AI_SERVER}/seller/chat)를 호출할 때:
-      1. X-Internal-Token — settings.service_token 과 상수시간 비교.
+      1. X-Internal-Token — settings.internal_api_token 과 상수시간 비교
+         (팀 규약 단일 키 — verify_service_token·spring_client 와 공유, 2026-07-20 통일).
          결손/불일치 = 401 UNAUTHORIZED. 미설정(dev)이면 스킵 + warning 1회.
       2. X-Seller-Id / X-Brand-Id — Spring 이 판매자 JWT 검증을 마치고 주입하는
          메아리 신원 (🔴 헤더명은 AI측 제안 — BE 확정 시 이 함수 한 곳만 수정).
@@ -84,9 +85,9 @@ def require_seller_internal(
     global _dev_skip_warned
     settings: Settings = get_settings()
 
-    if settings.service_token:
+    if settings.internal_api_token:
         if not x_internal_token or not secrets.compare_digest(
-            x_internal_token, settings.service_token
+            x_internal_token, settings.internal_api_token
         ):
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -94,7 +95,7 @@ def require_seller_internal(
             )
     elif not _dev_skip_warned:
         logger.warning(
-            "SERVICE_TOKEN 미설정 — 판매자 internal 인증을 건너뜁니다 (dev 전용, 운영 금지)"
+            "INTERNAL_API_TOKEN 미설정 — 판매자 internal 인증을 건너뜁니다 (dev 전용, 운영 금지)"
         )
         _dev_skip_warned = True
 

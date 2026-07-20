@@ -58,17 +58,11 @@ class Settings(BaseSettings):
     jwt_issuer: str | None = "shopping-spring-auth"
     jwt_audience: str | None = "shopping-fastapi-ai"
 
-    # ── Spring→AI 인바운드 서비스 토큰 (REALIGN-SELLER-20260719 D1, X-Internal-Token 검증) ──
-    # 인바운드(CH-2/S-4/I-20)는 전부 같은 X-Internal-Token 을 쓴다(아키텍처 확정 07/17).
-    # 현재 소비처: 판매자 챗 require_seller_internal. 미설정 시 dev 한정 검증 스킵(운영 금지).
-    # (구 용도였던 /events/* 이벤트 채널 검증도 재도입 시 이 필드를 쓴다.)
-    service_token: str | None = None
-
-    # ── 판매자 Spring internal 콜백 (api-spec §2.3/§2.9 c, DESIGN-SELLER-TOOLS-STAGE1 §5) ──
-    # AI→Spring 서비스 토큰. 기존 service_token(이벤트용, deprecated)과 별도 신설.
-    internal_token: str | None = None
-    # AI→Spring 전 구간 타임아웃(§2.9 c). 기존 spring_client._client() 하드코딩(3.0)을 여기로 이관.
-    spring_timeout_s: float = 3.0
+    # [통일 2026-07-20 rebase 합류] 서비스 토큰은 팀 규약 `internal_api_token` 단일 키.
+    # 인바운드(S-4 require_seller_internal·§3.5 verify_service_token)와 아웃바운드
+    # (spring_client — AI→Spring)가 같은 X-Internal-Token 값을 공유한다(아키텍처 07/17).
+    # 구 seller 전용 키 service_token(인바운드)·internal_token(아웃바운드)은 폐기.
+    # spring_timeout_s 도 팀 정의(아래 공통 블록)를 재사용한다 — 중복 정의 금지.
 
     # ── 판매자 분석 임계값 (app/agents/seller/calc.py 주입, 하드코딩 금지) ──
     seller_ma_window: int = 7  # 매출 이동평균 window(일)

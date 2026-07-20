@@ -611,7 +611,12 @@ def get_spring_client() -> SpringClient:
     """
     global _default_client
     if _default_client is None:
-        _default_client = SpringClient()
+        # [수정 2026-07-20 rebase 합류] 빈 생성자 호출(잠재 TypeError — 테스트는 전부
+        # 주입식이라 미노출) 정정 + 토큰 키를 팀 규약 internal_api_token 으로 통일.
+        settings = get_settings()
+        _default_client = SpringClient(
+            settings.spring_base_url, settings.internal_api_token or None
+        )
     return _default_client
 
 

@@ -237,14 +237,18 @@ def test_bad_token_401_envelope() -> None:
     assert env["requestId"]
 
 
-def test_seller_scope_403_envelope() -> None:
-    """판매자 스코프 없는 토큰 → 403 FORBIDDEN 봉투."""
+def test_seller_missing_identity_headers_400_envelope() -> None:
+    """신원 헤더(X-Seller-Id/X-Brand-Id) 없는 /seller/chat → 400 봉투.
+
+    [계약 전환 2026-07-20, REALIGN F1/D1] 판매자 챗은 Spring 패스스루 — 구 403
+    (JWT 티켓 스코프)이 아니라 서비스 토큰(401)/신원 헤더(400) 검증으로 대체됐다.
+    """
     r = client.post(
         "/seller/chat", json={"sessionId": "s", "threadId": "t", "message": "m"}
     )
-    assert r.status_code == 403
+    assert r.status_code == 400
     env = r.json()["error"]
-    assert env["code"] == "FORBIDDEN"
+    assert env["code"] == "BAD_REQUEST"
     assert env["requestId"]
 
 
