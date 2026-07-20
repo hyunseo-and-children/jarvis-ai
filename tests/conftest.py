@@ -2,7 +2,18 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
 import pytest
+
+# 로컬 통합용 .env가 단위/통합 테스트의 인증·외부 provider를 오염시키지 않게 한다.
+# 단, 실 키가 필요한 smoke(마커 명시 선택)는 그대로 둔다 — 여기서 지우면 실행 불가(리뷰 반영).
+if not ("smoke" in " ".join(sys.argv) and "not smoke" not in " ".join(sys.argv)):
+    os.environ["AUTH_MODE"] = "dev"
+    os.environ["OPENAI_API_KEY"] = ""
+    os.environ["ANTHROPIC_API_KEY"] = ""
+    os.environ["GOOGLE_API_KEY"] = ""
 
 from app.agents.buyer.cart.state import reset_cart_store
 from app.agents.buyer.graph import reset_thread_store

@@ -69,15 +69,15 @@ class Settings(BaseSettings):
     internal_api_token: str = ""
 
     # ── CORS (FE 직접 호출, api-spec §2.7 / C-11) ──
-    cors_origins: list[str] = ["http://localhost:3000"]
+    cors_origins: list[str] = ["http://localhost:3000", "http://localhost:5173"]
 
     # ── 인증 (api-spec §2.2, RS256 + JWKS 확정 2026-07-15) ──
     # dev : 서명 검증 없이 디코드 (헤더 없으면 게스트) — 로컬 개발 전용
     # jwks: Spring GET /.well-known/jwks.json 공개키로 RS256 검증 (kid→키, exp/iss/aud 확인)
     auth_mode: Literal["dev", "jwks"] = "dev"
     jwks_url: str | None = None
-    jwt_issuer: str | None = "shopping-spring-auth"
-    jwt_audience: str | None = "shopping-fastapi-ai"
+    jwt_issuer: str | None = "jarvis-spring-auth"
+    jwt_audience: str | None = "jarvis-fastapi-ai"
     # 스트림 티켓 scope 검증값 (§2.3 v0.10.0 확정 검증 항목). None 이면 scope 검증 생략 —
     # issuer/audience=None 과 같은 규칙. 실값(제안 chat:stream)이 C-1 미확정이라 기본은
     # None 이다: 미확정 추정값을 활성 강제하면 Spring 발급 티켓과 어긋나는 순간 전면 401

@@ -140,7 +140,7 @@ class SpringStub:
             items = [p for p in items if p["price"] <= int(max_price)]
         if (size := params.get("size")) is not None:
             items = items[: int(size)]
-        return httpx.Response(200, json={"success": True, "data": {"items": items}})
+        return httpx.Response(200, json={"success": True, "data": items})
 
     # ── I-2 담기 (§4.1) ──
 

@@ -412,17 +412,83 @@ async def test_search_products_parses_i1_items(monkeypatch: pytest.MonkeyPatch) 
     assert res.products[0].category == "의류" and res.products[0].brand == "B"
 
 
-async def test_search_products_malformed_maps_to_search_failed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """200 이지만 스키마 불일치(필수 price 결측) 응답은 SpringUnavailableError 로 degrade(§7)."""
+async def test_search_products_parses_i1_array_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """search_products 가 Spring ApiResponse<List> 인 {success,data:[...]} 배열도 파싱한다(§2.3 정합)."""
     import app.services.spring_client as sc
     from app.schemas.spring import ProductSearchFilters
 
-    payload = {"success": True, "data": {"items": [{"productId": 1, "name": "x"}]}}  # price 없음
+    payload = {
+        "success": True,
+        "data": [
+            {
+                "productId": 1,
+                "name": "셔츠",
+                "price": 29900,
+                "categoryName": "의류",
+                "brandName": "B",
+                "rating": 4.8,
+            }
+        ],
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    res = await sc.search_products(ProductSearchFilters())
+    assert len(res.products) == 1
+    assert res.products[0].category == "의류" and res.products[0].brand == "B"
+
+
+async def test_search_products_malformed_maps_to_search_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """200 이지만 스키마 불일치(필수 productId 결측) 응답은 SpringUnavailableError 로 degrade(§7)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {"success": True, "data": {"items": [{"name": "x"}]}}  # productId 없음
     monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
     with pytest.raises(SpringUnavailableError):
         await sc.search_products(ProductSearchFilters())
+
+
+async def test_search_products_unknown_envelope_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """알려지지 않은 검색 envelope 는 조용한 0 건이 아니라 경고를 남긴다(§7 유지보수 계약)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = {"success": True, "data": {"products": [{"productId": 1}]}}  # 미인식 형태
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    with caplog.at_level("WARNING"):
+        res = await sc.search_products(ProductSearchFilters())
+    assert res.products == []
+    assert "미인식" in caplog.text
+
+
+async def test_search_products_parses_bare_list_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """래퍼 없는 최상위 배열 응답도 후보로 수용한다(envelope 방어)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    payload = [
+        {"productId": 7, "name": "모자", "price": 9900, "categoryName": "잡화", "brandName": "B"}
+    ]
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient(payload))
+    res = await sc.search_products(ProductSearchFilters())
+    assert [p.product_id for p in res.products] == [7]
+
+
+async def test_search_products_missing_data_key_warns(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """data 키가 없는 응답은 조용한 0 이 아니라 경고를 남긴다(§7)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import ProductSearchFilters
+
+    monkeypatch.setattr(sc, "_client", lambda: _FakeClient({"success": True}))
+    with caplog.at_level("WARNING"):
+        res = await sc.search_products(ProductSearchFilters())
+    assert res.products == []
+    assert "data 키" in caplog.text
 
 
 async def test_expose_min_fill_from_search_order() -> None:

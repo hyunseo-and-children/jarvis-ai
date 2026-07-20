@@ -52,7 +52,7 @@ class ProductSearchFilters(CamelModel):
 
 
 class SpringProduct(CamelModel):
-    """Spring 검색 응답(BE I-1)의 상품 1건. price 는 질의 시점 최신값 (rerank·예산 계산용).
+    """Spring 검색 응답(BE I-1)의 상품 1건. I-1 최소 응답은 표시 필드(price 등)를 생략할 수 있어 optional 이다(표시 권위는 CH-5, §2.4).
 
     [정합 v이슈#2] 별칭을 BE I-1 응답 실측 필드명에 맞춘다(api-spec §4.6 응답표):
     categoryName·brandName·originalPrice·imageUrl. to_camel 기본 별칭(category/brand/…)과
@@ -62,7 +62,7 @@ class SpringProduct(CamelModel):
 
     product_id: int  # 숫자(BIGINT, product.id §2.6) — 별칭 productId
     name: str
-    price: int
+    price: int | None = None  # I-1 최소 응답 시 생략 가능(§2.4)
     list_price: int | None = Field(default=None, alias="originalPrice")  # 정가
     stock: int | None = None  # BE I-1 응답엔 없음(§4.6) — 담기/주문 시점 판정
     category: str | None = Field(default=None, alias="categoryName")

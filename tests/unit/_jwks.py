@@ -16,8 +16,8 @@ from jwt import PyJWKClient
 from jwt.algorithms import RSAAlgorithm
 
 # §2.3 제안값 계열 (config 기본값과 일치 — 실값은 C-1 확정 후 env 주입)
-ISSUER = "shopping-spring-auth"
-AUDIENCE = "shopping-fastapi-ai"
+ISSUER = "jarvis-spring-auth"
+AUDIENCE = "jarvis-fastapi-ai"
 SCOPE = "chat:stream"
 JWKS_URL = "https://spring.test/.well-known/jwks.json"
 KID = "kid-2026-a"

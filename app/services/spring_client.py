@@ -134,17 +134,31 @@ def _search_query_params(filters: ProductSearchFilters) -> dict:
 
 
 def _parse_search_response(data: object) -> ProductSearchResult:
-    """BE I-1 응답 {success, data:{items:[...]}} → ProductSearchResult (§4.6, v0.15.5).
+    """BE I-1 응답 → ProductSearchResult (§4.6, v0.15.5).
 
-    BE 응답엔 totalCount 가 없어 total_count 는 수신 items 수로 둔다.
+    현재 Spring ``ApiResponse<List<...>>`` 는 data 자체가 배열({success, data:[...]})이다.
+    구 계약의 data:{items:[...]} 형태도 브랜치 간 호환을 위해 함께 수용한다. BE 응답엔
+    totalCount 가 없어 total_count 는 수신 items 수로 둔다.
     """
     items: list = []
-    if isinstance(data, dict):
+    if isinstance(data, list):
+        items = data  # 래퍼 없이 바디가 곧 배열인 경우도 수용
+    elif isinstance(data, dict):
         payload = data.get("data")
-        if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        if isinstance(payload, list):
+            items = payload
+        elif isinstance(payload, dict) and isinstance(payload.get("items"), list):
             items = payload["items"]
         elif isinstance(data.get("items"), list):
             items = data["items"]
+        elif payload is not None:
+            # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
+            _log.warning("검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__)
+        elif "data" not in data:
+            # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
+            _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
+    else:
+        _log.warning("검색 응답 최상위 형태 미인식(silent 0 아님) — type=%s", type(data).__name__)
     products = [SpringProduct.model_validate(it) for it in items if isinstance(it, dict)]
     return ProductSearchResult(products=products, total_count=len(products))
 
