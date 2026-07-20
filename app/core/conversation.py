@@ -272,5 +272,13 @@ async def get_conversation_store() -> ConversationStoreProtocol:
 
 
 def reset_store() -> None:
-    """테스트용 — 저장소 초기화(인메모리로 되돌림)."""
+    """테스트용 — 저장소 초기화(인메모리로 되돌림).
+
+    `_init_lock` 도 새로 만든다 — pytest-asyncio 는 테스트 함수마다 새 이벤트 루프를
+    쓰는데, 모듈 전역 asyncio.Lock 을 여러 루프에 걸쳐 재사용하면 이전 루프에 묶인
+    내부 상태로 다음 테스트에서 락 획득이 영원히 안 풀리는 hang 이 발생할 수 있다
+    (app/core/pg_store.py 와 동일 문제, 실제 재현·수정 이력은 docs/lessons.md).
+    """
+    global _init_lock
     set_store(ConversationStore())
+    _init_lock = asyncio.Lock()
