@@ -1,9 +1,9 @@
 ---
 id: SPEC-PROFILE-001
-version: 0.2.0
+version: 0.3.0
 status: draft
 created: 2026-07-10
-updated: 2026-07-15
+updated: 2026-07-20
 author: navis
 priority: high
 issue_number: null
@@ -23,6 +23,7 @@ issue_number: null
 
 ## HISTORY
 
+- **v0.3.0 (2026-07-20, 이슈 #33)** — 저장소 이관 구현 완료 반영. (1) **임베딩 모델/차원 갱신**: 결정 6 "셀프호스트 1024차원"은 카탈로그 파이프라인이 이슈 #31 로 Google `gemini-embedding-001`(1536-dim, MRL 절단 수동 L2 정규화)로 전환되며 stale — REQ-PROF-074 자체가 "카탈로그와 모델 공유"를 요구하므로 프로필도 동일 모델/차원을 그대로 따른다(신규 계약 협의 아님, 기존 REQ 의 자연스러운 적용). §5.3 네임스페이스 주석·§1.3·§4 결정 6 행·REQ-PROF-074·§10 비용 문구 갱신(차원 1024→1536, 임베딩 비용 0 문구 삭제 — Google API 호출이라 토큰 비용 발생). (2) **checkpointer→BaseStore 로 구현 확정, OPEN-P9 해소**: session_context(구매자 스레드 상태 전반 — ThreadFilter/Cart/Revert/session_ctx)는 실제 LangGraph StateGraph 가 없는 구매자 실행 모델(단순 함수 호출 체인) 특성상 checkpointer 가 아니라 BaseStore(app/core/pg_store.py 공유 연결, 별도 인스턴스는 아니고 같은 pg-profile 물리 인스턴스 내 별도 store 객체) 로 구현됨 — write 소유는 구매자 그래프(app/agents/buyer/graph.py) 그대로. (3) **fact 저장 단위 확정**: REQ-PROF-070 "위키 파일 1개 = item 1개" 원칙을 그대로 적용해 fact 마다 개별 store item(uuid 키)으로 저장 — semantic 인덱스가 fact 단위로 실제 동작(요약/세션버퍼는 `index=False`). (4) **session-end 멱등(processed eventId) 별도 테이블로 확정**: BaseStore 의 get→put 은 원자적이지 않아 동시 재전송 레이스에 취약 — 전용 `processed_events` 테이블(UNIQUE 제약 + `INSERT ... ON CONFLICT DO NOTHING RETURNING`)로 원자적 처리(app/agents/profile/processed_events.py, db/profile/init/00_processed_events.sql). (5) OPEN-P11 부분 해소: 서빙 형태는 FastAPI 프로세스 내 동기 SDK 호출(app.pipelines.embedding.embed_texts, google-genai)로 확정. 요구사항·스키마 구조·게이트 규칙은 무변경.
 - **v0.2.0 (2026-07-15)** — 결정 16-A(저장소 물리 구성 개정) 반영. "카탈로그와 완전 별도 Postgres 인스턴스"를 MVP 기준 **단일 Postgres 인스턴스 안의 별도 데이터베이스 2개**(catalog/profile)로 개정 — 논리 분리 규율(DB 단위 분리로 cross-DB 조인 구조적 차단 + 계정 분리[search read-only/프로필 워커 profile 한정] + cross-DB 의존 금지)로 부하 격리 목적을 대체하고, 물리 인스턴스 분리는 고도화 승격 경로(연결 문자열 교체 수준)로 유예. REQ-PROF-072/073/074 개정, AC-PROF-21 개정, DoD·불변식 문구 갱신, OPEN-P9에 물리 결합 논점 소멸 주석. 그 외 요구사항·스키마 불변. 근거: 데모 규모에 격리할 부하 없음(2026-07-15 AWS 배포 구성 논의, product.md 결정 16-A).
 - **v0.1.0 (2026-07-10)** — 최초 작성. 결정 16(프로필 파이프라인 상세 설계)을 파이프라인 EARS 명세로 구체화. `profile_summary` 섹션 레이아웃·델타 레코드·게이트 상태·Store item·GET API 스키마 초안 확정. reader(동기 read, LLM 0회)·builder(2단계: 세션별 델타 생성 → sleep-time consolidation)·gate(3조건 승격, LLM 태깅 + 코드 계산 분담) 계약 정의. 결정 16이 구속 상속하는 결정 4/4-A 및 관련 결정 5/6/8/9/10-A/12/14-F를 §4 참조 표에 반영. 결정 16 내부의 몇몇 판독 긴장(에피소딕 최근 맥락의 게이트 예외, 구매 신호의 명시성 부재와 3조건 AND 여부, checkpointer 소유 경계, GET 노출 범위)은 해소하지 않고 §9 OPEN 항목으로 명시 등록한다.
 
@@ -58,7 +59,7 @@ issue_number: null
 | Thread checkpointer / session_context (LangGraph) | 대화 스레드의 영속 저장 — 미처리 스레드 스캔의 원천. 세션 중 write는 구매자 그래프 소관 | 구매자 그래프 SPEC(별도) — 본 SPEC은 read-only 스캔 소비(§9 OPEN-P9) |
 | 주문 이벤트 미러 (결정 9 채널 확장 / 14-F) | 사용자별 경량 구매 이력 미러(user_id·product_id·category·purchased_at) — read-only 조회. 추천 dedup(14-F)과 동일 미러 공유 | 카탈로그/주문 이벤트 SPEC(별도) |
 | Spring 세션 종료 통지 (결정 12) | 세션 종료 시 조기 트리거(best-effort) 신호 — 유실 허용 | Spring / 상위 그래프 SPEC(별도) |
-| 셀프호스트 임베딩 모델 (결정 6) | BaseStore 내장 semantic 인덱스의 1024차원 임베딩 계산(카탈로그 파이프라인과 모델 공유, 인스턴스는 별도) | 임베딩 서빙 SPEC/파이프라인(별도, 서빙 형태 결정 6 TBD) |
+| 임베딩 모델 (결정 6, v0.3.0 갱신) | BaseStore 내장 semantic 인덱스의 1536차원(Google `gemini-embedding-001`) 임베딩 계산(카탈로그 파이프라인과 모델 공유, 인스턴스는 별도) | `app.pipelines.embedding`(이슈 #31/#33) |
 | 리뷰 분석 그래프 (결정 10-A) | (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 자리만 예약 | 리뷰 분석 SPEC(별도, 고도화) |
 
 ---
@@ -111,7 +112,7 @@ issue_number: null
 | 결정 4-A | 6항 보강 — (1) transient 격리, (2) 3조건 승격 게이트("기억해" 예외), (3) 2단 비동기 쓰기, (4) 임베딩 검색 인덱스 + frontmatter 구조화 필드, (5) valid_from/last_confirmed/superseded_by + recency-wins + EMA 감쇠 + supersede, (6) 마이페이지 노출/편집 | §6.3/§6.4/§6.5/§6.7/§6.8/§6.9 |
 | 결정 16 | 프로필 파이프라인 상세 설계(본 SPEC의 직접 입력) — `profile_summary` 계약, 물리 저장소, 게이트 구현 분담, 트리거/Spring 인터페이스, write 소스. **SPEC-RECOMMEND-001 OPEN-9 해소** | 본 SPEC 전체 |
 | 결정 5 | Haiku 4.5(경량) + Sonnet 5(상위). 프로필 델타 생성·consolidation = Sonnet, 캐시된 입력 ITPM 미차감(프롬프트 캐싱 권장) | REQ-PROF-020/031, §비기능 |
-| 결정 6 | 한국어 임베딩 셀프호스트 1024차원 — BaseStore 내장 semantic 인덱스가 소비. 카탈로그와 모델 공유, 인스턴스 별도 | REQ-PROF-074, §1.3 |
+| 결정 6 (v0.3.0 갱신) | 임베딩 Google `gemini-embedding-001` 1536차원 — BaseStore 내장 semantic 인덱스가 소비. 카탈로그와 모델 공유, 인스턴스 별도 | REQ-PROF-074, §1.3 |
 | 결정 8 | 비회원은 프로필 없음, AI 서버 무상태 — 게스트는 reader `None`, build 스킵 | REQ-PROF-003/041 |
 | 결정 9 | 이벤트 기반 준실시간 동기화, 일 1회 보정 배치 패턴 — 주문 미러 채널의 근간 | §1.3, REQ-PROF-054 |
 | 결정 10-A | 리뷰 분석 그래프가 (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 슬롯만 예약 | EX-P2, REQ-PROF-024 |
@@ -225,13 +226,13 @@ class StoreItemValue(BaseModel):
 #   ("facts",    user_id)  → 지식 단위 semantic 파일 (budget.md, taste/fashion.md ...)
 #   ("episodes", user_id)  → episodic 파일 (situations/travel-2026.md ...)
 #
-# 임베딩 인덱스 (결정 16): BaseStore 내장 semantic 인덱스.
-#   embed 대상 = StoreItemValue.body (+ tags), 차원 = 1024 (결정 6 셀프호스트 모델).
-#   embed 함수·차원은 core/config.py 주입 (하드코딩 금지).
+# 임베딩 인덱스 (결정 16, v0.3.0 갱신): BaseStore 내장 semantic 인덱스.
+#   embed 대상 = fact 필드(1 fact = 1 item), 차원 = 1536 (결정 6, Google gemini-embedding-001).
+#   embed 함수·차원은 core/config.py 주입 (하드코딩 금지). summary·session_ctx 는 index=False.
 #
 # 물리 배치 (결정 16/16-A): MVP는 단일 Postgres 인스턴스 내 별도 데이터베이스(catalog/profile).
 #   profile DB에도 pgvector 확장 필요. 계정 분리(search read-only / 프로필 워커 profile 한정).
-#   checkpointer(session_context)는 profile 측 동거(기본안, 하드 결정 아님, §9 OPEN-P9).
+#   session_context(구매자 스레드 상태)는 profile 측 동거 확정(BaseStore, §9 OPEN-P9 해소, v0.3.0).
 ```
 
 ### 5.4 마이페이지 GET API 페이로드 스키마
@@ -324,8 +325,8 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-071** (Ubiquitous): The 파이프라인 **shall** 네임스페이스를 `("profile" | "facts" | "episodes", user_id)`로 구성한다 — `profile`은 index.md 압축 요약, `facts`는 semantic 지식 단위, `episodes`는 episodic 파일(결정 16).
 - **REQ-PROF-072** (Ubiquitous, 결정 16-A 개정): The 프로필 store **shall** 카탈로그 검색 인덱스와 **별도의 데이터베이스**를 사용한다 — MVP는 단일 Postgres 인스턴스 내 DB 분리(catalog/profile) + 계정 분리(`search_service`는 catalog read-only, 프로필 워커는 profile 한정)이며, cross-DB 조인에 의존하지 **않는다**. 물리 인스턴스 분리는 부하 격리가 실제 필요해질 때의 고도화 승격 경로다(연결 문자열 교체 수준).
 - **REQ-PROF-073** (Ubiquitous, 결정 16-A 개정): The 프로필 데이터베이스 **shall** pgvector 확장을 갖춘다(BaseStore 내장 semantic 인덱스가 요구 — catalog/profile 두 DB 각각 `CREATE EXTENSION`).
-- **REQ-PROF-074** (Ubiquitous): The BaseStore 내장 semantic 인덱스 **shall** Store item의 본문(body) + 태그를 결정 6의 셀프호스트 1024차원 모델로 임베딩하며, 임베딩 함수·차원은 config 주입한다(하드코딩 금지) — 카탈로그와 모델은 공유하되 데이터베이스는 별도다(결정 16-A).
-- **REQ-PROF-075** (Optional): **Where** checkpointer(session_context)의 물리 배치를 정하는 경우, the 파이프라인 **shall** 이를 프로필 인스턴스에 동거시키는 것을 기본안으로 하되 이는 하드 결정이 아니다(결정 16, 소유·경계는 §9 OPEN-P9).
+- **REQ-PROF-074** (Ubiquitous, v0.3.0 갱신): The BaseStore 내장 semantic 인덱스 **shall** fact 항목(1 fact = 1 Store item)을 결정 6의 Google `gemini-embedding-001` 1536차원 모델로 임베딩하며, 임베딩 함수·차원은 config 주입한다(하드코딩 금지, `embedding_model_id`·`embedding_dim`) — 카탈로그와 모델은 공유하되 데이터베이스는 별도다(결정 16-A). summary·session_ctx 항목은 semantic 인덱스 대상이 아니다(`index=False`).
+- **REQ-PROF-075** (Ubiquitous, v0.3.0 확정): session_context(구매자 스레드 상태 — ThreadFilter/Cart/Revert/session_ctx) **shall** 프로필 인스턴스(pg-profile)에 동거하는 BaseStore 로 구현한다(§9 OPEN-P9 해소) — write 소유는 구매자 그래프(app/agents/buyer/graph.py)가 그대로 가진다.
 - **REQ-PROF-076** (Ubiquitous): The 각 Store item **shall** frontmatter에 `type`(필수), `confidence`, `valid_from`/`last_confirmed`/`superseded_by`, `structured_attrs`(수치·구조 속성)를 담는다(결정 4 + 결정 4-A 4/5).
 
 ### 6.9 마이페이지 API (`GET /profile/{user_id}`)
@@ -420,9 +421,9 @@ class ProfileViewResponse(BaseModel):
 - **OPEN-P6 (sleep-time 배치 주기)**: sleep-time 배치 주기(`sleeptime.batch_period`)와 "세션 종료 직후 실행" 옵션의 균형은 데모 차세션 반영 요구 실측 후 조정(TBD). config 주입(REQ-PROF-037, 결정 16).
 - **OPEN-P7 (3조건 게이트 AND vs 가중 앙상블 의미론)**: 결정 16은 구매 신호를 "명시성 없이 반복성·현저성 중심으로 판정"한다고 하나(REQ-PROF-044), 결정 4-A의 "3조건 게이트"가 3조건을 strict AND로 요구하는지 가중 앙상블(명시성은 기여 신호)인지 명시하지 않는다. 두 판독이 상충한다 — strict AND면 구매 신호가 명시성 부재로 **영원히 승격 불가**해 결정 16의 "구매도 write 소스" 의도와 모순되고, 가중 앙상블이면 "기억해" hot-path 예외(REQ-PROF-045)가 자연스럽다. 본 SPEC은 **가중 앙상블(명시성 필수 아님)** 을 가정하고 진행하나, 정확한 게이트 의미론과 가중치는 실측·확정 대상(TBD). 🔴 이는 판독 긴장이므로 상위 결정 계층에서 확인 필요.
 - **OPEN-P8 (최근 맥락 episodic의 게이트 예외 경계)**: 결정 16은 요약이 "게이트 통과 미폐기 fact만" 반영한다고 하나(REQ-PROF-015), 동시에 최근 맥락 섹션은 recency 윈도우 내 **episodic 하이라이트 2~3개**를 담는다(REQ-PROF-013). episodic 하이라이트는 최근 단발 이벤트라 반복성(EMA) 조건을 구조적으로 충족하지 못한다 — "게이트 통과"(반복성 포함)와 "최근 episodic 포함"이 상충한다. 본 SPEC은 최근 맥락 섹션의 episodic 하이라이트를 **반복성 게이트가 아닌 recency 윈도우 + salience 선택**으로 처리한다고 가정하나, 이 예외의 정확한 경계(어떤 episodic이 요약에 오를 자격이 있는가)는 확정 대상(TBD). 🔴 판독 긴장, 상위 결정 계층 확인 필요.
-- **OPEN-P9 (checkpointer 소유·물리 배치 경계)**: 결정 16은 checkpointer(session_context)를 프로필 인스턴스에 동거시키는 것을 기본안(하드 아님)으로 두고(REQ-PROF-075), 동시에 델타 생성 정합성의 원천을 checkpointer의 미처리 스레드 스캔으로 둔다(REQ-PROF-050). 그러나 checkpointer의 **write는 구매자 그래프(요청 경로)** 소관이다(결정 1/4-A). checkpointer를 프로필 인스턴스에 두면 구매자 그래프의 요청 경로가 프로필 DB 인스턴스 가용성에 결합된다 — 부하 격리(별도 인스턴스) 취지와 긴장한다. 본 SPEC은 checkpointer를 **read-only로 스캔 소비**만 하며 그 스키마·write·물리 배치의 최종 소유는 구매자 그래프 SPEC과 협의 대상으로 둔다(TBD). 🔴 소유·경계 미확정. *(v0.2.0 주석: 결정 16-A의 단일 인스턴스 개정으로 "요청 경로가 프로필 인스턴스 가용성에 결합"이라는 물리 결합 논점은 MVP에선 소멸 — 잔존 논점은 스키마·write 소유뿐.)*
+- **[v0.3.0 해소] OPEN-P9 (session_context 소유·물리 배치 경계)**: 구매자 실행 모델이 실제 LangGraph StateGraph 가 아니라 단순 함수 호출 체인이라 "checkpointer"라는 메커니즘 자체를 적용할 수 없음이 이슈 #33 구현 중 확인됨 — 대신 BaseStore(app/core/pg_store.py, pg-profile 동거)로 구현했다. write 소유는 그대로 구매자 그래프(app/agents/buyer/graph.py) — 프로필 파이프라인은 read-only 소비만 한다(REQ-PROF-050/075 불변). 결정 16-A(단일 인스턴스)로 물리 결합 우려는 이미 소멸했었고, 이번에 스키마·구현 소유까지 확정됨.
 - **OPEN-P10 (GET 마이페이지 노출 범위)**: 결정 16은 GET이 "자연어 마크다운"을 반환한다고만 하고 노출 범위(index.md 압축 요약만인지, 전체 지식 단위 번들을 조립한 마크다운인지)를 명시하지 않는다. reader(그래프 진입)는 압축 요약만 로드하나(결정 4 읽기 정책), 마이페이지는 사용자 투명성용(결정 4-A 6)이라 더 넓은 노출이 자연스럽다. 본 SPEC은 GET을 **사람이 읽는 프로필 마크다운(reader 압축 요약보다 넓을 수 있음)** 으로 가정하나, 정확한 조립 범위는 확정 대상(TBD). 🔴 기획 UX 확인 항목.
-- **OPEN-P11 (임베딩 서빙 형태 공유 의존)**: BaseStore 내장 semantic 인덱스가 쓰는 결정 6 임베딩 모델은 카탈로그 파이프라인과 **모델을 공유**하나 인스턴스는 별도다. 서빙 형태(FastAPI 프로세스 내 로드 vs 별도 경량 임베딩 서비스, 결정 6 TBD)에 따라 프로필 인스턴스에서의 임베딩 호출 경로가 달라진다. 서빙 형태는 결정 6 소관으로 남으며 본 SPEC은 config 주입 embed 함수로 추상화한다(REQ-PROF-074, TBD).
+- **[v0.3.0 해소] OPEN-P11 (임베딩 서빙 형태 공유 의존)**: 결정 6 이 이슈 #31 로 확정됨(Google `gemini-embedding-001` API, FastAPI 프로세스 내 동기 SDK 호출, `app.pipelines.embedding.embed_texts`) — 프로필도 동일 함수를 그대로 재사용한다(REQ-PROF-074). 별도 경량 임베딩 서비스 분리는 채택되지 않았다.
 
 ---
 
@@ -442,8 +443,8 @@ class ProfileViewResponse(BaseModel):
 - **델타 생성 세션당 1회**: builder 1단계는 미처리 세션당 Sonnet 1회 — 명시성·현저성·transient 태깅을 이 호출에 흡수하여 추가 호출을 두지 않는다(REQ-PROF-020, 결정 16).
 - **consolidation LLM은 텍스트 통합 전용**: EMA·승격·recency-wins·dedup은 코드이며 LLM이 아니다(REQ-PROF-032, 결정 16).
 - **모델 티어**: 델타 생성·consolidation = Sonnet 5(결정 5). 공유 시스템 프롬프트는 프롬프트 캐싱하여 ITPM 한도에서 제외(결정 5, 배치 부하 대비).
-- **임베딩 비용 0**: BaseStore semantic 인덱스는 셀프호스트 1024차원 모델(결정 6)로 토큰 비용 없음.
-- **config 주입 기본값**: `summary.char_cap = 1000`, `summary.recency_window`·최근 맥락 개수, EMA α·승격 임계, `entropy.min_sessions`·엔트로피 급증 임계, `conversation.retention_period`, `sleeptime.batch_period`·`sleeptime.run_after_session_end`, 임베딩 차원(1024)·embed 함수 — 전부 `core/config.py` 주입(하드코딩 금지, 결정 16).
+- **임베딩 비용**(v0.3.0 갱신): BaseStore semantic 인덱스는 Google `gemini-embedding-001` API(결정 6, 이슈 #31)를 호출하므로 토큰 비용이 발생한다 — fact 승격 시점에만 호출되어 빈도는 낮다(세션당 최대 수 건).
+- **config 주입 기본값**: `summary.char_cap = 1000`, `summary.recency_window`·최근 맥락 개수, EMA α·승격 임계, `entropy.min_sessions`·엔트로피 급증 임계, `conversation.retention_period`, `sleeptime.batch_period`·`sleeptime.run_after_session_end`, 임베딩 차원(1536, v0.3.0 갱신)·embed 함수 — 전부 `core/config.py` 주입(하드코딩 금지, 결정 16).
 
 ### 안전/일관성 불변식 (must-hold)
 

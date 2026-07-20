@@ -18,12 +18,12 @@ router = APIRouter(tags=["profile"])
 
 
 @router.get("/profile/me")
-def get_profile_me(identity: Identity = Depends(get_identity)) -> ProfileView:
+async def get_profile_me(identity: Identity = Depends(get_identity)) -> ProfileView:
     """토큰 소유자 본인의 프로필 요약 마크다운 (§3.4)."""
     # 게스트/무신원 → 개인화 프로필 없음(정상 200).
     if identity.is_guest or not identity.user_id:
         return ProfileView(user_id=identity.subject or "", exists=False)
-    summary = read_profile_summary(identity.user_id)
+    summary = await read_profile_summary(identity.user_id)
     if summary is None:
         return ProfileView(user_id=identity.user_id, exists=False)
     return ProfileView(

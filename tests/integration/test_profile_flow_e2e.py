@@ -64,7 +64,7 @@ def test_session_end_is_idempotent(client, spring, llm) -> None:
     assert llm.calls_of("delta") == 1, "중복 통지가 LLM 을 재호출하면 안 된다"
 
 
-def test_profile_is_injected_into_next_session(client, spring, llm) -> None:
+async def test_profile_is_injected_into_next_session(client, spring, llm) -> None:
     """승격된 프로필이 다음 턴 rerank 컨텍스트로 주입된다 (개인화 루프 종단)."""
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
     _session_end(client)
@@ -76,16 +76,18 @@ def test_profile_is_injected_into_next_session(client, spring, llm) -> None:
     # 프로필 마크다운이 rerank 프롬프트에 실렸는지는 store 조회로 확인(프롬프트 원문 비의존)
     from app.agents.profile.reader import read_profile_summary
 
-    assert read_profile_summary(USER_ID) is not None
+    assert await read_profile_summary(USER_ID) is not None
 
 
-def test_remember_command_promotes_immediately(client, spring, llm) -> None:
-    """"기억해" 명시 명령은 게이트 없이 즉시 승격된다 (hot-path, 세션 종료 대기 없음)."""
+async def test_remember_command_promotes_immediately(client, spring, llm) -> None:
+    """ "기억해" 명시 명령은 게이트 없이 즉시 승격된다 (hot-path, 세션 종료 대기 없음)."""
     _chat(client, "나 브랜드 트래블러 좋아하니까 기억해줘")
 
     from app.agents.profile.store import get_profile_store
 
-    assert any("트래블러" in fact for fact in get_profile_store().get_facts(USER_ID))
+    store = await get_profile_store()
+    facts = await store.get_facts(USER_ID)
+    assert any("트래블러" in fact for fact in facts)
 
 
 def test_guest_has_no_profile(client, spring, llm) -> None:

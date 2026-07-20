@@ -38,7 +38,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def record_remember(user_id: str, fact: str) -> None:
+async def record_remember(user_id: str, fact: str) -> None:
     """ "기억해" hot-path — 명시 명령은 게이트 없이 즉시 승격(REQ-PROF).
 
     발화 원문을 그대로 저장하되 config 길이 상한으로 절단한다(오탐·남용 시 무제한 누적 방어).
@@ -48,7 +48,8 @@ def record_remember(user_id: str, fact: str) -> None:
     settings = get_settings()
     cleaned = fact.strip()[: settings.profile_fact_char_cap]
     if cleaned:
-        get_profile_store().add_fact(user_id, cleaned, cap=settings.profile_max_facts)
+        store = await get_profile_store()
+        await store.add_fact(user_id, cleaned, cap=settings.profile_max_facts)
 
 
 async def generate_session_delta(
@@ -62,8 +63,8 @@ async def generate_session_delta(
     먼저 밀려나도 seq 기준이라 안전).
     LLMError 는 전파 — 상위가 degrade 처리. 게스트는 호출 안 함(상위 책임).
     """
-    store = get_profile_store()
-    buffer, watermark = store.get_session_ctx_snapshot(thread_key)
+    store = await get_profile_store()
+    buffer, watermark = await store.get_session_ctx_snapshot(thread_key)
     if not buffer or llm is None:
         return None  # degrade(버퍼 없음/LLM 미구성) — 처리 안 함(상위가 버퍼 보존)
     # LLMError 는 전파 — 상위(events)가 degrade 로 처리해 버퍼를 보존(정상 반려와 구분).
@@ -84,7 +85,7 @@ async def generate_session_delta(
             repetition_ema=_as_float(delta.get("repetitionEma")),
             threshold=settings.profile_gate_threshold,
         ):
-            store.add_fact(user_id, fact, cap=settings.profile_max_facts)
+            await store.add_fact(user_id, fact, cap=settings.profile_max_facts)
             promoted.append(fact)
     return promoted, watermark
 
@@ -94,8 +95,8 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
 
     best-effort — fact 없음/LLM 오류 시 미갱신(False).
     """
-    store = get_profile_store()
-    facts = store.get_facts(user_id)
+    store = await get_profile_store()
+    facts = await store.get_facts(user_id)
     if not facts or llm is None:
         return False
     try:
@@ -110,7 +111,7 @@ async def consolidate(user_id: str, *, llm, settings) -> bool:
     markdown = (raw or "").strip()[: settings.profile_summary_max_chars]
     if not markdown:
         return False
-    store.set_summary(user_id, markdown, _now_iso())
+    await store.set_summary(user_id, markdown, _now_iso())
     return True
 
 

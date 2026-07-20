@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends
 
+from app.agents.profile import processed_events
 from app.agents.profile.builder import consolidate, generate_session_delta
 from app.agents.profile.store import get_profile_store
 from app.api.deps import verify_service_token
@@ -23,9 +24,10 @@ router = APIRouter(tags=["events"])
 @router.post("/events/session-end", status_code=202)
 async def session_end(event: SessionEndEvent, _token: None = Depends(verify_service_token)) -> dict:
     """세션 종료 → 프로필 델타 추출 + consolidation(best-effort·멱등, 202 Accepted)."""
-    store = get_profile_store()
-    # 원자적 마킹(await 전) — 짧은 간격 재전송(at-least-once)이 둘 다 통과해 중복 처리되는 레이스 차단.
-    if not store.mark_if_new(event.event_id):
+    store = await get_profile_store()
+    # 원자적 마킹(processed_events — UNIQUE 제약 INSERT ON CONFLICT) — 짧은 간격 재전송
+    # (at-least-once)이 둘 다 통과해 중복 처리되는 레이스 차단(이슈 #33).
+    if not await processed_events.mark_if_new(event.event_id):
         return {"status": "duplicate"}  # 멱등 — 중복 수신 무시(§2.7)
 
     # [신뢰경계] session-end 는 Spring→AI(레인 b) — 신원(userId/sessionId)은 §3.5 계약상 본문으로
@@ -50,8 +52,8 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     if ran:
         # LLM 이 실제 처리한 경우에만, 그 스냅샷 워터마크 이하만 버퍼 정리(정상 반려 포함) — LLM 호출 중
         # 새로 추가된 항목까지 통째로 삭제되지 않게 한다(cap 트리밍 상황에서도 seq 기준이라 안전).
-        store.clear_session_ctx_upto(key, watermark)
+        await store.clear_session_ctx_upto(key, watermark)
     else:
         # degrade/오류 → 마킹 해제(멱등은 성공에만) + 버퍼 보존 → 재전송·다음 배치가 재처리(REQ-PROF-050/051).
-        store.unmark_event(event.event_id)
+        await processed_events.unmark_event(event.event_id)
     return {"status": "accepted"}

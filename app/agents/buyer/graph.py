@@ -109,18 +109,18 @@ async def run_buyer_turn(
     # 프로필 주입 (회원만, read-only) — 게스트/신규는 None(개인화 스킵, 결정 8)
     profile = None
     if not identity.is_guest and identity.user_id and not identity.seller_id:
-        summary = read_profile_summary(identity.user_id)
+        summary = await read_profile_summary(identity.user_id)
         profile = summary.get("markdown") if summary else None
         # transient 세션 버퍼에 발화 누적(승격 전 격리, SPEC-PROFILE-001) — 세션 종료 델타 소스.
         # "기억해"류 명시 명령은 게이트 없이 즉시 승격(hot-path, REQ-PROF).
-        pstore = get_profile_store()
-        pstore.append_session_ctx(
+        pstore = await get_profile_store()
+        await pstore.append_session_ctx(
             conversation_key(identity.user_id, request.session_id),
             request.message,
             cap=settings.profile_session_buffer_cap,
         )
         if is_remember_command(request.message):
-            record_remember(identity.user_id, request.message)
+            await record_remember(identity.user_id, request.message)
 
     # 장바구니 문맥 — 직전 추천(담기 productId 해소)·옵션 되물음 대기 상태.
     cart_store = await get_cart_store()
