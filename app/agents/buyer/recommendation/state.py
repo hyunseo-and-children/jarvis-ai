@@ -7,13 +7,43 @@ decompose 산출(RouteDecision)·rerank 산출(RerankResult)·conditions 칩 파
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Literal
 
+from langgraph.store.base import BaseStore
+from langgraph.store.memory import InMemoryStore
+
+from app.core import pg_store
 from app.core.llm import LLMError
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
+
+_NAMESPACE_ROOT = "buyer_revert"
+_CATEGORIES_KEY = "categories"
+
+# key(thread_key)별 asyncio.Lock — RevertStore.add() 의 get→put(read-modify-write) 구간을
+# 직렬화한다. 동일 스레드로 겹치는 요청(멀티탭·연속 발화)이 오면 나중 aput 이 앞선 갱신을
+# 덮어써 되돌리기 카테고리가 유실될 수 있다(lost update, PR #46 리뷰).
+#
+# [한계, PR #46 후속 리뷰 — MVP 단일 인스턴스 전제] 이 락은 **프로세스 내부**에서만
+# 유효하다. 여러 uvicorn 워커·인스턴스가 같은 pg-profile 을 공유하는 배포(수평 확장)로
+# 바뀌면 서로 다른 프로세스의 동시 add() 호출은 이 락으로 전혀 직렬화되지 않아 lost
+# update 가 재현된다 — app/core/stream.py 의 ActiveStreamRegistry 와 동일한 "MVP 단일
+# 인스턴스" 전제(다중 인스턴스 확장 시 Postgres advisory lock 등 DB 레벨 직렬화로 교체
+# 필요). 또한 key(thread_key)마다 항목이 쌓이기만 하고 제거되지 않아, 장시간 구동 시
+# 누적 대화 수만큼 커지는 완만한 메모리 누수이기도 하다(reset_revert_store() 는 테스트
+# 격리용으로만 비운다) — TTL/LRU 정리는 현재 미구현(MVP 규모에서 실질적 위험 낮음으로 판단).
+_add_locks: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(key: str) -> asyncio.Lock:
+    lock = _add_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _add_locks[key] = lock
+    return lock
 
 
 @dataclass
@@ -72,49 +102,73 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
     """
     chips: list[ConditionChip] = []
     if filters.category:
-        chips.append(ConditionChip(field="category", label=f"카테고리 · {filters.category}", value=filters.category))
+        chips.append(
+            ConditionChip(
+                field="category", label=f"카테고리 · {filters.category}", value=filters.category
+            )
+        )
     if filters.price_max is not None:
-        chips.append(ConditionChip(field="priceMax", label=f"{filters.price_max:,}원 이하", value=filters.price_max))
+        chips.append(
+            ConditionChip(
+                field="priceMax", label=f"{filters.price_max:,}원 이하", value=filters.price_max
+            )
+        )
     if filters.price_min is not None:
-        chips.append(ConditionChip(field="priceMin", label=f"{filters.price_min:,}원 이상", value=filters.price_min))
+        chips.append(
+            ConditionChip(
+                field="priceMin", label=f"{filters.price_min:,}원 이상", value=filters.price_min
+            )
+        )
     if filters.brand:
-        chips.append(ConditionChip(field="brand", label=" · ".join(filters.brand), value=filters.brand))
+        chips.append(
+            ConditionChip(field="brand", label=" · ".join(filters.brand), value=filters.brand)
+        )
     if filters.rating_min is not None:
-        chips.append(ConditionChip(field="ratingMin", label=f"평점 {filters.rating_min}+", value=filters.rating_min))
+        chips.append(
+            ConditionChip(
+                field="ratingMin", label=f"평점 {filters.rating_min}+", value=filters.rating_min
+            )
+        )
     if filters.keyword:
         chips.append(ConditionChip(field="keyword", label=filters.keyword, value=filters.keyword))
     return chips
 
 
 class RevertStore:
-    """스레드별 소모품 억제 되돌리기 카테고리 집합 — 인메모리 placeholder(신원 스코프 키).
+    """스레드별 소모품 억제 되돌리기 카테고리 집합 — LangGraph BaseStore(pg-profile) 백엔드(신원 스코프 키).
 
     사용자가 "다시 추천받기"(되돌리기 칩)한 카테고리는 이후 턴에서도 억제하지 않는다(결정 14-F).
-    프로덕션은 LangGraph 체크포인터로 이관(ThreadFilterStore 와 동일 패턴).
     """
 
-    def __init__(self) -> None:
-        self._reverted: dict[str, set[str]] = {}
+    def __init__(self, store: BaseStore | None = None) -> None:
+        self._store = store or InMemoryStore()
 
-    def get(self, key: str) -> set[str]:
-        return set(self._reverted.get(key, set()))
+    async def get(self, key: str) -> set[str]:
+        item = await self._store.aget((_NAMESPACE_ROOT, key), _CATEGORIES_KEY)
+        return set(item.value[_CATEGORIES_KEY]) if item else set()
 
-    def add(self, key: str, categories) -> None:
-        if categories:
-            self._reverted.setdefault(key, set()).update(categories)
+    async def add(self, key: str, categories) -> None:
+        if not categories:
+            return
+        async with _lock_for(key):  # get→put 원자성 보장(lost update 방지)
+            current = await self.get(key)
+            current.update(categories)
+            await self._store.aput(
+                (_NAMESPACE_ROOT, key), _CATEGORIES_KEY, {_CATEGORIES_KEY: sorted(current)}
+            )
 
-    def clear(self) -> None:
-        self._reverted.clear()
 
-
-_revert_store = RevertStore()
-
-
-def get_revert_store() -> RevertStore:
-    """되돌리기 스토어 싱글턴."""
-    return _revert_store
+async def get_revert_store() -> RevertStore:
+    """되돌리기 스토어 — pg-profile 공유 연결 백엔드(요청마다 얇은 래퍼 재생성)."""
+    return RevertStore(await pg_store.get_store())
 
 
 def reset_revert_store() -> None:
-    """테스트 격리용."""
-    _revert_store.clear()
+    """테스트 격리용 — 공유 pg-profile store(InMemoryStore)를 비우고 key별 락도 초기화한다.
+
+    `_add_locks` 도 비운다 — pg_store.py 의 `_init_lock` 과 동일한 이유로, pytest-asyncio
+    의 테스트 함수별 새 이벤트 루프에서 이전 루프에 묶인 stale `Lock` 을 재사용하면
+    hang 이 발생할 수 있다(app/core/pg_store.py 리뷰와 동일 클래스 버그).
+    """
+    pg_store.reset_store()
+    _add_locks.clear()

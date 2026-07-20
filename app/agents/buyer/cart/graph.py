@@ -81,20 +81,25 @@ async def stream_cart_add(
 
     user_id, guest_id = cart_identity(identity)
     if user_id is None and guest_id is None:
-        yield sse("action", ActionData(type="CART_ADD_FAILED", message="담기에는 로그인이 필요해요.", reason="CART_ERROR").model_dump(by_alias=True))
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED", message="담기에는 로그인이 필요해요.", reason="CART_ERROR"
+            ).model_dump(by_alias=True),
+        )
         yield _done()
         return
 
     # 되물음 진행 중이라도 사용자가 **다른 추천 상품**으로 전환하면 pending 을 버리고 새 담기로 처리한다
     # (옛 상품 옵션 되물음에 갇히지 않게 — decompose 가 전환을 새 productId 로 신호).
-    pending = cart_store.get_pending(thread_key)
+    pending = await cart_store.get_pending(thread_key)
     if (
         pending is not None
         and cart.product_id is not None
         and cart.product_id != pending.product_id
         and (allowed_product_ids is None or cart.product_id in allowed_product_ids)
     ):
-        cart_store.clear_pending(thread_key)
+        await cart_store.clear_pending(thread_key)
         pending = None
     if pending is not None:
         product_id: int | None = pending.product_id
@@ -114,10 +119,17 @@ async def stream_cart_add(
     # productId 만 허용(LLM 이 발화 속 임의 숫자를 오추출해 추천 안 된 상품을 담는 것 차단). 되물음
     # 진행(pending) 중이면 이미 검증된 상품이므로 예외.
     unresolved = product_id is None or (
-        pending is None and allowed_product_ids is not None and product_id not in allowed_product_ids
+        pending is None
+        and allowed_product_ids is not None
+        and product_id not in allowed_product_ids
     )
     if unresolved:
-        yield sse("token", TokenData(text="어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요.").model_dump(by_alias=True))
+        yield sse(
+            "token",
+            TokenData(text="어떤 상품을 담을까요? 추천을 먼저 받아보시면 담아드릴게요.").model_dump(
+                by_alias=True
+            ),
+        )
         yield _done()
         return
 
@@ -132,46 +144,98 @@ async def stream_cart_add(
         pass  # 조회 실패해도 담기는 진행(§4.9)
 
     try:
-        req = AddToCartRequest(user_id=user_id, guest_id=guest_id, product_id=product_id, option_id=option_id, quantity=quantity)
+        req = AddToCartRequest(
+            user_id=user_id,
+            guest_id=guest_id,
+            product_id=product_id,
+            option_id=option_id,
+            quantity=quantity,
+        )
         result = await add_fn(req)
     except CartOptionRequired as exc:
         # api-spec §4.1 — REQUIRED 는 **상한 없는 되물음 멀티턴**(사용자가 옵션을 아직 안 준 정상 흐름).
         # 각 되물음은 사용자 입력을 요구하므로 서버 무한 루프가 아니다. INVALID 카운터(attempts)는
         # 리셋하지 않고 보존해 사이에 끼어도 INVALID 상한이 유지되게 한다.
-        cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=attempts))
-        yield sse("token", TokenData(text=f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?").model_dump(by_alias=True))
+        await cart_store.set_pending(
+            thread_key,
+            PendingAdd(
+                product_id=product_id, quantity=quantity, options=exc.options, attempts=attempts
+            ),
+        )
+        yield sse(
+            "token",
+            TokenData(
+                text=f"옵션을 선택해 주세요: {_options_text(exc.options)}. 어떤 걸로 담을까요?"
+            ).model_dump(by_alias=True),
+        )
         yield _done()
         return
     except CartOptionInvalid as exc:
         # api-spec §4.1 — INVALID 는 재시도 상한(config cart_option_reask_max, 기본 1) 후 CART_ERROR.
         new_attempts = attempts + 1
         if new_attempts > settings.cart_option_reask_max:
-            cart_store.clear_pending(thread_key)
-            yield sse("action", ActionData(type="CART_ADD_FAILED", message="옵션을 확인하지 못했어요. 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
+            await cart_store.clear_pending(thread_key)
+            yield sse(
+                "action",
+                ActionData(
+                    type="CART_ADD_FAILED",
+                    message="옵션을 확인하지 못했어요. 다시 시도해 주세요.",
+                    reason="CART_ERROR",
+                ).model_dump(by_alias=True),
+            )
             yield _done()
             return
-        cart_store.set_pending(thread_key, PendingAdd(product_id=product_id, quantity=quantity, options=exc.options, attempts=new_attempts))
-        yield sse("token", TokenData(text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}").model_dump(by_alias=True))
+        await cart_store.set_pending(
+            thread_key,
+            PendingAdd(
+                product_id=product_id, quantity=quantity, options=exc.options, attempts=new_attempts
+            ),
+        )
+        yield sse(
+            "token",
+            TokenData(
+                text=f"그 옵션을 찾지 못했어요. 다시 골라 주세요: {_options_text(exc.options)}"
+            ).model_dump(by_alias=True),
+        )
         yield _done()
         return
     except CartProductNotFound:
-        cart_store.clear_pending(thread_key)
-        yield sse("action", ActionData(type="CART_ADD_FAILED", message="해당 상품을 찾지 못했어요.", reason="PRODUCT_NOT_FOUND").model_dump(by_alias=True))
+        await cart_store.clear_pending(thread_key)
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message="해당 상품을 찾지 못했어요.",
+                reason="PRODUCT_NOT_FOUND",
+            ).model_dump(by_alias=True),
+        )
         yield _done()
         return
     except (CartError, SpringUnavailableError, ValidationError):
-        cart_store.clear_pending(thread_key)
-        yield sse("action", ActionData(type="CART_ADD_FAILED", message="장바구니에 담지 못했어요. 잠시 후 다시 시도해 주세요.", reason="CART_ERROR").model_dump(by_alias=True))
+        await cart_store.clear_pending(thread_key)
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message="장바구니에 담지 못했어요. 잠시 후 다시 시도해 주세요.",
+                reason="CART_ERROR",
+            ).model_dump(by_alias=True),
+        )
         yield _done()
         return
 
     # 성공 — 되물음 상태 정리 + 합산 안내.
-    cart_store.clear_pending(thread_key)
+    await cart_store.clear_pending(thread_key)
     if existing > 0:
         message = "이미 담겨 있던 상품이라 수량을 더했어요."
     else:
         message = "장바구니에 담았어요."
-    yield sse("action", ActionData(type="CART_ADDED", message=message, cart_item_id=result.cart_item_id).model_dump(by_alias=True))
+    yield sse(
+        "action",
+        ActionData(type="CART_ADDED", message=message, cart_item_id=result.cart_item_id).model_dump(
+            by_alias=True
+        ),
+    )
     yield _done()
 
 
@@ -180,14 +244,22 @@ async def stream_cart_view(*, identity, get_cart_fn=None, observer=None) -> Asyn
     get_cart_fn = get_cart_fn or spring_client.get_cart
     user_id, guest_id = cart_identity(identity)
     if user_id is None and guest_id is None:
-        yield sse("token", TokenData(text="장바구니를 보려면 로그인이 필요해요.").model_dump(by_alias=True))
+        yield sse(
+            "token",
+            TokenData(text="장바구니를 보려면 로그인이 필요해요.").model_dump(by_alias=True),
+        )
         yield _done()
         return
 
     try:
         cart_view = await get_cart_fn(user_id=user_id, guest_id=guest_id)
     except SpringUnavailableError:
-        yield sse("token", TokenData(text="장바구니를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.").model_dump(by_alias=True))
+        yield sse(
+            "token",
+            TokenData(text="장바구니를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.").model_dump(
+                by_alias=True
+            ),
+        )
         yield _done()
         return
 

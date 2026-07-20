@@ -159,6 +159,9 @@ class Settings(BaseSettings):
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
+    # AsyncPostgresStore(pg-profile) 초기 연결 대기 상한(이슈 #33) — 초과 시 dev 는 InMemory 폴백.
+    # seller checkpointer 와 별개 설정(공유 시 두 서브시스템이 값 하나를 두고 경합하는 걸 방지).
+    state_store_connect_timeout_s: float = 5.0
     # PII 로그 지문 pepper (§6.3 b) — 운영(jwks)은 실제 secret 주입 필수(아래 검증). 빈 값은 개발용.
     pii_hash_pepper: str = ""
     # 사용자 message 길이 상한 (api-spec §3.1 · PII·메모리 방어). 튜너블.
@@ -216,7 +219,6 @@ class Settings(BaseSettings):
                 "기동합니다 (C-1 확정 후 반드시 주입)"
             )
         return self
-
 
     def model_for_tier(self, tier: str) -> str:
         """활성 provider 기준 tier("fast"|"smart") → 모델 id. 관측(record_model_call)용.
