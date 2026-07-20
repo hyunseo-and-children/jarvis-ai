@@ -282,10 +282,16 @@ async def _get_store() -> BaseStore:
                 ctx = AsyncPostgresStore.from_conn_string(
                     settings.profile_db_url, index=_pg_index_config()
                 )
+                # __aenter__ 호출 '전'에 정리 대상으로 세팅한다 — wait_for 가 __aenter__ 실행
+                # 도중 타임아웃/취소로 끊으면 커넥션이 부분적으로 열린 채 남는데, "성공 후에만
+                # 세팅"하면 그 경우 entered_ctx 가 None 이라 except 정리가 스킵되고 _pending_cleanup
+                # 에도 안 들어가 회수 불가능한 커넥션 누수가 된다(pg_store.py 가 PR #46 에서 고친 것과
+                # 동일 클래스, PR #47 후속 리뷰). __aexit__ 는 아래 except 에서 삼켜지므로 __aenter__
+                # 가 미완/실패해 generator 가 안 열린 경우 호출해도 안전하다.
+                entered_ctx = ctx
                 store = await asyncio.wait_for(
                     ctx.__aenter__(), timeout=settings.state_store_connect_timeout_s
                 )
-                entered_ctx = ctx  # __aenter__ 성공 후에만 __aexit__ 대상(부분 실패 정리용)
                 # setup()(DDL·pgvector 마이그레이션)도 동일 상한으로 감싼다 — 이 블록은 _init_lock
                 # 을 쥔 채 실행되어, 무제한 대기면 setup() 하나가 멈출 때 이후 모든 get_profile_store()
                 # 호출(프로필 조회·"기억해" 승격·세션 버퍼·session-end consolidation)이 함께 멈춘다
