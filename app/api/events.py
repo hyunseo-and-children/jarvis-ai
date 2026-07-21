@@ -34,7 +34,8 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     user_id = str(event.user_id)
     key = conversation_key(user_id, event.session_id)
     # [v0.15.15, 이슈 #62] 멱등키는 별도 eventId 필드 없이 (userId, sessionId)에서 파생(§2.7).
-    dedup_key = f"session-end:{event.user_id}:{event.session_id}"
+    # user_id(문자열화한 단일 소스)를 써 conversation_key 와 신원 표현을 일치시킨다(향후 정규화 시 분기 방지).
+    dedup_key = f"session-end:{user_id}:{event.session_id}"
     settings = get_settings()
     llm = get_llm()
     ran = False

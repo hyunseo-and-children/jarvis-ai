@@ -34,7 +34,9 @@ class SessionEndEvent(CamelModel):
     # 세션 소유 회원 id(BIGINT, JWT sub 와 동종) — 프로필 스코프·멱등키 요소.
     # 양의 BIGINT 범위로 제한해 int 전환으로 사라진 키 남용 방어(구 길이 상한)를 유지한다.
     user_id: int = Field(gt=0, le=_BIGINT_MAX)
-    session_id: str  # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소)
+    # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소) — 빈 문자열 거부(§3.5 essential):
+    # 빈 값은 conversation_key/dedup_key 를 퇴화시키고, 최대 길이는 아래 validator 가 강제.
+    session_id: str = Field(min_length=1)
     reason: str | None = None
 
     @field_validator("session_id")

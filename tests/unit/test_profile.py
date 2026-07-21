@@ -277,6 +277,13 @@ def test_session_end_rejects_missing_identity() -> None:
     assert client.post("/events/session-end", json={"userId": 1}).status_code == 400
 
 
+def test_session_end_rejects_empty_session_id() -> None:
+    """빈 sessionId 는 400 — 필수 불투명 키(§3.5 essential), 퇴화 멱등키/버퍼 키 방어(PR #64 리뷰)."""
+    assert (
+        client.post("/events/session-end", json={"userId": 1, "sessionId": ""}).status_code == 400
+    )
+
+
 def test_session_end_rejects_userid_out_of_bigint_range() -> None:
     """userId 는 양의 BIGINT 범위만 허용 — 거대 정수 키 남용 방어(int 전환 후에도 유지)."""
     assert (
