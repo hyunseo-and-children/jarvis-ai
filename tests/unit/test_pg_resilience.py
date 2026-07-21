@@ -7,6 +7,7 @@ import asyncio
 import pytest
 from psycopg.conninfo import conninfo_to_dict
 
+from app.core import pg_resilience
 from app.core.config import get_settings
 from app.core.pg_resilience import BoundedLRUCache, hardened_pg_conninfo, run_with_query_timeout
 
@@ -43,6 +44,62 @@ async def test_run_with_query_timeout_stops_hung_operation(
 
     with pytest.raises(TimeoutError):
         await run_with_query_timeout(hangs())
+
+
+async def test_advisory_pool_open_failure_closes_partial_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    instances = []
+
+    class _OpenFailurePool:
+        def __init__(self, *args, **kwargs) -> None:
+            self.closed = False
+            instances.append(self)
+
+        async def open(self, *, wait: bool) -> None:
+            raise OSError("pg unavailable")
+
+        async def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(pg_resilience, "AsyncConnectionPool", _OpenFailurePool)
+    monkeypatch.setattr(pg_resilience, "_advisory_pool", None)
+    monkeypatch.setattr(pg_resilience, "_advisory_init_lock", asyncio.Lock())
+
+    with pytest.raises(OSError, match="pg unavailable"):
+        await pg_resilience._get_advisory_pool()
+
+    assert len(instances) == 1
+    assert instances[0].closed
+    assert pg_resilience._advisory_pool is None
+
+
+async def test_close_advisory_pool_waits_for_initialization_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Pool:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    pool = _Pool()
+    init_lock = asyncio.Lock()
+    await init_lock.acquire()
+    monkeypatch.setattr(pg_resilience, "_advisory_pool", pool)
+    monkeypatch.setattr(pg_resilience, "_advisory_init_lock", init_lock)
+
+    close_task = asyncio.create_task(pg_resilience.close_advisory_pool())
+    await asyncio.sleep(0)
+    assert not close_task.done()
+    assert not pool.closed
+
+    init_lock.release()
+    await close_task
+
+    assert pool.closed
+    assert pg_resilience._advisory_pool is None
+    assert pg_resilience._advisory_init_lock is init_lock
 
 
 def test_bounded_lru_cache_evicts_oldest_and_refreshes_reads() -> None:

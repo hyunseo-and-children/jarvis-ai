@@ -88,22 +88,26 @@ async def _get_advisory_pool() -> AsyncConnectionPool:
                 max_size=settings.state_store_pool_max_size,
                 timeout=settings.state_store_query_timeout_s,
             )
-            await asyncio.wait_for(
-                pool.open(wait=True),
-                timeout=settings.state_store_connect_timeout_s,
-            )
+            try:
+                await asyncio.wait_for(
+                    pool.open(wait=True),
+                    timeout=settings.state_store_connect_timeout_s,
+                )
+            except BaseException:
+                await pool.close()
+                raise
             _advisory_pool = pool
     return _advisory_pool
 
 
 async def close_advisory_pool() -> None:
     """앱 종료·통합 테스트 종료 시 advisory-lock pool을 명시적으로 닫는다."""
-    global _advisory_pool, _advisory_init_lock
-    pool = _advisory_pool
-    _advisory_pool = None
-    _advisory_init_lock = asyncio.Lock()
-    if pool is not None:
-        await pool.close()
+    global _advisory_pool
+    async with _advisory_init_lock:
+        pool = _advisory_pool
+        _advisory_pool = None
+        if pool is not None:
+            await pool.close()
 
 
 @asynccontextmanager
