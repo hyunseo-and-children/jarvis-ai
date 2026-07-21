@@ -102,6 +102,31 @@ async def test_close_advisory_pool_waits_for_initialization_lock(
     assert pg_resilience._advisory_init_lock is init_lock
 
 
+def test_reset_advisory_pool_replaces_only_idle_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_lock = asyncio.Lock()
+    monkeypatch.setattr(pg_resilience, "_advisory_pool", None)
+    monkeypatch.setattr(pg_resilience, "_advisory_init_lock", old_lock)
+
+    pg_resilience.reset_advisory_pool()
+
+    assert pg_resilience._advisory_init_lock is not old_lock
+    assert not pg_resilience._advisory_init_lock.locked()
+
+
+def test_reset_advisory_pool_rejects_live_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Pool:
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(pg_resilience, "_advisory_pool", _Pool())
+    monkeypatch.setattr(pg_resilience, "_advisory_init_lock", asyncio.Lock())
+
+    with pytest.raises(RuntimeError, match="must be closed and idle"):
+        pg_resilience.reset_advisory_pool()
+
+
 def test_bounded_lru_cache_evicts_oldest_and_refreshes_reads() -> None:
     cache: BoundedLRUCache[str, int] = BoundedLRUCache(max_entries=2)
     cache["a"] = 1

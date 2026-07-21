@@ -20,6 +20,7 @@ from app.agents.buyer.graph import reset_thread_store
 from app.agents.buyer.recommendation.state import reset_revert_store
 from app.agents.profile.store import reset_profile_store
 from app.core.conversation import reset_store
+from app.core.pg_resilience import close_advisory_pool, reset_advisory_pool
 from app.core.ratelimit import reset_limiter
 from app.core.stream import get_registry
 from app.pipelines.artifact_store import reset_catalog_store
@@ -50,6 +51,16 @@ def _reset_infra_state():
     reset_profile_store()
     reset_catalog_store()
     get_registry()._active.clear()
+
+
+@pytest.fixture(autouse=True)
+async def _reset_advisory_state():
+    """advisory pool을 현재 테스트 루프에서 닫고 다음 루프용 lock으로 교체한다."""
+    await close_advisory_pool()
+    reset_advisory_pool()
+    yield
+    await close_advisory_pool()
+    reset_advisory_pool()
 
 
 @pytest.fixture

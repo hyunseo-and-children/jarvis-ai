@@ -22,11 +22,7 @@ from app.agents.profile import processed_events
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import ProfileStore
 from app.core.config import get_settings
-from app.core.pg_resilience import (
-    close_advisory_pool,
-    hardened_pg_conninfo,
-    state_store_pool_config,
-)
+from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
 
 pytestmark = pytest.mark.integration
 
@@ -40,12 +36,6 @@ def _fake_embed(texts: list[str]) -> list[list[float]]:
 
 def _user() -> str:
     return f"it-user-{uuid.uuid4().hex}"
-
-
-@pytest.fixture(autouse=True)
-async def _close_lock_pool_after_test():
-    yield
-    await close_advisory_pool()
 
 
 @pytest.fixture

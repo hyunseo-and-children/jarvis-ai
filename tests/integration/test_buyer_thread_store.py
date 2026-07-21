@@ -23,11 +23,7 @@ from app.agents.buyer.graph import ThreadFilterStore
 from app.agents.buyer.recommendation.state import RevertStore
 from app.core import pg_store as pg_store_module
 from app.core.config import get_settings
-from app.core.pg_resilience import (
-    close_advisory_pool,
-    hardened_pg_conninfo,
-    state_store_pool_config,
-)
+from app.core.pg_resilience import hardened_pg_conninfo, state_store_pool_config
 from app.schemas.spring import CartOption, ProductSearchFilters
 
 pytestmark = pytest.mark.integration
@@ -35,12 +31,6 @@ pytestmark = pytest.mark.integration
 
 def _key() -> str:
     return f"it:{uuid.uuid4().hex}"
-
-
-@pytest.fixture(autouse=True)
-async def _close_lock_pool_after_test():
-    yield
-    await close_advisory_pool()
 
 
 @pytest.fixture

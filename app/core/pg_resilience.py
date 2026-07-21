@@ -110,6 +110,18 @@ async def close_advisory_pool() -> None:
             await pool.close()
 
 
+def reset_advisory_pool() -> None:
+    """테스트 이벤트 루프 격리용으로 닫힌 advisory pool의 초기화 lock을 교체한다.
+
+    실행 중 lock 교체는 상호배제를 깨므로 허용하지 않는다. 중앙 테스트 fixture가 같은
+    이벤트 루프에서 ``close_advisory_pool()``을 완료한 뒤에만 호출한다.
+    """
+    global _advisory_init_lock
+    if _advisory_pool is not None or _advisory_init_lock.locked():
+        raise RuntimeError("advisory pool must be closed and idle before reset")
+    _advisory_init_lock = asyncio.Lock()
+
+
 @asynccontextmanager
 async def mutation_lock(
     store: BaseStore,
