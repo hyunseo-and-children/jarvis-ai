@@ -123,7 +123,7 @@ class OpenAILLM:
 
     complete 는 response_format=json_object 로 구조화 출력을 강제하고(decompose·rerank·
     enrichment·profile 이 모두 JSON 소비), stream 은 평문(구매자 일반 채팅 fallback)이라 제외한다.
-    fast tier 는 낮은 reasoning_effort 로 비용·지연을 안정화한다.
+    fast tier 는 GPT-5 nano의 최저 지원값인 minimal로 비용·지연과 출력 예산을 안정화한다.
     """
 
     def __init__(
@@ -134,7 +134,7 @@ class OpenAILLM:
         smart_model: str,
         timeout: float,
         max_retries: int,
-        fast_reasoning_effort: str = "low",
+        fast_reasoning_effort: str = "minimal",
         smart_reasoning_effort: str = "medium",
     ) -> None:
         self._api_key = api_key

@@ -69,6 +69,7 @@ def test_settings_model_for_tier_openai() -> None:
     s = _settings(llm_provider="openai")
     assert s.model_for_tier("fast") == s.openai_fast_model_id
     assert s.model_for_tier("smart") == s.openai_smart_model_id
+    assert s.openai_fast_reasoning_effort == "minimal"
 
 
 def test_settings_model_for_tier_unknown_raises() -> None:

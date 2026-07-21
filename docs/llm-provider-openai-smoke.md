@@ -39,3 +39,10 @@
 ✅ `complete` JSON 강제(response_format=json_object) + tier별 reasoning_effort 경로 실호출 검증.
 
 계약(api-spec)·SSE 이벤트 규약 변경 없음 — 순수 내부 구현. Anthropic 경로는 기존 동작 그대로 보존.
+
+## 2026-07-21 후속 수정
+
+연결 probe의 `max_tokens=64`는 visible output과 hidden reasoning이 공유하는 completion
+예산이라 `gpt-5-nano + low`에서 본문이 비는 현상이 재현됐다. GPT-5 nano는 `none`을
+지원하지 않으므로 fast tier 기본값을 최저 지원값인 `minimal`로 낮추고, probe 예산을
+256으로 늘렸다. 추적 이슈: #57.

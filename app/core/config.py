@@ -44,7 +44,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_fast_model_id: str = "gpt-5-nano"  # fast: 고빈도 JSON(초저가)
     openai_smart_model_id: str = "gpt-5.6-luna"  # smart: 저빈도·품질(GPT-5.6 계열)
-    openai_fast_reasoning_effort: str = "low"  # fast: 낮은 reasoning 으로 비용·지연 안정
+    # GPT-5 nano는 reasoning_effort="none"을 지원하지 않는다. fast JSON 태스크는
+    # 최저 지원값인 minimal로 두어 숨은 추론이 출력 예산을 잠식하지 않게 한다.
+    openai_fast_reasoning_effort: str = "minimal"
     openai_smart_reasoning_effort: str = "medium"  # smart: 근거문 품질용
 
     # ── Google 임베딩 API (MVP, §4.8 배치 + 임베딩 검색) ──
