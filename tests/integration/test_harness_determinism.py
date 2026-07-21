@@ -69,7 +69,7 @@ def test_session_end_survives_ambient_jwks_env(polluted_client, spring, llm) -> 
 
     resp = polluted_client.post(
         "/events/session-end",
-        json={"eventId": "evt-det", "userId": "42", "sessionId": "sess-det"},
+        json={"userId": 42, "sessionId": "sess-det"},
     )
 
     assert resp.status_code == 202

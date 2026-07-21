@@ -13,6 +13,15 @@
 
 ---
 
+## [2026-07-21] inbound 계약을 "제안/초안"인 채 required 필드로 굳히면 엔드포인트가 상시 400으로 조용히 실패한다
+- 증상: 이슈 #62 — `POST /events/session-end`가 항상 `400`을 반환해 세션 종료 통지가 전부 실패, 프로필 조기 트리거가 조용히 죽어 있었다. 원인은 3자 불일치: api-spec §3.5가 `eventId`/`userId(string)`/`endedAt`를 **"제안(초안)"** 표기인 채 두었고, `SessionEndEvent`는 그 초안을 **required**로 굳혔는데, Spring 실측 payload는 `eventId`가 없고 `userId`가 **숫자**였다. 초안 필드가 필수라 매 요청이 검증 단계에서 튕겨 핸들러에 도달조차 못 했다.
+- 원인: 인바운드(Spring→AI) 계약은 우리가 소유(결정 21)하지만 **데이터 생산자는 Spring**이다. 소유권이 우리에게 있다고 초안을 실측 대조 없이 required 로 확정하면, 우리 코드는 "옳지만" 실제 호출은 100% 실패한다. best-effort·통지 채널이라 500도 안 나고 202도 안 나가 **관측되지 않는 상시 실패**가 된다.
+- 규칙:
+  - **api-spec에 `제안`/`초안`/🔴 협의 표시가 붙은 인바운드 필드를 스키마 required 로 굳히기 전에, BE 실측 payload와 대조**한다. 특히 `eventId` 같은 "우리가 만들어낸 멱등 필드"는 생산자가 실제로 보내는지 확인 — 안 보내면 파생키(본문 신원)로 전환한다.
+  - **타입도 대조한다** — id는 이 프로젝트에서 BIGINT 숫자가 기준(CLAUDE.md). 인바운드 신원 필드를 `str`로 두면 숫자 payload가 조용히 400난다.
+  - 통지/best-effort 엔드포인트는 실패가 눈에 안 띈다 — **계약 정렬 후 "누락·타입오류→400, 정상→202, 중복→202 duplicate"를 명시적 테스트로 고정**한다.
+- 관련: `app/schemas/profile.py::SessionEndEvent`, `app/api/events.py::session_end()`, api-spec §3.5/§2.7(v0.15.15), 이슈 #62
+
 ## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
 - 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.
 - 원인: 이 프로젝트에서 인메모리→외부 스토어 이관은 반복적으로 "이전엔 실패할 수 없던 호출이 이제 실패할 수 있다"는 패턴을 만드는데(PR #47 의 `session_end()`도 동일 클래스), 이번엔 그 호출이 **이미 응답이 시작된 SSE 스트림의 finally** 안에 있어 파급이 더 크다 — 응답 시작 전 실패(그냥 500)와 응답 시작 후 finally 실패(스트림 자체가 깨짐)는 심각도가 다르다.

@@ -2,14 +2,16 @@
 
 GET /profile/me 응답(마이페이지 자연어 마크다운 passthrough)과 POST /events/session-end 수신
 페이로드. 와이어 포맷 camelCase (CamelModel by_alias). session-end 필드는 AI 소유 inbound
-계약(결정 21)의 초안 — C-8 BE 확정 시 조정.
+계약(결정 21) — v0.15.15에서 BE 실측 payload로 확정(이슈 #62).
 """
 
 from __future__ import annotations
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 
 from app.schemas.chat import CamelModel
+
+_BIGINT_MAX = 2**63 - 1  # PostgreSQL BIGINT 상한 — 신원 id 범위 방어
 
 
 class ProfileView(CamelModel):
@@ -22,21 +24,23 @@ class ProfileView(CamelModel):
 
 
 class SessionEndEvent(CamelModel):
-    """POST /events/session-end 수신 (§3.5, I-20). best-effort·멱등(eventId).
+    """POST /events/session-end 수신 (§3.5, I-20). best-effort·멱등(userId+sessionId 파생키).
 
-    reason: logout | tabClose | inactivityTimeout | newConversation (C-8 초안, 방어적 수용).
+    [v0.15.15, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
+    number(BIGINT)로 정정. 멱등키는 별도 필드 없이 (userId, sessionId)에서 파생(§2.7).
+    reason: logout | tabClose | inactivityTimeout | newConversation 등 — enum 미강제(방어적 수용).
     """
 
-    event_id: str
-    user_id: str
-    session_id: str  # 세션 버퍼 키의 필수 요소(§3.5 예시도 값 채움)
-    ended_at: str | None = None
+    # 세션 소유 회원 id(BIGINT, JWT sub 와 동종) — 프로필 스코프·멱등키 요소.
+    # 양의 BIGINT 범위로 제한해 int 전환으로 사라진 키 남용 방어(구 길이 상한)를 유지한다.
+    user_id: int = Field(gt=0, le=_BIGINT_MAX)
+    session_id: str  # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소)
     reason: str | None = None
 
-    @field_validator("event_id", "user_id", "session_id")
+    @field_validator("session_id")
     @classmethod
     def _limit_key_length(cls, v: str) -> str:
-        """식별자 길이 상한(config) — ProfileStore 딕셔너리 키 남용 방어(ChatRequest 와 동일 패턴)."""
+        """세션 식별자 길이 상한(config) — ProfileStore 딕셔너리 키 남용 방어(ChatRequest 와 동일 패턴)."""
         from app.core.config import get_settings
 
         cap = get_settings().chat_key_max_chars

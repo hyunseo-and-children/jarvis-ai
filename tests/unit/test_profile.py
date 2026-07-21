@@ -260,21 +260,52 @@ async def test_session_end_202_and_idempotent(monkeypatch: pytest.MonkeyPatch) -
     store = await get_profile_store()
     key = conversation_key("777", "sess-9")
     await store.append_session_ctx(key, "3만원 무선이어폰 찾아줘")
-    payload = {"eventId": "se-1", "userId": "777", "sessionId": "sess-9", "reason": "logout"}
+    payload = {"userId": 777, "sessionId": "sess-9", "reason": "logout"}
     r1 = client.post("/events/session-end", json=payload)
     assert r1.status_code == 202 and r1.json()["status"] == "accepted"
     # 프로필 생성됨 + 버퍼 정리됨
     assert await store.get_summary("777") is not None
     assert await store.get_session_ctx(key) == []
-    # 멱등 — 같은 eventId 재수신은 duplicate
+    # 멱등 — 같은 (userId, sessionId) 재수신은 duplicate
     r2 = client.post("/events/session-end", json=payload)
     assert r2.status_code == 202 and r2.json()["status"] == "duplicate"
+
+
+def test_session_end_rejects_missing_identity() -> None:
+    """userId·sessionId 누락은 400(§2.5) — 멱등키·프로필 스코프에 필수(이슈 #62)."""
+    assert client.post("/events/session-end", json={"sessionId": "s"}).status_code == 400
+    assert client.post("/events/session-end", json={"userId": 1}).status_code == 400
+
+
+def test_session_end_rejects_userid_out_of_bigint_range() -> None:
+    """userId 는 양의 BIGINT 범위만 허용 — 거대 정수 키 남용 방어(int 전환 후에도 유지)."""
+    assert (
+        client.post("/events/session-end", json={"userId": 0, "sessionId": "s"}).status_code == 400
+    )
+    assert (
+        client.post("/events/session-end", json={"userId": 2**63, "sessionId": "s"}).status_code
+        == 400
+    )
+
+
+async def test_session_end_idempotency_scoped_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """멱등키는 (userId, sessionId) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("111", "shared-sess"), "x")
+    await store.append_session_ctx(conversation_key("222", "shared-sess"), "y")
+    r1 = client.post("/events/session-end", json={"userId": 111, "sessionId": "shared-sess"})
+    r2 = client.post("/events/session-end", json={"userId": 222, "sessionId": "shared-sess"})
+    assert r1.json()["status"] == "accepted"
+    assert r2.json()["status"] == "accepted"  # 다른 userId → 중복 아님
 
 
 def test_session_end_service_token_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "auth_mode", "jwks")  # 운영: 서비스 토큰 fail-closed
     monkeypatch.setattr(get_settings(), "internal_api_token", "secret-xyz")
-    payload = {"eventId": "se-2", "userId": "1", "sessionId": "s"}
+    payload = {"userId": 1, "sessionId": "s"}
     # 토큰 없음 → 401
     assert client.post("/events/session-end", json=payload).status_code == 401
     # 일치 → 202
@@ -286,9 +317,7 @@ async def test_session_end_degrades_without_llm() -> None:
     """LLM 미구성이어도 세션 종료는 202(best-effort, 프로필 미갱신)."""
     store = await get_profile_store()
     await store.append_session_ctx(conversation_key("55", "s"), "x")
-    r = client.post(
-        "/events/session-end", json={"eventId": "se-3", "userId": "55", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 55, "sessionId": "s"})
     assert r.status_code == 202
     assert await store.get_summary("55") is None  # LLM 없어 미갱신
     # degrade 시 transient 버퍼는 보존(성공 시에만 정리) — 회수 여지
@@ -313,18 +342,16 @@ async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buy
     store = await get_profile_store()
     assert await store.get_session_ctx(conversation_key("888", "e2e"))  # 버퍼에 쌓임
     # 세션 종료 → 델타·consolidation
-    client.post(
-        "/events/session-end", json={"eventId": "e2e-end", "userId": "888", "sessionId": "e2e"}
-    )
+    client.post("/events/session-end", json={"userId": 888, "sessionId": "e2e"})
     # 조회
     body = client.get("/profile/me", headers=hdr).json()
     assert body["exists"] is True and "무선이어폰" in body["markdown"]
 
 
-def test_session_end_rejects_oversized_identifier() -> None:
-    """eventId/userId/sessionId 길이 상한 초과는 422(스토어 키 남용 방어)."""
+def test_session_end_rejects_oversized_session_id() -> None:
+    """sessionId 길이 상한 초과는 400(불투명 스레드 키·스토어 키 남용 방어)."""
     big = "x" * 100000
-    r = client.post("/events/session-end", json={"eventId": big, "userId": "1", "sessionId": "s"})
+    r = client.post("/events/session-end", json={"userId": 1, "sessionId": big})
     assert r.status_code == 400  # 앱이 검증 오류를 400 봉투로 매핑(§2.5)
 
 
@@ -341,9 +368,7 @@ async def test_session_end_clears_buffer_on_normal_rejection(
     key = conversation_key("66", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "음 별로")
-    r = client.post(
-        "/events/session-end", json={"eventId": "rej-1", "userId": "66", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 66, "sessionId": "s"})
     assert r.status_code == 202
     assert await store.get_session_ctx(key) == []  # 정상 처리 → 버퍼 정리
 
@@ -389,7 +414,7 @@ async def test_append_session_ctx_caps_count() -> None:
 
 
 async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """처리 실패(LLM 오류) 시 eventId 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
+    """처리 실패(LLM 오류) 시 멱등키 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
     import app.api.events as ev
     from app.core.llm import LLMError
 
@@ -404,11 +429,10 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     key = conversation_key("44", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "취향 신호")
-    r = client.post(
-        "/events/session-end", json={"eventId": "f-1", "userId": "44", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202
-    assert not await processed_events.seen_event("f-1")  # 언마크 → 재전송 시 재처리
+    # 언마크 → 재전송 시 재처리 (멱등키 = session-end:{userId}:{sessionId})
+    assert not await processed_events.seen_event("session-end:44:s")
     assert await store.get_session_ctx(key) != []  # 버퍼 보존
 
 
@@ -426,11 +450,9 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
         raise RuntimeError("pg-profile 일시 장애")
 
     monkeypatch.setattr(ev, "get_profile_store", _raise)
-    r = client.post(
-        "/events/session-end", json={"eventId": "store-down-1", "userId": "44", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202 and r.json()["status"] == "accepted"
-    assert not await processed_events.seen_event("store-down-1")  # 언마크 → 재전송 시 재처리
+    assert not await processed_events.seen_event("session-end:44:s")  # 언마크 → 재전송 시 재처리
 
 
 async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
@@ -449,7 +471,7 @@ async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
     monkeypatch.setattr(ev.processed_events, "mark_if_new", _timeout)
     response = client.post(
         "/events/session-end",
-        json={"eventId": "timeout-1", "userId": "44", "sessionId": "timeout-session"},
+        json={"userId": 44, "sessionId": "timeout-session"},
     )
 
     assert response.status_code == 202

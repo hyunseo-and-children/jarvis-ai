@@ -19,10 +19,10 @@ def _chat(client, message: str, *, session: str = "sess-prof", thread: str = "th
     )
 
 
-def _session_end(client, *, event_id: str = "evt-1", session: str = "sess-prof"):
+def _session_end(client, *, session: str = "sess-prof"):
     return client.post(
         "/events/session-end",
-        json={"eventId": event_id, "userId": USER_ID, "sessionId": session},
+        json={"userId": int(USER_ID), "sessionId": session},
     )
 
 
@@ -53,11 +53,11 @@ def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm) -
 
 
 def test_session_end_is_idempotent(client, spring, llm) -> None:
-    """같은 eventId 재전송은 중복 처리되지 않는다 (§3.5 멱등, at-least-once 대비)."""
+    """같은 (userId, sessionId) 재전송은 중복 처리되지 않는다 (§3.5 멱등, at-least-once 대비)."""
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
 
-    first = _session_end(client, event_id="evt-dup")
-    second = _session_end(client, event_id="evt-dup")
+    first = _session_end(client)
+    second = _session_end(client)
 
     assert first.json()["status"] == "accepted"
     assert second.json()["status"] == "duplicate"
@@ -101,5 +101,5 @@ def test_session_end_degrades_without_llm(client, spring, monkeypatch) -> None:
     import app.api.events as events_api
 
     monkeypatch.setattr(events_api, "get_llm", lambda: None)
-    resp = _session_end(client, event_id="evt-nollm")
+    resp = _session_end(client)
     assert resp.status_code == 202
