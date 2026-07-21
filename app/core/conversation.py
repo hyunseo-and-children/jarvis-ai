@@ -141,17 +141,59 @@ class PgConversationStore:
         self._pool = pool
 
     async def setup(self) -> None:
-        """기존 pg-profile 볼륨에도 삽입 순서 identity와 조회 인덱스를 멱등 적용한다."""
-        await self._execute(
-            "ALTER TABLE conversation_turns ADD COLUMN IF NOT EXISTS "
-            "sequence_id bigint GENERATED ALWAYS AS IDENTITY",
-            (),
-        )
-        await self._execute(
-            "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
-            "ON conversation_turns (conversation_id, sequence_id)",
-            (),
-        )
+        """기존 볼륨은 이전 논리 순서로 백필하고 신규 turn은 DB sequence로 정렬한다."""
+
+        async def _run() -> None:
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        """
+                        DO $$
+                        BEGIN
+                            IF NOT EXISTS (
+                                SELECT 1
+                                FROM information_schema.columns
+                                WHERE table_schema = current_schema()
+                                  AND table_name = 'conversation_turns'
+                                  AND column_name = 'sequence_id'
+                            ) THEN
+                                ALTER TABLE conversation_turns ADD COLUMN sequence_id bigint;
+                                CREATE SEQUENCE IF NOT EXISTS conversation_turns_sequence_id_seq;
+                                ALTER SEQUENCE conversation_turns_sequence_id_seq
+                                    OWNED BY conversation_turns.sequence_id;
+                                WITH ordered AS (
+                                    SELECT turn_id,
+                                           row_number() OVER (ORDER BY created_at, turn_id) AS seq
+                                    FROM conversation_turns
+                                )
+                                UPDATE conversation_turns AS turns
+                                SET sequence_id = ordered.seq
+                                FROM ordered
+                                WHERE turns.turn_id = ordered.turn_id;
+                                PERFORM setval(
+                                    'conversation_turns_sequence_id_seq',
+                                    GREATEST(
+                                        COALESCE((SELECT MAX(sequence_id) FROM conversation_turns), 0)
+                                            + 1,
+                                        1
+                                    ),
+                                    false
+                                );
+                                ALTER TABLE conversation_turns
+                                    ALTER COLUMN sequence_id
+                                    SET DEFAULT nextval('conversation_turns_sequence_id_seq');
+                                ALTER TABLE conversation_turns
+                                    ALTER COLUMN sequence_id SET NOT NULL;
+                            END IF;
+                        END $$
+                        """
+                    )
+                    await conn.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
+                        "ON conversation_turns (conversation_id, sequence_id)"
+                    )
+
+        await run_with_query_timeout(_run())
 
     async def _execute(self, sql: str, params: tuple) -> int:
         """쓰기 쿼리(연결 획득+실행)를 실행 상한으로 감싼다.

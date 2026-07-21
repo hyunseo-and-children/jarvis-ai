@@ -7,7 +7,7 @@
 
 CREATE TABLE IF NOT EXISTS conversation_turns (
     turn_id         text PRIMARY KEY,
-    sequence_id     bigint GENERATED ALWAYS AS IDENTITY,
+    sequence_id     bigserial NOT NULL,
     conversation_id text NOT NULL,
     user_id         text,
     role            text NOT NULL,

@@ -76,6 +76,28 @@ async def test_turns_for_returns_ordered_by_creation(pool) -> None:
     assert [t.user_text for t in turns] == ["m0", "m1", "m2"]
 
 
+async def test_setup_backfills_legacy_rows_in_previous_logical_order(pool) -> None:
+    store = PgConversationStore(pool)
+    conversation_id = _conversation_id()
+    suffix = uuid.uuid4().hex
+    first_id, second_id = f"z-{suffix}", f"a-{suffix}"
+    created_at = "2026-07-20T00:00:00+00:00"
+    async with pool.connection() as conn:
+        for turn_id, text in ((first_id, "physical-first"), (second_id, "physical-second")):
+            await conn.execute(
+                "INSERT INTO conversation_turns "
+                "(turn_id, conversation_id, role, user_text, created_at) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, "member", text, created_at),
+            )
+        await conn.execute("ALTER TABLE conversation_turns DROP COLUMN sequence_id")
+
+    await store.setup()
+
+    turns = await store.turns_for(conversation_id)
+    assert [turn.turn_id for turn in turns] == [second_id, first_id]
+
+
 async def test_turns_for_uses_insert_order_when_timestamps_match(pool) -> None:
     store = PgConversationStore(pool)
     conversation_id = _conversation_id()
