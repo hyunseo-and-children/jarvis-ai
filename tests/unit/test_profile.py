@@ -303,6 +303,15 @@ async def test_session_end_new_checkpoint_not_swallowed(monkeypatch: pytest.Monk
     assert await store.get_session_ctx(key) == []  # 두 번째도 처리·정리
 
 
+def test_session_end_dedup_key_no_boundary_collision() -> None:
+    """항목 경계 모호성 방어 — ["a\\nb"] 와 ["a","b"]는 다른 버퍼이므로 다른 키여야 한다(PR #64 리뷰)."""
+    import app.api.events as ev
+
+    k1 = ev.session_end_dedup_key("1", "s", ["a\nb"])
+    k2 = ev.session_end_dedup_key("1", "s", ["a", "b"])
+    assert k1 != k2
+
+
 async def test_session_end_no_buffer_is_noop_accepted() -> None:
     """저장할 내용(버퍼)이 없으면 202 accepted no-op — 멱등 마킹도 남기지 않는다(PR #64)."""
     import app.api.events as ev

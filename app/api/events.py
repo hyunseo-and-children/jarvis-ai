@@ -33,9 +33,17 @@ def session_end_dedup_key(user_id: str, session_id: str, buffer: list[str]) -> s
     오인해 씹는다. 버퍼가 비면 스토어가 item 을 삭제해 seq(워터마크)가 리셋되므로 seq 도 못 쓴다.
     대신 "이 통지가 저장할 내용" 자체의 해시를 판별자로 써, 같은 내용 재전송(at-least-once)만
     중복 처리하고 새 내용 체크포인트는 통과시킨다.
+
+    항목 경계는 **길이 접두어**로 구분한다 — 단순 `"\\n".join` 은 발화에 줄바꿈이 들어가면
+    ["a\\nb"] 와 ["a","b"] 가 같은 문자열이 돼 서로 다른 버퍼가 같은 해시를 내는 충돌이 생긴다
+    (PR #64 리뷰). 각 항목 앞에 바이트 길이를 박아 경계를 모호하지 않게 만든다.
     """
-    digest = hashlib.sha256("\n".join(buffer).encode("utf-8")).hexdigest()[:16]
-    return f"session-end:{user_id}:{session_id}:{digest}"
+    h = hashlib.sha256()
+    for item in buffer:
+        encoded = item.encode("utf-8")
+        h.update(f"{len(encoded)}:".encode("ascii"))
+        h.update(encoded)
+    return f"session-end:{user_id}:{session_id}:{h.hexdigest()[:16]}"
 
 
 @router.post("/events/session-end", status_code=202)

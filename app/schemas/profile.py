@@ -27,7 +27,9 @@ class SessionEndEvent(CamelModel):
     """POST /events/session-end 수신 (§3.5, I-20). best-effort·멱등(userId+sessionId 파생키).
 
     [v0.15.15, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
-    number(BIGINT)로 정정. 멱등키는 별도 필드 없이 (userId, sessionId)에서 파생(§2.7).
+    number(BIGINT)로 정정. [PR #64] 멱등키는 별도 필드가 아니라 **저장 대상 대화 내용에서 파생**한다
+    (§2.7, app/api/events.py::session_end_dedup_key) — session-end 는 저장 체크포인트라 한 sessionId 에
+    여러 번 오므로 (userId, sessionId) 고정 키로는 정당한 재저장을 씹는다.
     reason: logout | tabClose | inactivityTimeout | newConversation 등 — enum 미강제(방어적 수용).
     """
 
