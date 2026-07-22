@@ -70,10 +70,14 @@ async def map_categories(
         need_idx = [i for i, r in enumerate(raws) if not (r and r in exact)]
         anchors = [raws[i] or utterance for i in need_idx]
         vecs = await asyncio.to_thread(embed, anchors) if anchors else []
-        nearest: dict[int, str | None] = {}
-        for j, i in enumerate(need_idx):
-            hits = await asyncio.to_thread(search_top_k, vecs[j], dsn, k=k)
-            nearest[i] = hits[0] if hits else None
+        # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
+        # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).
+        hit_lists = await asyncio.gather(
+            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(need_idx)))
+        )
+        nearest: dict[int, str | None] = {
+            need_idx[j]: (hits[0] if hits else None) for j, hits in enumerate(hit_lists)
+        }
     except Exception as exc:  # noqa: BLE001 - 하드 실패는 사유 무관 degrade(never-null 유지)
         logger.warning("category_hard_fail", extra={"reason": str(exc)})
         return _dedup_truncate([(r, qtexts[i]) for i, r in enumerate(raws) if r], fanout_max)
