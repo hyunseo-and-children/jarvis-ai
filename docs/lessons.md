@@ -13,6 +13,16 @@
 
 ---
 
+## [2026-07-22] 멱등 응답 판정은 처리 대상 조회보다 먼저 해야 빈 버퍼 재전송도 duplicate가 된다
+- 증상: PR #64 구현은 session-end 버퍼를 먼저 조회해 비어 있으면 즉시 `accepted`를 반환했다. 첫 통지를 정상 처리해 버퍼가 비워진 뒤 같은 통지가 재전송되면, 이미 저장된 멱등키가 있어도 확인하지 않아 `duplicate`가 아니라 `accepted`로 잘못 응답했다. 기존 테스트는 두 응답의 HTTP 202만 확인해 응답 본문 회귀를 놓쳤다.
+- 원인: "처리할 데이터가 없으면 no-op"과 "이 통지를 이미 수신했는가"를 같은 조건으로 취급했다. 멱등성은 현재 버퍼 상태가 아니라 통지 신원 `(userId, sessionId)`의 이력에 관한 계약이라 버퍼 조회보다 우선해야 한다.
+- 규칙:
+  - 통지 엔드포인트는 **인증·스키마 검증 → 원자적 멱등 판정 → 처리 대상 조회** 순서를 지킨다.
+  - 첫 유효 통지는 버퍼가 없어도 `accepted`로 기록하고, 이후 같은 통지는 버퍼 상태와 무관하게 `duplicate`로 응답한다.
+  - 내부 처리 실패 때만 마킹을 되돌려 재시도를 허용하고 버퍼를 보존한다.
+  - 멱등 테스트는 상태 코드뿐 아니라 실제 순서의 응답 본문(`accepted` 다음 `duplicate`)을 검증한다.
+- 관련: `app/api/events.py::session_end()`, `tests/unit/test_profile.py`, `tests/integration/test_profile_flow_e2e.py`, api-spec §2.7/§3.5(v0.15.17), 이슈 #62, PR #64
+
 ## [2026-07-22] FE 오류 계약을 논할 때 "FastAPI 기본 422" 로 단정하지 말 것 — 이 앱은 검증 오류를 400 으로 매핑한다
 - 증상: 판매자 챗 FE 계약 1차 분석에서 "요청 본문 검증 실패(threadId 누락 등)는 FastAPI 기본 422 로 나온다, 노션의 400 은 틀렸다"고 적었는데 반대였다 — 앱은 `RequestValidationError` 를 **400 `BAD_REQUEST` 봉투**로 매핑한다(`app/core/errors.py::_validation_exception_handler`, `add_exception_handler(RequestValidationError, ...)`). 노션의 400 이 옳았고 내 진단이 틀렸다.
 - 원인: FastAPI의 프레임워크 기본값(422)을 앱의 실제 동작으로 착각했다. 이 리포는 모든 오류를 공통 봉투(§2.5)로 통일하려고 검증 오류까지 400 으로 재매핑하는 커스텀 핸들러를 둔다 — 기본값 지식이 아니라 코드를 봐야 알 수 있다.
@@ -48,7 +58,7 @@
   - **api-spec에 `제안`/`초안`/🔴 협의 표시가 붙은 인바운드 필드를 스키마 required 로 굳히기 전에, BE 실측 payload와 대조**한다. 특히 `eventId` 같은 "우리가 만들어낸 멱등 필드"는 생산자가 실제로 보내는지 확인 — 안 보내면 파생키(본문 신원)로 전환한다.
   - **타입도 대조한다** — id는 이 프로젝트에서 BIGINT 숫자가 기준(CLAUDE.md). 인바운드 신원 필드를 `str`로 두면 숫자 payload가 조용히 400난다.
   - 통지/best-effort 엔드포인트는 실패가 눈에 안 띈다 — **계약 정렬 후 "누락·타입오류→400, 정상→202, 중복→202 duplicate"를 명시적 테스트로 고정**한다.
-- 관련: `app/schemas/profile.py::SessionEndEvent`, `app/api/events.py::session_end()`, api-spec §3.5/§2.7(v0.15.15), 이슈 #62
+- 관련: `app/schemas/profile.py::SessionEndEvent`, `app/api/events.py::session_end()`, api-spec §3.5/§2.7(v0.15.17), 이슈 #62
 
 ## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
 - 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.

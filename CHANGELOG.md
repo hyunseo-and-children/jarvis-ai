@@ -53,12 +53,14 @@
   삭제하는 종료(`NEW_CONVERSATION`·`LOGOUT`)에만 오고 `tabClose`·`inactivityTimeout`은 발화되지
   않는다 → "하나의 `sessionId` = 하나의 논리적 종료"가 성립하므로 `session-end:{userId}:{sessionId}`
   고정키로 같은 통지 재전송(at-least-once)만 중복 처리한다. (한때 검토한 버퍼 내용 해시 방식은
-  실재하지 않는 "재체크포인트" 방어라 폐기.) 버퍼가 비면 no-op(202) (api-spec §2.7·§3.5, v0.15.15)
+  실재하지 않는 "재체크포인트" 방어라 폐기.) 신규 통지는 버퍼가 비어도 `accepted`로 기록하고,
+  이후 동일 통지는 버퍼 상태와 무관하게 `duplicate`로 응답한다 (api-spec §2.7·§3.5, v0.15.17)
 - **이슈 #62 — session-end(I-20) 계약 정렬** — `POST /events/session-end`가 상시 `400`을
   반환해 세션 종료 통지가 전부 실패하던 문제 수정. BE 실측 payload에 맞춰 `SessionEndEvent`에서
   `eventId`·`endedAt`를 제거하고 `userId`를 string → **number(BIGINT)**로 정정, `reason`은
   optional·enum 미강제. 멱등키를 `eventId` 필드 대신 **`session-end:{userId}:{sessionId}`
-  파생 복합키**로 전환(같은 sessionId라도 userId가 다르면 서로 중복 아님) (api-spec §3.5·§2.7, v0.15.15)
+  파생 복합키**로 전환(같은 sessionId라도 userId가 다르면 서로 중복 아님). `userId`는 양의
+  BIGINT 정수만 엄격히 받아 string/float/bool coercion을 거부한다 (api-spec §3.5·§2.7, v0.15.17)
 - 프로필 세션 종료(session-end) 처리 중 동시에 새 채팅 턴이 들어오면 세션 버퍼가 통째로
   삭제되던 레이스 수정 — `clear_session_ctx_upto`(seq 워터마크 기준)로 스냅샷 분석분만
   정리하고 미분석 발화는 보존 (`newConversation` 트리거·버퍼 상한(cap) 트리밍 상황 모두 안전)

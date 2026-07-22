@@ -53,18 +53,14 @@ def test_session_end_builds_profile_visible_on_profile_me(client, spring, llm) -
 
 
 def test_session_end_is_idempotent(client, spring, llm) -> None:
-    """같은 저장 내용의 재통지는 중복 처리하지 않는다 (§3.5 멱등, at-least-once 대비).
-
-    [PR #64] 첫 통지가 버퍼를 처리·정리하므로, 곧바로 온 재통지는 저장할 새 내용이 없어
-    no-op(202) 이며 LLM 을 재호출하지 않는다 — 델타·프로필이 중복 생성되지 않는다(AC-PROF-18).
-    """
+    """같은 세션 종료 재통지는 202 duplicate 이며 프로필을 중복 처리하지 않는다."""
     _chat(client, "3만원 이하 여행용 파우치 추천해줘")
 
     first = _session_end(client)
     second = _session_end(client)
 
     assert first.json()["status"] == "accepted"
-    assert second.status_code == 202
+    assert second.status_code == 202 and second.json()["status"] == "duplicate"
     assert llm.calls_of("delta") == 1, "중복 통지가 LLM 을 재호출하면 안 된다"
 
 

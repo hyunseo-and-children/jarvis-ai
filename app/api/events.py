@@ -37,28 +37,29 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
     # 삭제하므로 "하나의 sessionId = 하나의 논리적 종료" 가 성립한다(BE 실측: tabClose·idle 은 미발화).
     # 같은 (userId, sessionId) 재전송(at-least-once)만 중복 처리하고, 세션당 한 번만 승격한다.
     dedup_key = f"session-end:{user_id}:{event.session_id}"
-    settings = get_settings()
-    llm = get_llm()
     ran = False
     marked = False
     try:
+        # 원자적 마킹(processed_events — UNIQUE 제약 INSERT ON CONFLICT)은 버퍼 조회보다 먼저 한다.
+        # 이미 정상 수신한 종료 통지는 첫 처리 뒤 버퍼가 비어 있어도 반드시 duplicate 로 응답해야 한다.
+        marked = await processed_events.mark_if_new(dedup_key)
+        if not marked:
+            return {"status": "duplicate"}  # 멱등 — 같은 세션 종료 재수신 무시(§2.7)
+
         # get_profile_store()/get_session_ctx_snapshot/clear 도 pg-profile 연결이 필요해 실패할 수
         # 있다(운영은 폴백 없이 raise) — try 밖에 두면 일시적 DB 장애만으로 500 이 나가
         # §3.5(항상 202) 계약을 어긴다(PR #47 후속 리뷰).
         store = await get_profile_store()
 
-        # 저장할 새 내용(버퍼)이 없으면 no-op — 멱등 마킹도 남기지 않는다(마킹 전 조기 반환).
+        # 저장할 새 내용(버퍼)이 없으면 정상 no-op 으로 수락한다. 마킹은 유지하므로 같은 통지의
+        # 재전송은 duplicate 가 된다(검증 → 멱등 판정 → 버퍼 처리 순서, §3.5).
         buffer, _ = await store.get_session_ctx_snapshot(key)
         if not buffer:
             return {"status": "accepted"}
 
-        # 원자적 마킹(processed_events — UNIQUE 제약 INSERT ON CONFLICT) — 짧은 간격 재전송
-        # (at-least-once)이 둘 다 통과해 중복 처리되는 레이스 차단(이슈 #33).
-        marked = await processed_events.mark_if_new(dedup_key)
-        if not marked:
-            return {"status": "duplicate"}  # 멱등 — 같은 세션 종료 재수신 무시(§2.7)
-
         # generate 반환: None=degrade(버퍼 보존), tuple=LLM 정상 실행(게이트 반려로 빈 목록이어도 처리됨).
+        settings = get_settings()
+        llm = get_llm()
         result = await generate_session_delta(user_id, key, llm=llm, settings=settings)
         if result is not None:
             _, watermark = result

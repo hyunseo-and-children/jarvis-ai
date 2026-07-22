@@ -294,7 +294,9 @@ async def test_session_end_dedups_same_session_retry(monkeypatch: pytest.MonkeyP
     assert r.status_code == 202 and r.json()["status"] == "duplicate"
 
 
-async def test_session_end_same_session_second_is_duplicate(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_end_same_session_second_is_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """같은 sessionId 의 두 번째 session-end 는 duplicate — 하나의 sessionId=하나의 논리적 종료.
 
     Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 세션당 한 번만 온다.
@@ -316,13 +318,16 @@ async def test_session_end_same_session_second_is_duplicate(monkeypatch: pytest.
     assert await store.get_session_ctx(key) == ["겨울 등산화도 볼래"]  # 중복이라 미처리·미정리
 
 
-
 async def test_session_end_no_buffer_is_noop_accepted() -> None:
-    """저장할 내용(버퍼)이 없으면 202 accepted no-op — 멱등 마킹도 남기지 않는다."""
-    r = client.post("/events/session-end", json={"userId": 5, "sessionId": "empty-sess"})
-    assert r.status_code == 202 and r.json()["status"] == "accepted"
-    # 빈 버퍼는 마킹 전 조기 반환 — 어떤 멱등키도 남지 않는다.
-    assert not await processed_events.seen_event("session-end:5:empty-sess")
+    """빈 버퍼도 신규 통지는 accepted 로 기록하며 재전송은 duplicate 로 판정한다."""
+    payload = {"userId": 5, "sessionId": "empty-sess"}
+
+    first = client.post("/events/session-end", json=payload)
+    second = client.post("/events/session-end", json=payload)
+
+    assert first.status_code == 202 and first.json()["status"] == "accepted"
+    assert second.status_code == 202 and second.json()["status"] == "duplicate"
+    assert await processed_events.seen_event("session-end:5:empty-sess")
 
 
 def test_session_end_rejects_missing_identity() -> None:
@@ -349,8 +354,20 @@ def test_session_end_rejects_userid_out_of_bigint_range() -> None:
     )
 
 
+@pytest.mark.parametrize("invalid_user_id", ["1", 1.0, True])
+def test_session_end_rejects_non_integer_json_userid(invalid_user_id: object) -> None:
+    """userId는 JSON number 정수만 허용하며 문자열·실수·bool 강제 변환은 하지 않는다."""
+    response = client.post(
+        "/events/session-end",
+        json={"userId": invalid_user_id, "sessionId": "s"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
 async def test_session_end_idempotency_scoped_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    """멱등키는 (userId, sessionId, 워터마크) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
+    """멱등키는 (userId, sessionId) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
     import app.api.events as ev
 
     monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
@@ -513,7 +530,7 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
     monkeypatch.setattr(ev, "get_profile_store", _raise)
     r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202 and r.json()["status"] == "accepted"
-    # store 실패로 스냅샷·마킹 전에 중단 → 아무 멱등키도 남지 않는다(재전송 시 재처리)
+    # store 실패 시 선점한 멱등키를 해제해 재전송이 다시 처리될 수 있게 한다.
     assert not await processed_events.seen_event("session-end:44:s")
 
 

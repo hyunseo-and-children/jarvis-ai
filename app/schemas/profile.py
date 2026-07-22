@@ -2,7 +2,7 @@
 
 GET /profile/me 응답(마이페이지 자연어 마크다운 passthrough)과 POST /events/session-end 수신
 페이로드. 와이어 포맷 camelCase (CamelModel by_alias). session-end 필드는 AI 소유 inbound
-계약(결정 21) — v0.15.15에서 BE 실측 payload로 확정(이슈 #62).
+계약(결정 21) — v0.15.17에서 BE 실측 payload로 확정(이슈 #62).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ class ProfileView(CamelModel):
 class SessionEndEvent(CamelModel):
     """POST /events/session-end 수신 (§3.5, I-20). best-effort·멱등((userId, sessionId) 고정키).
 
-    [v0.15.15, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
+    [v0.15.17, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
     number(BIGINT)로 정정. 멱등키는 `session-end:{userId}:{sessionId}` 고정키(app/api/events.py) —
     Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 "하나의 sessionId = 하나의
     논리적 종료" 가 성립한다(BE 실측: tabClose·idle 은 미발화). 같은 (userId, sessionId) 재전송만 중복 처리.
@@ -34,8 +34,8 @@ class SessionEndEvent(CamelModel):
     """
 
     # 세션 소유 회원 id(BIGINT, JWT sub 와 동종) — 프로필 스코프·멱등키 요소.
-    # 양의 BIGINT 범위로 제한해 int 전환으로 사라진 키 남용 방어(구 길이 상한)를 유지한다.
-    user_id: int = Field(gt=0, le=_BIGINT_MAX)
+    # 양의 BIGINT 정수로 엄격히 제한해 문자열·실수·bool coercion과 범위 밖 키를 거부한다.
+    user_id: int = Field(strict=True, gt=0, le=_BIGINT_MAX)
     # 종료된 세션 식별자(멱등키·세션 버퍼 키의 필수 요소) — 빈 문자열 거부(§3.5 essential):
     # 빈 값은 conversation_key/dedup_key 를 퇴화시키고, 최대 길이는 아래 validator 가 강제.
     session_id: str = Field(min_length=1)
