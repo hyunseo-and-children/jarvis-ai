@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 
 from langgraph.store.base import BaseStore
@@ -39,6 +40,8 @@ from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
+
+logger = logging.getLogger(__name__)
 
 _NAMESPACE_ROOT = "buyer_thread_filters"
 _FILTERS_KEY = "filters"
@@ -200,7 +203,10 @@ async def run_buyer_turn(
             utterance=request.message,
             settings=settings,
         )
-    except Exception:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
+    except Exception as exc:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
+        # 내부 하드실패(category_hard_fail)와 달리 이 바깥 경로는 시그니처 불일치·settings 결측
+        # 같은 진짜 버그로 터져도 흔적이 없어, 최소한 관측 가능하게 남긴다(PR #73 리뷰).
+        logger.warning("category_map_failed", extra={"reason": str(exc)})
         # 정상·내부 하드실패 경로(_dedup_truncate)와 일관되게 canonical(raw) 기준 dedup +
         # fanout_max 절단 — LLM 이 같은 카테고리를 중복 추출해도 fan-out leg 가 중복되지 않게.
         seen: set[str] = set()
@@ -212,6 +218,8 @@ async def run_buyer_turn(
         decision.category_legs = legs[: settings.category_fanout_max]
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
+        # 멀티턴 카테고리 승계는 price/brand 와 동일하게 decompose 프롬프트("PRIOR_FILTERS 병합")로
+        # LLM 이 처리한다 — category 도 리파인 턴에 이전 값을 categoryQueries 로 실어 유지(PR #73 #10 (a)).
         decision.filters.category = decision.category_legs[0][0]
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).

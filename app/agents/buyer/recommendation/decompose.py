@@ -43,6 +43,9 @@ _SYSTEM = """당신은 커머스 어시스턴트의 질의 분해기입니다.
   단일 상품 질의("무선 이어폰")면 1개, 상황형 질의("유럽여행 준비물")면 필요한 카테고리를
   여러 개 나눠 담으세요(예: 여행용품·전자기기·의류). category 는 best-guess(정말 모르면 null),
   query 는 그 카테고리 검색용 짧은 키워드입니다. 카테고리는 최대 CATEGORY_FANOUT_MAX 개까지.
+  이번 발화가 **새 카테고리·상품을 언급하지 않은 조건 다듬기**(예: "더 저렴한 걸로", "다른 브랜드")
+  이고 PRIOR_FILTERS.category 가 있으면, 그 값을 categoryQueries 에 그대로 실어 **이전 카테고리를
+  유지**하세요(카테고리를 비우면 직전 맥락이 사라집니다).
 - cart_add: LAST_RECOMMENDATIONS(직전 추천 목록: productId+이름)에서 사용자가 가리킨 상품의
   productId 를 고르세요. 못 고르면 productId=null. quantity 기본 1.
 - PENDING_CART(옵션 되물음 대기)가 있으면 보통 이번 발화는 옵션 답변입니다 — options 목록에서

@@ -310,3 +310,71 @@ async def test_mapper_failure_fallback_dedups_legs() -> None:
         )
     )
     assert calls == ["여행 > 여행용품"]  # 중복 카테고리는 leg 1개로 → 검색 1회
+
+
+# ─────────── 멀티턴 카테고리 승계 (PR #73 리뷰 #10) ───────────
+
+
+async def test_multiturn_prior_category_fed_to_decompose_prompt() -> None:
+    """이전 턴 카테고리가 다음 턴 decompose 프롬프트(PRIOR_FILTERS)에 실려, LLM 이 승계할 수 있다.
+
+    카테고리가 filters→categoryQueries 로 분리됐지만, 저장된 filters.category 는 여전히 다음 턴
+    프롬프트에 실린다 — LLM 이 "PRIOR_FILTERS 병합" 규칙으로 이어붙인다(price/brand 와 동일한
+    LLM 주도 메커니즘, PR #73 #10 (a)). 배선(프롬프트 주입)을 검증한다.
+    """
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    async def _map_leg(*, category_queries, utterance, settings):
+        return [("여행 > 여행용품", "파우치")]
+
+    llm = FakeLLM()
+    # 턴 1 — 카테고리 확립·저장
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="tm"),
+            _member(),
+            llm=llm,
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map_leg,
+        )
+    )
+    # 턴 2 — 직전 카테고리가 decompose 프롬프트(PRIOR_FILTERS)에 실렸는지 확인
+    llm.calls.clear()
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="tm", message="더 저렴한 걸로"),
+            _member(),
+            llm=llm,
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map_leg,
+        )
+    )
+    decompose_prompts = [u for (m, u) in llm.calls if m == "fast"]
+    assert decompose_prompts and "여행 > 여행용품" in decompose_prompts[0]
+
+
+async def test_mapper_failure_is_logged(caplog) -> None:
+    """mapper() 예외 시 최후 방어 경로가 관측 로그를 남긴다(PR #73 #11 — 무로그 삼킴 방지)."""
+
+    async def _boom(*, category_queries, utterance, settings):
+        raise RuntimeError("boom")
+
+    async def _search(filters, exclude_product_ids=None):
+        return _res(101)
+
+    with caplog.at_level("WARNING"):
+        await _collect(
+            run_buyer_turn(
+                _req(),
+                _member(),
+                llm=FakeLLM(),
+                search=_search,
+                push_fn=_RecordingPush(),
+                map_categories=_boom,
+            )
+        )
+    assert any(r.msg == "category_map_failed" for r in caplog.records)
