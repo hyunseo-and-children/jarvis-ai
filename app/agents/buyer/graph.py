@@ -36,7 +36,7 @@ from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm, resolve_model_id
 from app.core.pg_resilience import run_with_query_timeout
 from app.core.text import _strip_unsafe
-from app.agents.buyer.recommendation.state import CartIntent
+from app.agents.buyer.recommendation.state import CartIntent, CategoryQuery
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
 from app.services import search_service, spring_client
@@ -196,6 +196,17 @@ async def run_buyer_turn(
 
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
     # 보정(never-null). 매핑 자체가 죽어도 추천 스트림은 계속(최후 방어 — raw 그대로).
+    # 리파인 턴(예: "더 저렴한 걸로")에 LLM 이 실제 카테고리를 하나도 안 냈고(빈 리스트 또는
+    # category=null 만) 이전 카테고리가 있으면, 매핑의 발화 임베딩 폴백이 무관한 발화를 최근접
+    # canonical 로 바꿔 이전 카테고리를 덮어쓴다(never-null). 매핑 전에 prior.category 를 주입해
+    # 이전 canonical 을 그대로 승계한다(코드 레벨 방어, PR #73 #12). 실제 카테고리가 하나라도
+    # 있으면(상황형 질의의 null 혼합 포함) 건드리지 않아 발화 폴백 의도를 보존한다.
+    if (
+        prior is not None
+        and prior.category
+        and not any(q.raw_category for q in decision.category_queries)
+    ):
+        decision.category_queries = [CategoryQuery(raw_category=prior.category)]
     mapper = map_categories or _map_categories
     try:
         decision.category_legs = await mapper(
