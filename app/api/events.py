@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 
 from fastapi import APIRouter, Depends
 
@@ -22,6 +23,7 @@ from app.core.llm import get_llm
 from app.schemas.profile import SessionEndEvent
 
 router = APIRouter(tags=["events"])
+logger = logging.getLogger(__name__)
 
 
 async def _release_claim_best_effort(event_id: str, token: str) -> None:
@@ -31,12 +33,14 @@ async def _release_claim_best_effort(event_id: str, token: str) -> None:
         await asyncio.shield(release_task)
     except asyncio.CancelledError:
         task = asyncio.current_task()
-        if task is not None and task.cancelling() > 0:
-            with contextlib.suppress(BaseException):
-                await release_task
+        outer_cancelled = task is not None and task.cancelling() > 0
+        with contextlib.suppress(BaseException):
+            await release_task
+        if outer_cancelled:
             raise
+        logger.warning("session-end claim 해제 task 취소 — lease 만료 후 재시도")
     except Exception:
-        pass
+        logger.warning("session-end claim 해제 실패 — lease 만료 후 재시도", exc_info=True)
 
 
 @router.post("/events/session-end", status_code=202)
@@ -95,7 +99,7 @@ async def session_end(event: SessionEndEvent, _token: None = Depends(verify_serv
             if not completed:
                 raise RuntimeError("session-end claim ownership lost")
     except Exception:  # noqa: BLE001 — best-effort inbound 통지(§3.5): 절대 500 금지. 실패 시 버퍼 보존.
-        pass
+        logger.warning("session-end 내부 처리 실패 — 202 degrade", exc_info=True)
     finally:
         if claim_token is not None and not completed:
             # degrade/오류/취소 → PROCESSING claim 해제 + 버퍼 보존. 해제 DB가 실패해도 lease 만료 뒤

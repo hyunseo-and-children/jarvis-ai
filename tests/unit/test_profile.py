@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import logging
 
 import jwt
 import pytest
@@ -601,6 +602,7 @@ async def test_processed_event_stale_claim_can_be_reclaimed_but_completed_cannot
 
 async def test_session_end_release_failure_falls_back_to_lease_recovery(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     """claim 해제 DB까지 실패해도 202를 유지하고 lease 만료 뒤 영구 poison 없이 재선점한다."""
     import app.api.events as ev
@@ -616,12 +618,14 @@ async def test_session_end_release_failure_falls_back_to_lease_recovery(
     monkeypatch.setattr(ev, "get_profile_store", _store_failure)
     monkeypatch.setattr(processed_events, "release_claim", _release_failure)
 
-    response = client.post(
-        "/events/session-end",
-        json={"userId": 48, "sessionId": "release-failure"},
-    )
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        response = client.post(
+            "/events/session-end",
+            json={"userId": 48, "sessionId": "release-failure"},
+        )
     assert response.status_code == 202 and response.json()["status"] == "accepted"
     assert await processed_events.seen_event("session-end:48:release-failure")
+    assert "session-end claim 해제 실패" in caplog.text
 
     monkeypatch.setattr(processed_events, "release_claim", original_release)
     await asyncio.sleep(0.01)
@@ -631,6 +635,62 @@ async def test_session_end_release_failure_falls_back_to_lease_recovery(
     )
     assert reclaimed is not None
     assert await processed_events.release_claim("session-end:48:release-failure", reclaimed)
+
+
+async def test_session_end_logs_claim_ownership_loss(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """claim ownership race는 202로 degrade하되 운영에서 관측 가능한 warning을 남긴다."""
+
+    async def _lose_claim(*args, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(processed_events, "complete_claim", _lose_claim)
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        response = client.post(
+            "/events/session-end",
+            json={"userId": 49, "sessionId": "ownership-lost"},
+        )
+
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "session-end 내부 처리 실패 — 202 degrade"
+    )
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], RuntimeError)
+    assert str(record.exc_info[1]) == "session-end claim ownership lost"
+
+
+async def test_release_claim_best_effort_retrieves_internal_task_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """outer 요청과 무관하게 release task가 취소돼도 task를 재-await해 결과를 회수한다."""
+    import app.api.events as ev
+
+    class _CountingCancelledFuture(asyncio.Future):
+        await_count = 0
+
+        def __await__(self):
+            self.await_count += 1
+            return super().__await__()
+
+    cancelled = _CountingCancelledFuture()
+    cancelled.cancel()
+
+    def _create_cancelled_task(coro):
+        coro.close()
+        return cancelled
+
+    monkeypatch.setattr(ev.asyncio, "create_task", _create_cancelled_task)
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        await ev._release_claim_best_effort("session-end:50:cancelled-release", "token")
+
+    assert cancelled.await_count == 2
+    assert "session-end claim 해제 task 취소" in caplog.text
 
 
 async def test_session_end_returns_202_when_profile_store_unavailable(
