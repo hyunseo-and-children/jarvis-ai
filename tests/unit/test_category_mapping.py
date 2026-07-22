@@ -1,7 +1,8 @@
-"""카테고리 매핑(방식 A) never-null 테스트 (이슈 #59).
+"""카테고리 매핑(방식 A) canonical-or-null 테스트 (이슈 #59).
 
 decompose 추측(raw)을 임베딩으로 실제 DB 카테고리에 보정한다. embed·search·exact 를 주입형
-fake 로 대체해 다섯 never-null 분기와 멀티 dedup·상한 절단을 검증한다.
+fake 로 대체해 매핑 분기(exact/raw 최근접/query 앵커/신호 없음→빈 결과·무필터/하드실패degrade)와
+멀티 dedup·상한 절단을 검증한다.
 결과는 fan-out leg 용 (canonical, query) 페어 — query 는 그 카테고리의 검색 키워드(§6·§9).
 """
 
@@ -112,11 +113,21 @@ async def test_multi_null_raw_uses_per_leg_query_anchor() -> None:
     ]  # 발화 공유로 합쳐지지 않음
 
 
-async def test_empty_queries_normalizes_to_utterance_fallback() -> None:
-    """categoryQueries 빈 리스트 → query 도 없어 발화 폴백 1건(query 없음)으로 정규화."""
+async def test_empty_queries_yields_no_category() -> None:
+    """categoryQueries 빈 리스트(카테고리 신호 없음) → 빈 결과 → 무필터 검색(카테고리 강제 안 함, PR #73 #22).
+
+    "5만원 이하 아무거나" 같은 category-agnostic 질의를 발화 임베딩으로 엉뚱한 카테고리에 좁히지 않는다.
+    """
     m = _FakeMapper(exact=set(), nearest={"유럽여행 준비물": "여행/캠핑 > 여행용품"})
     out = await m.run([], utterance="유럽여행 준비물")
-    assert out == [("여행/캠핑 > 여행용품", None)]
+    assert out == []
+
+
+async def test_null_null_leg_skipped_no_category_forced() -> None:
+    """raw·query 모두 없는 leg(신호 없음)는 발화로 강제 매핑하지 않고 스킵한다(PR #73 #22)."""
+    m = _FakeMapper(exact=set(), nearest={"싼거 추천": "여행/캠핑 > 여행용품"})
+    out = await m.run([CategoryQuery(None, None)], utterance="싼거 추천")
+    assert out == []
 
 
 async def test_hard_failure_degrades_to_empty_not_raw() -> None:

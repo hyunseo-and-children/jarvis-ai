@@ -195,7 +195,7 @@ async def run_buyer_turn(
         return
 
     # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
-    # 보정(never-null). 매핑 자체가 죽어도 추천 스트림은 계속(최후 방어 — raw 그대로).
+    # 보정(canonical-or-null). 매핑이 죽거나 신호가 없으면 category 없이(전체) 검색으로 degrade.
     if (
         prior is not None
         and prior.category
@@ -203,8 +203,8 @@ async def run_buyer_turn(
     ):
         # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
         # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
-        # 승계한다. 매핑에 태우면 raw=null 발화 임베딩 폴백이 무관한 발화를 최근접 canonical 로 바꿔
-        # 이전 카테고리를 덮어쓴다(never-null, PR #73 #12).
+        # 승계한다. 매핑에 태우면 신호가 없어 빈 legs 가 나오고(#22), 아래 else 의 category=None 으로
+        # 직전 카테고리가 지워진다 — 리파인인데 필터가 풀려버린다(PR #73 #12).
         # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
         # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
         decision.category_legs = [(prior.category, None)]
@@ -217,7 +217,7 @@ async def run_buyer_turn(
                 settings=settings,
             )
         except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
-            # embed/DB 하드실패는 map_categories 내부에서 raw 폴백(§5, 의도된 degrade)으로 처리된다.
+            # embed/DB 하드실패는 map_categories 내부에서 빈 legs degrade(§5·#20)로 이미 처리된다.
             # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
             # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
             # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.

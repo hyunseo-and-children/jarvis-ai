@@ -62,13 +62,13 @@ async def test_parses_multiple_category_queries() -> None:
 
 
 async def test_missing_category_queries_yields_empty() -> None:
-    """categoryQueries 누락 → 빈 리스트(그래프에서 발화 폴백)."""
+    """categoryQueries 누락 → 빈 리스트(카테고리 신호 없음 → 그래프에서 무필터 검색, #22)."""
     d = await _run(_raw())
     assert d.category_queries == []
 
 
 async def test_null_category_allowed() -> None:
-    """category=null 추측 허용(그래프에서 발화 폴백으로 흡수)."""
+    """category=null 추측 허용(query 있으면 그 leg 의 query 로 매핑해 흡수, #17)."""
     d = await _run(_raw(categoryQueries=[{"category": None, "query": "집들이 선물"}]))
     assert len(d.category_queries) == 1
     assert d.category_queries[0].raw_category is None

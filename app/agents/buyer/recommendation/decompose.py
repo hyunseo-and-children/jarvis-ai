@@ -136,7 +136,7 @@ async def decompose(
 def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]:
     """decompose 의 categoryQueries → list[CategoryQuery] (방식 A, 이슈 #59).
 
-    리스트가 아니면 빈 리스트(그래프에서 발화 폴백). 각 원소 dict 에서 category(str|None)·
+    리스트가 아니면 빈 리스트(카테고리 신호 없음 → 그래프에서 무필터 검색, #22). 각 원소 dict 에서 category(str|None)·
     query(str|None)를 관대 파싱하고, fanout_max 로 개수를 절단한다(하드코딩 금지 상한).
     """
     if not isinstance(raw, list):

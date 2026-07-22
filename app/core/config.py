@@ -152,8 +152,8 @@ class Settings(BaseSettings):
     relaxation_max_rounds: int = 3
 
     # ── 카테고리 하이브리드 매핑 (이슈 #59, DESIGN-CATEGORY-HYBRID-59) ──
-    # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). never-null·멀티 fan-out.
-    category_top_k: int = 5  # 최근접·발화폴백 조회 top-k
+    # 방식 A: decompose 추측 → 임베딩 보정(exact/최근접). canonical-or-null·멀티 fan-out.
+    category_top_k: int = 5  # raw·query 앵커 최근접 조회 top-k
     category_fanout_max: int = 5  # 턴당 최대 카테고리 수(프롬프트 상한 + 코드 절단)
     category_fanout_per_cat_limit: int = 10  # 카테고리별 Spring 검색 size(≤30)
     category_fanout_merge_cap: int = 30  # 병합 후 rerank 입력 상한

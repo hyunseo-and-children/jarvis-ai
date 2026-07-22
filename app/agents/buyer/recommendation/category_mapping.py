@@ -1,8 +1,10 @@
 """카테고리 매핑 오케스트레이션 (이슈 #59, 방식 A — LLM 추측 → 임베딩 보정).
 
 decompose 가 추측한 카테고리(raw)들을 실제 DB 카테고리(canonical)로 보정한다. LLM 재호출
-없이 exact match → 임베딩 최근접 → 발화 폴백 순으로 처리하며, **never-null**(정상 흐름은 항상
-canonical 을 낸다). embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이 돈다.
+없이 exact match → 임베딩 최근접(raw, 없으면 그 leg 의 query) 순으로 처리한다. 카테고리 신호가
+있는 leg 는 성공 시 canonical 을 내고, 신호 없는 leg(raw·query 모두 없음)는 카테고리를 강제하지
+않는다 → **canonical-or-null**(Spring 엔 canonical 또는 null 만, 미검증 raw 는 안 나간다, #22·#20).
+embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이 돈다.
 
 블로킹 호출(embed_texts·pgvector 조회·exact SELECT)은 asyncio.to_thread 로 감싸 이벤트 루프를
 막지 않는다(search_service 와 동일 패턴).
@@ -48,29 +50,39 @@ async def map_categories(
     search_top_k: SearchFn = _search_top_k,
     exact_lookup: ExactFn = _exact_lookup,
 ) -> list[tuple[str, str | None]]:
-    """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다(never-null).
+    """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다.
 
     각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
     추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
-    per-category 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
-    embed(raw) 최근접. (3) raw==null → embed(발화) top-1 폴백. (4) 빈 리스트 → 발화 폴백 1건.
-    (5) 하드 실패(embed/DB 예외) → raw 그대로(있으면)·null 스킵.
+    per-leg 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
+    embed(raw) 최근접. (3) raw==null 이나 query 있음 → embed(query) 최근접. (4) raw·query 모두
+    없음(빈 리스트 포함) → 신호 없음으로 보고 leg 를 만들지 않는다 → 무필터 검색(카테고리 강제
+    금지, PR #73 #22). (5) 하드 실패(embed/DB 예외) → 빈 legs 로 degrade(canonical-or-null, #20).
+    결과가 없으면 빈 리스트를 낸다 — Spring 엔 canonical 또는 null(생략)만 나간다.
+
+    (utterance 는 매퍼 인터페이스 파라미터로 유지하되, 현재 앵커는 leg 별 raw·query 만 쓴다.)
     """
     dsn = settings.catalog_db_url
     k = settings.category_top_k
     fanout_max = settings.category_fanout_max
-    queries = list(category_queries) or [CategoryQuery(None, None)]  # 빈 리스트 → 발화 폴백
+    queries = list(category_queries)  # 빈 리스트를 강제로 채우지 않는다 — 신호 없으면 빈 결과(#22)
     raws = [q.raw_category for q in queries]
     qtexts = [q.query for q in queries]  # leg keyword 로 이어 붙일 원 추측 query
 
     try:
         non_null = [r for r in raws if r]
         exact = await asyncio.to_thread(exact_lookup, non_null, dsn) if non_null else set()
-        # 보정(임베딩) 필요한 것: exact 가 아닌 raw(=raw 앵커) 또는 null(=발화 앵커)
-        need_idx = [i for i, r in enumerate(raws) if not (r and r in exact)]
-        # 앵커 우선순위: raw(추측 카테고리) → 그 leg 의 query(고유 키워드) → 발화. null-raw leg 이
-        # 여럿일 때 발화를 공유하면 같은 최근접으로 합쳐져 fan-out 폭이 준다(PR #73 #17).
-        anchors = [raws[i] or qtexts[i] or utterance for i in need_idx]
+        # 보정(임베딩) 필요한 leg = 신호가 있는 것만: exact 아닌 raw, 또는 raw 없지만 query 있음.
+        # raw·query 모두 없는 leg(및 빈 리스트)은 카테고리를 강제하지 않는다 — 발화 전체를 앵커로
+        # 쓰지 않아 category-agnostic 질의("5만원 이하 아무거나")를 엉뚱한 카테고리로 안 좁힌다(#22).
+        need_idx = [
+            i
+            for i in range(len(raws))
+            if (raws[i] and raws[i] not in exact) or (not raws[i] and qtexts[i])
+        ]
+        # 앵커: raw(추측 카테고리) → 그 leg 의 query(고유 키워드). null-raw leg 이 여럿이어도 각자
+        # query 로 임베딩해 fan-out 폭을 지킨다(PR #73 #17).
+        anchors = [raws[i] or qtexts[i] for i in need_idx]
         vecs = await asyncio.to_thread(embed, anchors) if anchors else []
         # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
         # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).
@@ -93,14 +105,15 @@ async def map_categories(
             logger.info("category_mapped", extra={"raw": r, "canonical": r})
             result.append((r, qtexts[i]))
             continue
+        if i not in need_idx:
+            continue  # 신호 없는 leg(raw·query 모두 없음) → 카테고리 강제 없이 스킵(#22)
         canonical = nearest.get(i)
         if canonical:
             event = "category_repaired" if r else "category_fallback_top1"
             logger.info(event, extra={"raw": r, "canonical": canonical})
             result.append((canonical, qtexts[i]))
         else:
-            # 임베딩 조회는 정상 완료됐지만 히트 0건 → canonical 없이 드롭. never-null 정책상
-            # 드문 상태(categories 미시드·임베딩 결측 등)라 조용히 넘기지 않고 관측 가능하게
-            # 남긴다 — 매 턴 전부 이 분기면 카테고리 매핑이 사실상 무력화된 신호(PR #73 리뷰).
+            # 신호(raw/query)는 있었으나 임베딩 히트 0건 → canonical 없이 드롭. categories 미시드·
+            # 임베딩 결측 등 드문 상태라 조용히 넘기지 않고 관측 가능하게 남긴다(PR #73 #4).
             logger.warning("category_unmapped", extra={"raw": r})
     return _dedup_truncate(result, fanout_max)

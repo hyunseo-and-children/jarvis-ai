@@ -163,7 +163,7 @@ async def test_fanout_all_legs_fail_emits_search_failed() -> None:
 
 async def test_fanout_single_category_preserves_candidate_width() -> None:
     """단일 카테고리(leg 1개)는 후보 폭을 좁히지 않게 per_cat_limit(10) 이 아니라 merge_cap(30) 을
-    size 로 쓴다. never-null 로 단일 질의도 fan-out 경로를 타므로, 기존 단일검색(limit 30) 대비
+    size 로 쓴다. 매핑된 단일 질의(leg 1개)도 fan-out 경로를 타므로, 기존 단일검색(limit 30) 대비
     rerank 입력 후보가 줄면 추천 품질이 조용히 저하된다(PR #73 리뷰)."""
     calls: list = []
 
@@ -338,8 +338,8 @@ async def test_mapper_failure_is_logged(caplog) -> None:
 
 async def test_mapper_failure_degrades_to_null_not_raw() -> None:
     """mapper() 호출 자체가 예외면 raw(DB 미검증 추측)를 신뢰하지 않고 빈 legs 로 degrade한다 —
-    filters.category=None(canonical-or-null 불변식). embed/DB 하드실패(§5, 내부 raw 폴백)와 달리
-    호출 버그엔 raw 를 믿을 근거가 없어, 미검증 원문이 Spring·칩·멀티턴에 새지 않게(PR #73 리뷰)."""
+    filters.category=None(canonical-or-null 불변식). embed/DB 하드실패(§5·#20, 매퍼 내부에서 빈 legs
+    degrade)와 마찬가지로 호출 버그엔 raw 를 믿을 근거가 없어, 미검증 원문이 Spring·칩·멀티턴에 안 새게(PR #73 리뷰)."""
     calls: list = []
 
     async def _search(filters, exclude_product_ids=None):
@@ -370,11 +370,15 @@ async def test_mapper_failure_degrades_to_null_not_raw() -> None:
 
 
 def _garbage_mapper():
-    """실제 map 처럼: raw 있으면 그대로, 없으면 발화폴백(무관 garbage). 가드가 매핑을 우회하면 호출 안 됨."""
+    """가드 우회 검증용 카나리: raw 있으면 그대로, 없으면 눈에 띄는 garbage leg 를 낸다.
+
+    가드가 매핑을 우회하면 이 매퍼는 호출조차 안 되므로 garbage 가 검색에 실리지 않는다 — 실제
+    매퍼는 신호 없는 턴엔 빈 legs 를 내지만(#22), 여기선 prior 승계를 또렷이 검증하려 garbage 를 쓴다.
+    """
 
     async def _map(*, category_queries, utterance, settings):
         legs = [(q.raw_category, q.query) for q in category_queries if q.raw_category]
-        return legs or [("발화폴백_무관카테고리", None)]
+        return legs or [("매퍼우회검증_garbage카테고리", None)]
 
     return _map
 
@@ -419,14 +423,15 @@ async def _run_two_turns(turn2_decompose: dict) -> list:
 
 
 async def test_multiturn_empty_queries_carries_prior_not_utterance() -> None:
-    """리파인 턴에 LLM 이 categoryQueries 를 비우면, 발화 임베딩 폴백(무관 카테고리 오염) 없이
+    """리파인 턴에 LLM 이 categoryQueries 를 비우면, 매퍼 출력으로 오염되지 않고
     prior.category(이미 canonical)를 그대로 승계해 검색에 실린다(PR #73 리뷰 #12).
 
-    가드가 없으면 turn2 는 빈 queries → 매퍼 발화폴백 → garbage 로 검색이 나간다.
+    가드가 없으면 turn2 는 빈 queries → 매퍼가 prior 아닌 값을 내어(실제론 빈 legs→category=None,
+    이 테스트 카나리로는 garbage) 리파인인데 직전 카테고리가 풀려버린다.
     """
     calls = await _run_two_turns({"intent": "recommend", "reply": "", "case": 2, "filters": {}})
     assert calls[0] == "여행 > 여행용품"  # 턴 1
-    assert calls[-1] == "여행 > 여행용품"  # 턴 2 도 prior 승계(발화 garbage 아님)
+    assert calls[-1] == "여행 > 여행용품"  # 턴 2 도 prior 승계(매퍼 garbage 아님)
 
 
 async def test_multiturn_new_situational_query_not_hijacked_by_prior() -> None:
