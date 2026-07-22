@@ -93,4 +93,9 @@ async def map_categories(
             event = "category_repaired" if r else "category_fallback_top1"
             logger.info(event, extra={"raw": r, "canonical": canonical})
             result.append((canonical, qtexts[i]))
+        else:
+            # 임베딩 조회는 정상 완료됐지만 히트 0건 → canonical 없이 드롭. never-null 정책상
+            # 드문 상태(categories 미시드·임베딩 결측 등)라 조용히 넘기지 않고 관측 가능하게
+            # 남긴다 — 매 턴 전부 이 분기면 카테고리 매핑이 사실상 무력화된 신호(PR #73 리뷰).
+            logger.warning("category_unmapped", extra={"raw": r})
     return _dedup_truncate(result, fanout_max)

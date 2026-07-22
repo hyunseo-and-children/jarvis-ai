@@ -62,6 +62,19 @@ async def test_exact_match_uses_raw() -> None:
     assert out == [("PC부품 > CPU", "cpu")]
 
 
+async def test_unmapped_anchor_is_logged(caplog) -> None:
+    """임베딩 조회는 정상인데 히트 0건이라 드롭되는 앵커를 관측 로그로 남긴다(PR #73 리뷰 #4).
+
+    categories 미시드·임베딩 결측이면 매 턴 전부 이 분기로 빠져 매핑이 조용히 무력화되는데,
+    로그가 없으면 운영 중 감지 불가 — canonical 을 못 낸 앵커를 warning 으로 남긴다.
+    """
+    m = _FakeMapper(exact=set(), nearest={})  # 모든 앵커 히트 0건
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery("없는카테고리", "q")])
+    assert out == []
+    assert any(r.msg == "category_unmapped" for r in caplog.records)
+
+
 async def test_offlist_uses_nearest() -> None:
     """raw 가 exact 아님 → embed(raw) → 최근접 채택(거리 무관 항상), query 보존."""
     m = _FakeMapper(exact=set(), nearest={"무선 이어폰": "가전 > 이어폰/헤드폰"})
