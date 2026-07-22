@@ -26,6 +26,8 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartQuantityExceeded,
+    CartStockInsufficient,
     SpringUnavailableError,
 )
 
@@ -208,6 +210,40 @@ async def stream_cart_add(
                 type="CART_ADD_FAILED",
                 message="해당 상품을 찾지 못했어요.",
                 reason="PRODUCT_NOT_FOUND",
+            ).model_dump(by_alias=True),
+        )
+        yield _done()
+        return
+    except CartStockInsufficient as exc:
+        # I-2 재고 부족 — 남은 재고 노출("재고가 N개뿐이에요"). 재고 0(품절, BE ON_SALE+stock 0)은
+        # "품절된 상품이에요", availableStock 미상 시 일반 안내(§4.1, 2026-07-22).
+        await cart_store.clear_pending(thread_key)
+        if exc.available_stock is None:
+            message = "재고가 부족해 담지 못했어요."
+        elif exc.available_stock == 0:
+            message = "품절된 상품이에요."
+        else:
+            message = f"재고가 {exc.available_stock}개뿐이에요."
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message=message,
+                reason="STOCK_INSUFFICIENT",
+            ).model_dump(by_alias=True),
+        )
+        yield _done()
+        return
+    except CartQuantityExceeded:
+        # I-2 수량 상한 초과(합산 > 99, BE VALIDATION_ERROR) — BE와 동일 문구, reason 은 CART_ERROR 유지.
+        # 문구의 99 는 BE CartItem.MAX_QUANTITY 와 결합(변경 시 동기화 필요).
+        await cart_store.clear_pending(thread_key)
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message="수량은 최대 99개까지 담을 수 있습니다.",
+                reason="CART_ERROR",
             ).model_dump(by_alias=True),
         )
         yield _done()

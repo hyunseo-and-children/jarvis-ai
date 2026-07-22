@@ -1,9 +1,9 @@
-"""공유 API 명세의 확정 계약이 오래된 OPEN 표기와 다시 충돌하지 않게 한다."""
+"""repo-local API 정본의 확정 계약이 오래된 OPEN 표기와 다시 충돌하지 않게 한다."""
 
 from pathlib import Path
 
 
-def test_i20_mirror_has_no_stale_open_contract_markers() -> None:
+def test_i20_contract_has_no_stale_open_contract_markers() -> None:
     spec = (Path(__file__).parents[2] / "docs" / "api-spec.md").read_text(encoding="utf-8")
     c8_row = next(line for line in spec.splitlines() if line.startswith("| C-8 |"))
     event_success_rule = next(line for line in spec.splitlines() if "정상 신규·중복 통지는" in line)

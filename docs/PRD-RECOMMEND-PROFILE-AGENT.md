@@ -261,7 +261,7 @@ Spring POST /events/session-end (best-effort, 멱등)
 
 ## 7. API / 인터페이스 설계
 
-기획 저장소 정본에서 동기화한 api-spec.md v0.15.17을 상위 외부 계약으로 참조한다. camelCase, productId 등 상품/옵션/장바구니/주문 id는 숫자(BIGINT), guestId만 UUID 문자열. 신원은 항상 JWT `sub` 도출(요청 본문 신뢰 금지).
+repo-local 정본 api-spec.md v0.15.17을 상위 외부 계약으로 참조한다. camelCase, productId 등 상품/옵션/장바구니/주문 id는 숫자(BIGINT), guestId만 UUID 문자열. 신원은 항상 JWT `sub` 도출(요청 본문 신뢰 금지).
 
 ### 7.1 FE 대면 (AI 서버 소유)
 

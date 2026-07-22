@@ -4,7 +4,7 @@
 
 ## 계약 우선 (가장 중요)
 
-- 외부 계약의 정본은 **api-spec v0.15.4** (기획 repo `project-planning/my-project/docs/api-spec.md`, 로컬 사본 `docs/api-spec.md`). 계약(엔드포인트·SSE 이벤트·필드·오류 코드)을 바꾸려면 **명세 개정이 먼저** — 코드에서 임의 변경 금지.
+- 계약 정본 `docs/api-spec.md`. 계약(엔드포인트·SSE 이벤트·필드·오류 코드)을 바꾸려면 **명세 개정이 먼저** — 코드에서 임의 변경 금지.
 - 와이어 포맷은 **camelCase** — Pydantic `CamelModel`(by_alias) 규약 유지 (`app/schemas/`).
 - 상품·옵션·장바구니·주문 id는 **숫자(BIGINT)** — DB 스키마 기준(product/product_option/cart_item/order). 회원·판매자 id도 숫자(JWT `sub`). **게스트 id는 UUID 문자열**(guest.id CHAR(36)). SSE는 상품 카드/id를 싣지 않는다(경로 B).
 - **신원은 절대 요청 본문에서 받지 않는다** — AI가 검증한 JWT `sub`에서 도출 (IDOR 방지).
@@ -43,7 +43,7 @@
 3. `uv run pytest` 통과 확인 (테스트 없이 커밋 금지).
 4. **diff 내용을 근거로** Conventional Commit 메시지 생성 — `<type>(<scope>): <subject>` + 본문(왜). 추측이 아니라 실제 변경에서 뽑는다.
 5. 관련 파일만 스테이징 → 커밋. 무관한 변경은 **별도 커밋**으로 분리(한 커밋 = 한 논리 단위).
-6. 주제 완료 시 CHANGELOG.md 갱신, 계약 변경 시 api-spec 사본 동기화를 같은/선행 커밋에.
+6. 주제 완료 시 CHANGELOG.md 갱신, 계약 변경 시 정본 `docs/api-spec.md` 개정을 같은/선행 커밋에.
 - Claude Code 보조 커밋은 co-author 트레일러를 남긴다.
 
 ## 실수 방지 (Lessons) — 하네스
