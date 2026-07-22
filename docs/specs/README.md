@@ -5,7 +5,7 @@
 | SPEC | 버전 | 다루는 것 | 코드 |
 |---|---|---|---|
 | [SPEC-RECOMMEND-001](SPEC-RECOMMEND-001.md) | v0.8.0 | 추천 그래프 — Case 1/2/3 분기, decompose/rerank 규칙, 예산 검증, dedup(14-F) | `app/agents/buyer/` |
-| [SPEC-PROFILE-001](SPEC-PROFILE-001.md) | v0.2.0 | 프로필 — 승격 게이트 3조건, sleep-time 병합, /profile/me | `app/agents/profile/` |
+| [SPEC-PROFILE-001](SPEC-PROFILE-001.md) | v0.4.0 | 프로필 — 승격 게이트, I-20/AI inactivity 공통 finalizer, /profile/me | `app/agents/profile/` |
 | [SPEC-CATALOG-DATA-001](SPEC-CATALOG-DATA-001.md) | v0.1.2 | AI 생성물 — enrichment→임베딩 (⚠️ 동기화 방식은 api-spec §4.8 pull 배치가 우선) | `app/pipelines/` |
 | [SPEC-SELLER-001](SPEC-SELLER-001.md) | v1.0.0 | 판매자 그래프 — supervisor 라우팅, 분석 서브그래프(워커 5종·검증 루프), 전 쓰기 HITL, 분석 이력 (⚠️ **본 저장소 최초 작성 — 정본 승격 필요**) | `app/agents/seller/` |
 

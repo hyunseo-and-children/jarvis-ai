@@ -243,6 +243,27 @@ async def seen_event(event_id: str) -> bool:
     return await run_with_query_timeout(_run())
 
 
+async def get_status(event_id: str) -> str | None:
+    """이벤트 lifecycle 상태를 반환한다. duplicate의 processing/completed 구분에 사용한다."""
+    pool = await _get_pool()
+    if pool is None:
+        assert _fallback_pool is not None
+        current = _fallback_pool.get(event_id)
+        return current.status if current is not None else None
+
+    async def _run() -> str | None:
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT status FROM processed_events WHERE event_id = %s",
+                    (event_id,),
+                )
+            ).fetchone()
+        return str(row[0]) if row is not None else None
+
+    return await run_with_query_timeout(_run())
+
+
 async def mark_if_new(event_id: str) -> bool:
     """레거시/테스트용 즉시 완료 마킹 — 미처리면 True, 기존 row면 False."""
     pool = await _get_pool()

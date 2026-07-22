@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Protocol
 
+from app.agents.profile import session_activity
 from app.core.config import get_settings
 from app.core.logging import get_logger
 from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
@@ -51,7 +52,13 @@ class ConversationStoreProtocol(Protocol):
     """대화 저장소 공유 계약 — ConversationStore(인메모리)·PgConversationStore(pg-profile)."""
 
     async def save_user_message(
-        self, conversation_id: str, user_id: str | None, role: str, text: str
+        self,
+        conversation_id: str,
+        user_id: str | None,
+        role: str,
+        text: str,
+        *,
+        session_id: str | None = None,
     ) -> str: ...
 
     async def finalize_assistant(
@@ -78,7 +85,13 @@ class ConversationStore:
         self._seq = itertools.count(1)
 
     async def save_user_message(
-        self, conversation_id: str, user_id: str | None, role: str, text: str
+        self,
+        conversation_id: str,
+        user_id: str | None,
+        role: str,
+        text: str,
+        *,
+        session_id: str | None = None,
     ) -> str:
         """사용자 메시지 수신 즉시 저장(§6.3 a). turn_id 를 반환한다(assistant 마감에 사용)."""
         turn_id = f"turn-{next(self._seq)}"
@@ -92,6 +105,9 @@ class ConversationStore:
         self._by_conversation.setdefault(conversation_id, []).append(turn_id)
         self._order.append(turn_id)
         self._evict_if_needed()
+        member_id = _profile_member_id(user_id, role)
+        if member_id is not None and session_id is not None:
+            await session_activity.touch_session(member_id, session_id)
         return turn_id
 
     def _evict_if_needed(self) -> None:
@@ -203,6 +219,7 @@ class PgConversationStore:
                         "CREATE INDEX IF NOT EXISTS idx_conversation_turns_sequence "
                         "ON conversation_turns (conversation_id, sequence_id)"
                     )
+                    await session_activity.ensure_schema_on_connection(conn)
 
         await asyncio.wait_for(_run(), timeout=settings.state_store_migration_timeout_s)
 
@@ -221,14 +238,38 @@ class PgConversationStore:
         return await run_with_query_timeout(_run())
 
     async def save_user_message(
-        self, conversation_id: str, user_id: str | None, role: str, text: str
+        self,
+        conversation_id: str,
+        user_id: str | None,
+        role: str,
+        text: str,
+        *,
+        session_id: str | None = None,
     ) -> str:
         turn_id = uuid.uuid4().hex
-        await self._execute(
-            "INSERT INTO conversation_turns "
-            "(turn_id, conversation_id, user_id, role, user_text) VALUES (%s, %s, %s, %s, %s)",
-            (turn_id, conversation_id, user_id, role, text),
-        )
+        member_id = _profile_member_id(user_id, role)
+
+        if member_id is None or session_id is None:
+            await self._execute(
+                "INSERT INTO conversation_turns "
+                "(turn_id, conversation_id, user_id, role, user_text) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (turn_id, conversation_id, user_id, role, text),
+            )
+            return turn_id
+
+        async def _run() -> None:
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    await conn.execute(
+                        "INSERT INTO conversation_turns "
+                        "(turn_id, conversation_id, user_id, role, user_text) "
+                        "VALUES (%s, %s, %s, %s, %s)",
+                        (turn_id, conversation_id, user_id, role, text),
+                    )
+                    await session_activity.touch_on_connection(conn, member_id, session_id)
+
+        await run_with_query_timeout(_run())
         return turn_id
 
     async def finalize_assistant(
@@ -285,6 +326,17 @@ def _row_to_turn(row: tuple) -> Turn:
         assistant_text=assistant_text,
         status=TurnStatus(status),
     )
+
+
+def _profile_member_id(user_id: str | None, role: str) -> int | None:
+    """프로필 대상 회원 BIGINT만 activity touch 대상으로 정규화한다."""
+    if role != "member" or user_id is None:
+        return None
+    try:
+        value = int(user_id)
+    except (TypeError, ValueError):
+        return None
+    return value if 0 < value < 2**63 else None
 
 
 def conversation_key(subject: str | None, session_id: str) -> str:

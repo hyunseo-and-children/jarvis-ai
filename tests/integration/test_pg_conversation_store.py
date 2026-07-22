@@ -17,6 +17,7 @@ import uuid
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from app.agents.profile import session_activity
 from app.core import conversation as conversation_module
 from app.core.conversation import PgConversationStore, TurnStatus
 from app.core.config import get_settings
@@ -183,3 +184,95 @@ async def test_get_conversation_store_concurrent_calls_single_connection() -> No
         assert len({id(s) for s in stores}) == 1
     finally:
         conversation_module.set_store(None)
+
+
+async def test_member_turn_insert_and_activity_touch_commit_together(pool) -> None:
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    user_id = int(suffix[:12], 16)
+    session_id = f"activity-{suffix}"
+    conversation_id = f"{user_id}:{session_id}"
+
+    try:
+        turn_id = await store.save_user_message(
+            conversation_id,
+            str(user_id),
+            "member",
+            "활동 갱신",
+            session_id=session_id,
+        )
+
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT status, claim_token FROM profile_session_activity "
+                    "WHERE user_id = %s AND session_id = %s",
+                    (user_id, session_id),
+                )
+            ).fetchone()
+        assert await store.get_turn(turn_id) is not None
+        assert row == ("active", None)
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )
+
+
+async def test_guest_and_seller_turns_do_not_touch_profile_activity(pool) -> None:
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    guest_session = f"guest-{suffix}"
+    seller_session = f"seller-{suffix}"
+
+    await store.save_user_message(
+        f"guest:{guest_session}",
+        "guest-uuid",
+        "guest",
+        "게스트",
+        session_id=guest_session,
+    )
+    await store.save_user_message(
+        f"12:{seller_session}",
+        "12",
+        "seller",
+        "판매자",
+        session_id=seller_session,
+    )
+
+    async with pool.connection() as conn:
+        count = (
+            await (
+                await conn.execute(
+                    "SELECT count(*) FROM profile_session_activity WHERE session_id IN (%s, %s)",
+                    (guest_session, seller_session),
+                )
+            ).fetchone()
+        )[0]
+    assert count == 0
+
+
+async def test_activity_touch_failure_rolls_back_member_turn(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = PgConversationStore(pool)
+    session_id = f"rollback-{uuid.uuid4().hex}"
+    conversation_id = f"99:{session_id}"
+
+    async def _fail_touch(*args, **kwargs):
+        raise RuntimeError("activity unavailable")
+
+    monkeypatch.setattr(session_activity, "touch_on_connection", _fail_touch)
+
+    with pytest.raises(RuntimeError, match="activity unavailable"):
+        await store.save_user_message(
+            conversation_id,
+            "99",
+            "member",
+            "원자성 확인",
+            session_id=session_id,
+        )
+
+    assert await store.turns_for(conversation_id) == []

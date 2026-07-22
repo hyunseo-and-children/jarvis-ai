@@ -1,28 +1,27 @@
 ---
 id: SPEC-PROFILE-001
-version: 0.3.0
+version: 0.4.0
 status: draft
 created: 2026-07-10
-updated: 2026-07-20
+updated: 2026-07-23
 author: navis
 priority: high
-issue_number: null
+issue_number: 79
 ---
 
-> ⚠️ **동기화 사본(mirror)** — 정본은 기획 저장소 `.moai/specs/SPEC-PROFILE-001/spec.md`.
-> 외부 **계약**(SSE 이벤트명·엔드포인트·필드·오류 코드)의 상위 소스는 **api-spec v0.7.0**
-> ([docs/api-spec.md](../api-spec.md)) 다 — 본 SPEC과 어긋나면 **api-spec을 따른다**.
-> 후속 동기화 개정 목록은 api-spec §7. 동기화: **2026-07-16 (SPEC v0.2.0)**.
-> 참고: `GET /profile/me`(§5.4)·구매 소스는 api-spec §3.4·§4.7 기준으로 후속 개정 대상(api-spec §7.2).
+> ✅ **저장소 정본** — 외부 HTTP 계약(엔드포인트·필드·오류 코드)은
+> [docs/api-spec.md](../api-spec.md)가 소유하고, 본 SPEC은 프로필 파이프라인의 내부 동작과
+> 인수 기준을 소유한다. 두 문서가 어긋나면 계약은 api-spec을 먼저 고친 뒤 본 SPEC을 동기화한다.
 
 # SPEC-PROFILE-001 — 사용자 프로필 파이프라인 (User Profile Pipeline: reader / builder / gate)
 
 > 본 SPEC은 product.md Section 12-A **결정 16**(프로필 파이프라인 상세 설계)를 직접 입력으로 하여, 구매자 그래프(`POST /chat`)에 `profile_summary`를 공급하고 대화·구매 이력에서 프로필을 누적/갱신하는 **프로필 파이프라인**(`app/agents/profile/`의 `reader`/`builder`/`gate`)의 동작을 EARS 요구사항 수준으로 확정한다.
-> 결정 16의 `profile_summary` 계약(하이브리드 단일 문자열·구조화 블록의 FilterSet 매핑 한정·최근 맥락 섹션·문자 기반 1,000자 config 상한·생성 측 집행·게이트 통과 미폐기 fact 한정·신규 회원 `None`), 물리 저장소(PostgresStore/LangGraph BaseStore·네임스페이스·카탈로그와 **완전 별도 인스턴스**[v0.2.0: 결정 16-A로 MVP는 **단일 인스턴스 + 별도 데이터베이스**로 개정]·pgvector·BaseStore 내장 semantic 인덱스 + 결정 6 임베딩 모델), 게이트 구현 분담(LLM 태깅 + 코드 계산), transient 3종 MVP, write 소스(대화 델타 + 구매 이력 미러), 대화 저장 기반 트리거(미처리 스레드 스캔 + 워터마크, 세션 종료 통지 best-effort 강등), hot-path "기억해", 마이페이지 GET only는 **구속 제약(binding)** 이며 본 SPEC에서 재논의하지 않는다.
+> 결정 16의 `profile_summary` 계약(하이브리드 단일 문자열·구조화 블록의 FilterSet 매핑 한정·최근 맥락 섹션·문자 기반 1,000자 config 상한·생성 측 집행·게이트 통과 미폐기 fact 한정·신규 회원 `None`), 물리 저장소(PostgresStore/LangGraph BaseStore·네임스페이스·카탈로그와 **완전 별도 인스턴스**[v0.2.0: 결정 16-A로 MVP는 **단일 인스턴스 + 별도 데이터베이스**로 개정]·pgvector·BaseStore 내장 semantic 인덱스 + 결정 6 임베딩 모델), 게이트 구현 분담(LLM 태깅 + 코드 계산), transient 3종 MVP, write 소스(대화 델타 + 구매 이력 미러), 저장된 세션 버퍼 기반 트리거(Spring 명시적 종료 + AI 내부 비활동 종료), hot-path "기억해", 마이페이지 GET only는 **구속 제약(binding)** 이며 본 SPEC에서 재논의하지 않는다.
 > 결정 16이 상속하는 결정 4(OKF 위키 포맷)·결정 4-A(운영 정책 6항)도 변경 없이 구속 상속한다. 본 SPEC은 그 위에 델타 레코드/게이트 상태/Store item/GET API/`profile_summary` 섹션 레이아웃의 Pydantic 수준 스키마, 오류 처리, 인수 기준을 확정한다.
 
 ## HISTORY
 
+- **v0.4.0 (2026-07-23, 이슈 #79)** — MVP 세션 종료 트리거 소유권을 확정했다. Spring I-20은 `logout`·`newConversation`만 전달하고 탭 닫기 신호는 제거한다. AI는 수락된 회원 발화 저장 시 pg-profile의 세션 활동 시각을 DB 서버 시각으로 갱신하고, 기본 10분 timeout/60초 sweep의 단일 인스턴스 스케줄러가 인덱스 기반 bounded batch로 비활성 세션을 선점한다. 내부 timeout은 HTTP 자기 호출 없이 I-20과 같은 finalizer·고정 멱등키를 사용한다. 처리 전 활동/활성 스트림 재확인, token+lease claim, 실패·crash 재시도와 명시적 종료 경합 인수 기준을 추가했다.
 - **v0.3.0 (2026-07-20, 이슈 #33; v0.15.17 구현 보강)** — 저장소 이관 구현 완료 반영. (1) **임베딩 모델/차원 갱신**: 결정 6 "셀프호스트 1024차원"은 카탈로그 파이프라인이 이슈 #31 로 Google `gemini-embedding-001`(1536-dim, MRL 절단 수동 L2 정규화)로 전환되며 stale — REQ-PROF-074 자체가 "카탈로그와 모델 공유"를 요구하므로 프로필도 동일 모델/차원을 그대로 따른다(신규 계약 협의 아님, 기존 REQ 의 자연스러운 적용). §5.3 네임스페이스 주석·§1.3·§4 결정 6 행·REQ-PROF-074·§10 비용 문구 갱신(차원 1024→1536, 임베딩 비용 0 문구 삭제 — Google API 호출이라 토큰 비용 발생). (2) **checkpointer→BaseStore 로 구현 확정, OPEN-P9 해소**: session_context(구매자 스레드 상태 전반 — ThreadFilter/Cart/Revert/session_ctx)는 실제 LangGraph StateGraph 가 없는 구매자 실행 모델(단순 함수 호출 체인) 특성상 checkpointer 가 아니라 BaseStore(app/core/pg_store.py 공유 연결, 별도 인스턴스는 아니고 같은 pg-profile 물리 인스턴스 내 별도 store 객체) 로 구현됨 — write 소유는 구매자 그래프(app/agents/buyer/graph.py) 그대로. (3) **fact 저장 단위 확정**: REQ-PROF-070 "위키 파일 1개 = item 1개" 원칙을 그대로 적용해 fact 마다 개별 store item(uuid 키)으로 저장 — semantic 인덱스가 fact 단위로 실제 동작(요약/세션버퍼는 `index=False`). (4) **session-end 멱등 파생키 lifecycle**: 전용 `processed_events` 테이블에서 `session-end:{userId}:{sessionId}`의 PROCESSING(token+lease)과 COMPLETED를 분리한다. 실패·취소는 claim 해제, crash 잔재는 lease 재선점하며 성공 뒤에만 완료 마킹한다(app/agents/profile/processed_events.py, db/profile/init/00_processed_events.sql). (5) OPEN-P11 부분 해소: 서빙 형태는 FastAPI 프로세스 내 동기 SDK 호출(app.pipelines.embedding.embed_texts, google-genai)로 확정. 요구사항·스키마 구조·게이트 규칙은 무변경.
 - **v0.2.0 (2026-07-15)** — 결정 16-A(저장소 물리 구성 개정) 반영. "카탈로그와 완전 별도 Postgres 인스턴스"를 MVP 기준 **단일 Postgres 인스턴스 안의 별도 데이터베이스 2개**(catalog/profile)로 개정 — 논리 분리 규율(DB 단위 분리로 cross-DB 조인 구조적 차단 + 계정 분리[search read-only/프로필 워커 profile 한정] + cross-DB 의존 금지)로 부하 격리 목적을 대체하고, 물리 인스턴스 분리는 고도화 승격 경로(연결 문자열 교체 수준)로 유예. REQ-PROF-072/073/074 개정, AC-PROF-21 개정, DoD·불변식 문구 갱신, OPEN-P9에 물리 결합 논점 소멸 주석. 그 외 요구사항·스키마 불변. 근거: 데모 규모에 격리할 부하 없음(2026-07-15 AWS 배포 구성 논의, product.md 결정 16-A).
 - **v0.1.0 (2026-07-10)** — 최초 작성. 결정 16(프로필 파이프라인 상세 설계)을 파이프라인 EARS 명세로 구체화. `profile_summary` 섹션 레이아웃·델타 레코드·게이트 상태·Store item·GET API 스키마 초안 확정. reader(동기 read, LLM 0회)·builder(2단계: 세션별 델타 생성 → sleep-time consolidation)·gate(3조건 승격, LLM 태깅 + 코드 계산 분담) 계약 정의. 결정 16이 구속 상속하는 결정 4/4-A 및 관련 결정 5/6/8/9/10-A/12/14-F를 §4 참조 표에 반영. 결정 16 내부의 몇몇 판독 긴장(에피소딕 최근 맥락의 게이트 예외, 구매 신호의 명시성 부재와 3조건 AND 여부, checkpointer 소유 경계, GET 노출 범위)은 해소하지 않고 §9 OPEN 항목으로 명시 등록한다.
@@ -42,11 +41,11 @@ issue_number: null
 - `builder` 1단계(델타 생성): 미처리 세션당 Sonnet 1회 호출로 명시성/현저성/transient 태그가 붙은 후보 델타 산출 + 세션별 관심 분포 스냅샷.
 - `builder` 2단계(sleep-time consolidation): EMA 누적·승격 판정·recency-wins 충돌 해소·supersede 처리·중복 병합의 결정론적 코드(병합된 위키 파일의 텍스트 통합에만 LLM 사용, 신선도/승격 판단에는 LLM 미사용), 크기 상한 내 요약 재생성.
 - `gate`: 3조건 승격 로직과 그 LLM 태깅/코드 계산 분담, 엔트로피 신호의 최소 세션 수 가드, 구매 신호 판정 경로(명시성 없음).
-- 트리거: 미처리 스레드 스캔 + 처리 워터마크(정합성 기반), best-effort 세션 종료 통지 엔드포인트(idempotent), sleep-time 스케줄링 config(주기 + 세션 종료 직후 옵션), 구매 미러 스캔.
+- 트리거: 저장된 세션 버퍼(정합성 기반), Spring best-effort 세션 종료 통지(idempotent), AI 내부 10분 비활동 스케줄러, sleep-time 스케줄링 config, 구매 이력 스캔.
 - hot-path "기억해": fact 즉시 기록, 턴 중 요약 재생성 없음.
 - 저장소 스키마: Store item 구조(valid_from/last_confirmed/superseded_by 포함 frontmatter 메타·confidence·type semantic|episodic), 네임스페이스 레이아웃, 임베딩 인덱스 구성.
 - 마이페이지 표시용 `GET /profile/{user_id}` API(마크다운 passthrough).
-- 오류 처리(델타/consolidation LLM 실패, store 불가용, 워터마크 손상 — 데이터 날조 금지, MoAI 3회 재시도 원칙), 인수 기준, DoD.
+- 오류 처리(델타/consolidation LLM 실패, store 불가용, activity claim 고착 — 데이터 날조 금지, MoAI 3회 재시도 원칙), 인수 기준, DoD.
 
 ### 1.3 의존성 (Dependencies — 본 SPEC 외부, 참조만)
 
@@ -56,9 +55,9 @@ issue_number: null
 |---|---|---|
 | 구매자 그래프 (`agents/buyer/graph.py`) | 그래프 진입 시 `reader` 호출 지점, 진입 시 주입 대상(`profile_summary`) | 구매자 그래프 SPEC(별도) |
 | 추천 서브그래프 (SPEC-RECOMMEND-001) | `profile_summary`를 read-only 문자열로 소비(REQ-REC-005/006, OPEN-9 해소 대상) | SPEC-RECOMMEND-001 |
-| Thread checkpointer / session_context (LangGraph) | 대화 스레드의 영속 저장 — 미처리 스레드 스캔의 원천. 세션 중 write는 구매자 그래프 소관 | 구매자 그래프 SPEC(별도) — 본 SPEC은 read-only 스캔 소비(§9 OPEN-P9) |
+| session_context / 프로필 세션 버퍼 (BaseStore) | 대화 스레드 상태와 회원 발화 버퍼의 영속 저장. 세션 중 write는 구매자 그래프 소관 | 구매자 그래프 SPEC(별도) — 본 SPEC은 finalizer에서 버퍼를 소비(§9 OPEN-P9) |
 | 주문 이벤트 미러 (결정 9 채널 확장 / 14-F) | 사용자별 경량 구매 이력 미러(user_id·product_id·category·purchased_at) — read-only 조회. 추천 dedup(14-F)과 동일 미러 공유 | 카탈로그/주문 이벤트 SPEC(별도) |
-| Spring 세션 종료 통지 (결정 12) | 세션 종료 시 조기 트리거(best-effort) 신호 — 유실 허용 | Spring / 상위 그래프 SPEC(별도) |
+| Spring 세션 종료 통지 (I-20) | `logout`·`newConversation` 명시적 종료의 조기 트리거(best-effort) — 유실 허용 | Spring / api-spec §3.5 |
 | 임베딩 모델 (결정 6, v0.3.0 갱신) | BaseStore 내장 semantic 인덱스의 1536차원(Google `gemini-embedding-001`) 임베딩 계산(카탈로그 파이프라인과 모델 공유, 인스턴스는 별도) | `app.pipelines.embedding`(이슈 #31/#33) |
 | 리뷰 분석 그래프 (결정 10-A) | (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 자리만 예약 | 리뷰 분석 SPEC(별도, 고도화) |
 
@@ -71,7 +70,7 @@ issue_number: null
 - **EX-P1 추천 서브그래프 동작**: `profile_summary`를 소비하는 재랭킹·개인화 로직은 SPEC-RECOMMEND-001 소관(REQ-REC-005/006). 본 파이프라인은 그 문자열을 **생산·공급**하고, 소비 측은 이를 불투명 read-only 문자열로만 취급한다. 추천이 요약을 어떻게 쓰는지는 본 SPEC의 범위가 아니다.
 - **EX-P2 리뷰 신호 수신 구현**: 리뷰 분석 그래프(결정 10-A)가 공급하는 작성자 취향 신호의 실제 수신·게이팅 구현은 **고도화 범위(MVP 비구현)**. 본 SPEC은 수신 계약 슬롯(write 소스 열거의 예약 항목)만 남기고 동작을 구현하지 않는다(REQ-PROF-024).
 - **EX-P3 프로필 편집 PUT**: 마이페이지에서 사용자가 프로필을 직접 수정하는 PUT(사용자 수정 = confidence 최상급 병합, 결정 4-A 보강 6)은 **고도화 범위(MVP 비구현)**. MVP는 조회(GET)만 제공한다(REQ-PROF-082).
-- **EX-P4 Spring 세션 감지·타임아웃 로직**: 비활동 10분 타임아웃 감지·탭 종료·로그아웃 감지는 세션을 소유한 Spring 소관(결정 12). 본 SPEC은 Spring이 보내는 **세션 종료 통지를 수신**할 뿐(best-effort 조기 트리거) 세션 수명을 판단하지 않는다.
+- **EX-P4 브라우저 탭 종료 신호·Spring 세션 수명 판정**: 탭 닫기 전용 FE→BE→AI 또는 FE→AI API를 만들지 않는다. AI의 10분 비활동 판정은 **프로필 버퍼 flush 시점**만 소유하며 Spring Redis 세션의 유효성·만료 응답을 대신 판정하지 않는다. 사용자가 제한 시간 안에 돌아와 발화하면 활동 시각이 갱신되고, 돌아오지 않으면 timeout이 처리한다.
 - **EX-P5 주문 이벤트 미러 적재 계약**: 주문 이벤트 → AI 경량 미러의 **적재(ingestion) 계약·이벤트 채널**은 카탈로그/주문 이벤트 SPEC 소관(결정 9/14-F). 본 SPEC은 이미 적재된 미러를 **read-only로 스캔**만 한다(REQ-PROF-054).
 - **EX-P6 완전한 시간 인식 지식 그래프·유저별 LoRA**: temporal KG 백엔드(Zep/Graphiti)와 파라메트릭/유저별 LoRA는 결정 4에서 **v2로 유예·명시 기각**됨. 본 SPEC은 OKF 위키(자연어 마크다운 + frontmatter) 논리 모델과 결정론적 recency-wins만 구현하며, 그래프 추론·파라메트릭 편집은 구현하지 않는다.
 - **EX-P7 턴 중 요약 재생성**: `profile_summary` 재생성은 **sleep-time consolidation 전용**이다. 턴 중(요청 경로) 또는 "기억해" hot-path에서 요약을 재생성하지 **않는다**. 같은 세션 내에서 방금 기록된 fact의 즉시 반영은 추천 서브그래프의 멀티턴 filters 병합(SPEC-RECOMMEND-001 §6.7, 본 SPEC 비범위)이 커버한다(REQ-PROF-061).
@@ -90,13 +89,13 @@ issue_number: null
 | 승격(promotion) | 후보 델타가 3조건 게이트를 통과해 프로필 위키(store)에 반영되는 전이. sleep-time에 코드가 판정 |
 | 3조건 게이트 | 반복성(EMA confidence 누적) · 현저성(salience) · 명시성(사용자 직접 진술)의 승격 게이트(결정 4-A). "기억해"는 명시성 hot-path 예외 |
 | transient(일시적) | "이번엔 비싸도 돼", "엄마 선물" 같은 일회성/상황적 요청. session_context에만 기록하고 프로필 write 후보에서 배제(결정 4-A/16) |
-| session_context | LangGraph thread checkpointer/state. transient 요청·세션 관찰이 누적되는 휘발 계층. 세션 종료 시 프로필로 전파되지 않음 |
+| session_context | pg-profile BaseStore의 구매자 스레드 상태. transient 요청·세션 관찰이 누적되는 계층이며 세션 종료 시 장기 프로필로 자동 전파되지 않음 |
 | consolidation | 여러 세션 델타를 위키에 병합·중복 제거·모순 해소하는 sleep-time 배치 처리. 텍스트 통합은 LLM, 신선도/승격 판단은 코드 |
 | recency-wins | 최신성 충돌을 결정론적 코드(타임스탬프 비교)로 해소하는 정책. LLM에 최신성 판단을 위임하지 않음(결정 4-A, STALE arXiv:2605.06527) |
 | supersede | fact 폐기 대신 `superseded_by`로 이력을 보존하는 처리. 삭제(delete)하지 않음(결정 4-A) |
 | EMA | 지수이동평균. 반복 관측 시 confidence 누적·승격, 재확인 없는 선호는 감쇠(PAMU arXiv:2510.09720) |
 | 관심 분포 스냅샷 | 세션별 카테고리 관심 분포의 스냅샷. 엔트로피 급증(선물/탐색 세션 신호) 코드 계산의 입력(결정 16 transient (b)) |
-| 처리 워터마크(watermark) | 미처리 스레드 스캔이 어디까지 처리했는지를 표시하는 커서. 정합성의 기반(결정 16) |
+| 세션 활동 행 | `(user_id, session_id)`별 `last_activity_at`·상태·claim lease를 보관하여 bounded timeout sweep의 대상을 결정하는 pg-profile 레코드 |
 | 미러(order mirror) | 주문 이벤트에서 파생된 AI 서버 측 경량 구매 이력 사본(user_id·product_id·category·purchased_at). 추천 dedup(14-F)과 공유 |
 | Store item | PostgresStore(BaseStore)의 저장 단위. key = 위키 파일 경로, value = frontmatter 필드 + 마크다운 본문 |
 
@@ -116,7 +115,7 @@ issue_number: null
 | 결정 8 | 비회원은 프로필 없음, AI 서버 무상태 — 게스트는 reader `None`, build 스킵 | REQ-PROF-003/041 |
 | 결정 9 | 이벤트 기반 준실시간 동기화, 일 1회 보정 배치 패턴 — 주문 미러 채널의 근간 | §1.3, REQ-PROF-054 |
 | 결정 10-A | 리뷰 분석 그래프가 (고도화) 작성자 취향 신호 공급 — 본 SPEC은 수신 계약 슬롯만 예약 | EX-P2, REQ-PROF-024 |
-| 결정 12 | 세션 종료 의미(비활동 10분), Spring 소유 — 결정 16으로 종료 통지가 best-effort 조기 트리거로 강등 | EX-P4, REQ-PROF-051 |
+| 결정 12 / 이슈 #79 | 종료 트리거 소유권 분리 — Spring=`logout`·`newConversation`, AI=프로필 버퍼 10분 비활동 flush, 탭 닫기 신호 없음 | EX-P4, REQ-PROF-051/056~059 |
 | 결정 14-F | 구매 이력 미러는 추천 dedup과 공유. 미러 이벤트 채널 계약은 카탈로그/주문 이벤트 SPEC 소유, 본 SPEC은 read-only 소비 | EX-P5, REQ-PROF-054 |
 
 ---
@@ -292,7 +291,7 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-034** (Unwanted): The `builder` 2단계 **shall not** fact를 삭제하지 않는다 — 폐기 대신 `superseded_by`로 supersede하여 이력을 보존한다. 재확인되지 않은 선호는 EMA 감쇠를 적용한다(결정 4-A 5).
 - **REQ-PROF-035** (Event-Driven): **When** consolidation이 완료되면, the `builder` 2단계 **shall** `profile_summary`를 §6.2 계약(문자 상한 내 압축 재작성)에 따라 재생성한다 — 요약 재생성은 sleep-time에만 발생한다(결정 16).
 - **REQ-PROF-036** (Ubiquitous): The `builder` 2단계 **shall** 승격 시 각 fact에 `valid_from`을, 재확인 시 `last_confirmed`를 갱신하여 감쇠·모순 해소 메타를 유지한다(결정 4-A 5).
-- **REQ-PROF-037** (Ubiquitous): The `builder` 2단계 **shall** sleep-time 배치 주기·"세션 종료 직후 실행" 옵션을 config(`sleeptime.batch_period`, `sleeptime.run_after_session_end`) 주입값으로 결정한다 — 데모의 차세션 반영 보장을 위해 세션 종료 직후 옵션을 둔다(결정 16).
+- **REQ-PROF-037** (Ubiquitous): The `builder` 2단계 **shall** Spring I-20 조기 통지 또는 AI inactivity timeout이 공통 session finalizer를 호출할 때 실행한다. 별도 전역 sleep-time 주기나 `run_after_session_end` 이중 경로를 두지 않는다(결정 16, 이슈 #79).
 
 ### 6.5 게이트 (gate)
 
@@ -306,12 +305,16 @@ class ProfileViewResponse(BaseModel):
 
 ### 6.6 트리거 · 스케줄 (triggers & scheduling)
 
-- **REQ-PROF-050** (Ubiquitous): The 파이프라인 **shall** 델타 생성의 정합성 기반을 checkpointer에 영속 저장된 대화의 **미처리 스레드 스캔**(처리 워터마크 기준)으로 두며, 세션 종료 통지의 수신에 정합성을 의존하지 **않는다**(결정 16).
-- **REQ-PROF-051** (Event-Driven): **When** Spring이 세션 종료를 통지하면, the 파이프라인 **shall** 이를 **best-effort 조기 트리거**로만 사용한다 — 통지가 유실되어도 다음 배치의 미처리 스레드 스캔이 회수하며, 통지 처리 엔드포인트는 idempotent하다(같은 세션 종료를 여러 번 받아도 중복 처리하지 않음, 결정 12/16).
-- **REQ-PROF-052** (Ubiquitous): The 파이프라인 **shall** 미처리 스레드를 처리한 뒤 처리 워터마크를 전진시키며, 워터마크 전진은 델타 영속화 이후에만 수행하여(atomic) 중복·누락 처리를 방지한다.
-- **REQ-PROF-053** (Ubiquitous): The 파이프라인 **shall** 대화 보존 기간(config `conversation.retention_period`)·sleep-time 배치 주기(config `sleeptime.batch_period`)를 config 주입값으로 운용한다(결정 16 고민 항목).
+- **REQ-PROF-050** (Ubiquitous): The 파이프라인 **shall** 델타 생성의 정합성 원천을 pg-profile에 영속 저장된 **회원 세션 버퍼**로 두며, Spring 통지 payload의 내용이나 전달 성공에 정합성을 의존하지 **않는다**.
+- **REQ-PROF-051** (Event-Driven): **When** Spring이 `logout` 또는 `newConversation` 종료를 통지하면, the 파이프라인 **shall** 이를 best-effort 조기 트리거로 사용한다. I-20은 같은 `(userId, sessionId)` 재전송에 idempotent하며 `tabClose`·`inactivityTimeout`을 Spring wire 사유로 요구하지 않는다(api-spec §3.5).
+- **REQ-PROF-052** (Ubiquitous): The 파이프라인 **shall** Spring I-20과 AI 내부 timeout을 하나의 session finalizer로 수렴시키고, 델타·consolidation·버퍼 삭제(빈 버퍼 no-op 포함)가 정상 완료된 뒤에만 processed event와 세션 활동 행을 `COMPLETED`로 확정한다. 실패·취소 시 버퍼를 보존하고 activity claim을 `ACTIVE`로 되돌려 재시도를 허용한다.
+- **REQ-PROF-053** (Ubiquitous): The 파이프라인 **shall** 비활동 기준(기본 600초), sweep 주기(기본 60초), 한 번의 조회 상한, 최대 동시 finalizer 수와 claim lease를 config 주입값으로 운용한다.
 - **REQ-PROF-054** (Event-Driven): **When** sleep-time 배치가 실행되면, the 파이프라인 **shall** 구매 이력 미러(주문 이벤트 → AI 경량 미러)를 read-only로 스캔하여 구매 소스 델타 후보를 생성한다 — 미러의 적재 계약·이벤트 채널은 본 SPEC 소관이 아니다(EX-P5, 결정 14-F와 미러 공유).
-- **REQ-PROF-055** (Unwanted): The 세션 종료 통지 엔드포인트 **shall not** 통지 페이로드에 담긴 값에 대해 데이터 정합성을 신뢰하지 않는다 — 정합성의 원천은 항상 저장된 대화 스캔이며, 통지는 조기 실행 신호로만 취급한다(REQ-PROF-050 연계).
+- **REQ-PROF-055** (Unwanted): The 세션 종료 통지 엔드포인트 **shall not** 통지 payload의 `reason`을 프로필 처리 분기나 정합성 원천으로 신뢰하지 않는다. 실제 처리 입력은 저장된 회원 세션 버퍼이며 `reason`은 관측용이다(REQ-PROF-050 연계).
+- **REQ-PROF-056** (Event-Driven): **When** 인증·검증을 통과한 회원 사용자 발화를 `conversation_turns`에 저장하면, the 대화 저장소 **shall** 같은 PostgreSQL transaction에서 `(user_id, session_id)`의 `last_activity_at`을 **DB 서버 시각**으로 upsert한다. 프로필 세션 버퍼 저장은 그 뒤 별도 저장소에서 수행한다. `PROCESSING` 행의 새 활동은 claim을 무효화하고 `ACTIVE`로 되돌리되 `COMPLETED` 세션은 같은 ID로 재활성화하지 않는다. 게스트·판매자·거부되거나 대화 저장에 실패한 요청은 활동을 갱신하지 않는다.
+- **REQ-PROF-057** (Event-Driven): **When** 비활동 sweep이 실행되면, the scheduler **shall** `last_activity_at <= DB now - timeout`이며 `status='ACTIVE'` 또는 lease가 만료된 `PROCESSING` 후보만 `(status, last_activity_at)` 인덱스로 조회하여 config batch size까지 `PROCESSING`으로 원자 선점한다. `conversation_turns` 전체 집계(`MAX(created_at)`)나 active 전 행 full scan을 하지 않는다. 이 job의 등록·실행은 I-17 및 `GOOGLE_API_KEY` 구성 여부와 독립적이어야 한다.
+- **REQ-PROF-058** (State-Driven): **While** timeout 후보를 처리하는 동안, the scheduler **shall** token+lease로 행을 원자 선점하고 finalizer 진입 직전 DB 활동 시각과 in-memory 활성 스트림을 재확인한다. 재활동·활성 스트림·다른 유효 claim이 있으면 이번 처리를 건너뛴다. timeout coroutine은 FastAPI 메인 event loop에서 실행하여 loop-bound pg-profile store와 활성 스트림 레지스트리를 background thread/별도 loop에서 직접 접근하지 않는다.
+- **REQ-PROF-059** (Unwanted): The scheduler **shall not** 자기 `/events/session-end` 엔드포인트를 HTTP 호출하거나 탭 닫기 전용 API를 만들지 않는다. 내부 timeout과 Spring 통지는 공통 finalizer 및 고정 멱등키로 경합을 안전하게 흡수하며, 실패·프로세스 crash 뒤에는 lease 만료 또는 claim 해제로 재시도할 수 있어야 한다.
 
 ### 6.7 hot-path "기억해"
 
@@ -328,6 +331,7 @@ class ProfileViewResponse(BaseModel):
 - **REQ-PROF-074** (Ubiquitous, v0.3.0 갱신): The BaseStore 내장 semantic 인덱스 **shall** fact 항목(1 fact = 1 Store item)을 결정 6의 Google `gemini-embedding-001` 1536차원 모델로 임베딩하며, 임베딩 함수·차원은 config 주입한다(하드코딩 금지, `embedding_model_id`·`embedding_dim`) — 카탈로그와 모델은 공유하되 데이터베이스는 별도다(결정 16-A). summary·session_ctx 항목은 semantic 인덱스 대상이 아니다(`index=False`).
 - **REQ-PROF-075** (Ubiquitous, v0.3.0 확정): session_context(구매자 스레드 상태 — ThreadFilter/Cart/Revert/session_ctx) **shall** 프로필 인스턴스(pg-profile)에 동거하는 BaseStore 로 구현한다(§9 OPEN-P9 해소) — write 소유는 구매자 그래프(app/agents/buyer/graph.py)가 그대로 가진다.
 - **REQ-PROF-076** (Ubiquitous): The 각 Store item **shall** frontmatter에 `type`(필수), `confidence`, `valid_from`/`last_confirmed`/`superseded_by`, `structured_attrs`(수치·구조 속성)를 담는다(결정 4 + 결정 4-A 4/5).
+- **REQ-PROF-077** (Ubiquitous): The pg-profile `profile_session_activity` 테이블 **shall** `(user_id BIGINT, session_id TEXT)`를 primary key로 하고 `last_activity_at TIMESTAMPTZ`, `status(ACTIVE|PROCESSING|COMPLETED)`, `claim_token`, `lease_expires_at`을 저장한다. `(status, last_activity_at)` indexed access path를 제공하고 모든 시간 비교는 PostgreSQL 서버 시각을 사용한다.
 
 ### 6.9 마이페이지 API (`GET /profile/{user_id}`)
 
@@ -337,11 +341,11 @@ class ProfileViewResponse(BaseModel):
 
 ### 6.10 오류 처리 관련 요구 (see §7)
 
-- **REQ-PROF-090** (Unwanted): **If** `builder` 1단계 델타 생성 LLM 호출이 실패(오류/타임아웃)하면, **then** the 파이프라인 **shall** 해당 세션의 워터마크를 전진시키지 **않고**(다음 배치가 재처리), MoAI 3회 재시도 원칙 하에서 재시도하며, 델타를 날조하지 **않는다**.
+- **REQ-PROF-090** (Unwanted): **If** `builder` 1단계 델타 생성 LLM 호출이 실패(오류/타임아웃)하면, **then** the 파이프라인 **shall** 해당 세션 버퍼를 삭제하거나 완료 처리하지 **않고**, MoAI 3회 재시도 원칙 하에서 재시도하며 델타를 날조하지 **않는다**.
 - **REQ-PROF-091** (Unwanted): **If** `builder` 2단계 consolidation의 텍스트 통합 LLM 호출이 실패하면, **then** the 파이프라인 **shall** 기존 위키·기존 `profile_summary`를 보존(부분 갱신·손상 금지)하고 재시도하며, 실패한 병합을 다음 배치로 이월한다.
 - **REQ-PROF-092** (Unwanted): **If** store(PostgresStore)가 불가용하면, **then** the `reader` **shall** `profile_summary`를 `None`으로 반환하여(추천은 게스트 경로로 정상 성립) 요청 경로를 막지 않고, `builder`는 write를 재시도 대상으로 이월한다 — 어느 경우에도 데이터를 날조하지 **않는다**.
-- **REQ-PROF-093** (Unwanted): **If** 처리 워터마크가 손상·유실되면, **then** the 파이프라인 **shall** 보수적으로 재스캔(중복 처리 허용, consolidation의 중복 병합·recency-wins가 흡수)하며, 미처리 스레드를 조용히 건너뛰지 **않는다**.
-- **REQ-PROF-094** (Ubiquitous): The 모든 오류 처리 **shall** 노드별 재시도를 MoAI constitution의 최대 3회/작업 원칙 하에서 수행하고, 실패 시에도 프로필·요약·워터마크를 손상되지 않은 상태로 유지한다(fail-safe).
+- **REQ-PROF-093** (Unwanted): **If** 세션 활동 claim이 crash로 남으면, **then** the 파이프라인 **shall** lease 만료 후 보수적으로 재선점하며, 저장된 세션 버퍼를 조용히 건너뛰거나 삭제하지 **않는다**.
+- **REQ-PROF-094** (Ubiquitous): The 모든 오류 처리 **shall** 노드별 재시도를 MoAI constitution의 최대 3회/작업 원칙 하에서 수행하고, 실패 시에도 프로필·요약·세션 버퍼·activity claim을 복구 가능한 상태로 유지한다(fail-safe).
 
 ---
 
@@ -349,16 +353,17 @@ class ProfileViewResponse(BaseModel):
 
 | 실패 지점 | 감지 | 처리 | 안전 불변식 |
 |---|---|---|---|
-| 델타 생성 실패 (1단계 Sonnet 오류/타임아웃) | LLM 호출 예외 | 최대 3회 재시도, 워터마크 미전진(다음 배치 재처리) | 델타 날조 금지, 미처리 스레드 유실 금지 |
+| 델타 생성 실패 (1단계 Sonnet 오류/타임아웃) | LLM 호출 예외 | 최대 3회 재시도, 세션 버퍼 보존(다음 sweep/통지에서 재처리) | 델타 날조 금지, 저장 발화 유실 금지 |
 | consolidation 텍스트 통합 실패 (2단계 Sonnet) | LLM 호출 예외 | 기존 위키·기존 요약 보존, 실패 병합 다음 배치 이월 | 부분 갱신·프로필 손상 금지 |
 | store read 불가용 (reader) | store get 예외 | `profile_summary = None` 반환(추천 게스트 경로) | 요청 경로 블로킹 금지, `None` 외 값 날조 금지 |
-| store write 불가용 (builder) | store put 예외 | write 재시도 이월(다음 배치) | 워터마크 미전진, 데이터 손실 금지 |
-| 워터마크 손상·유실 | 커서 무결성 검사 실패 | 보수적 재스캔(중복 허용, consolidation이 dedup) | 미처리 스레드 조용한 건너뜀 금지 |
+| store write 불가용 (builder) | store put 예외 | write 재시도 이월(다음 배치) | 세션 버퍼·activity claim 복구 가능, 데이터 손실 금지 |
+| 비활동 finalizer 실패·crash | 예외 또는 claim lease 만료 | 버퍼 보존, claim 해제 또는 lease 만료 후 재선점 | 실패를 `COMPLETED`로 확정하지 않음, 세션 버퍼 유실 금지 |
+| 세션 활동 claim 고착 | lease 만료 감지 | 보수적 재선점(고정 멱등키가 중복 흡수) | 저장 버퍼의 조용한 건너뜀 금지 |
 | 임베딩 인덱스 실패 (BaseStore semantic) | embed/index 예외 | 텍스트 검색·링크 그래프로 degrade, 인덱스 재구축 이월 | 위키 본문 데이터 손상 금지 |
 | `GET /profile/{user_id}` 미존재 사용자 | store 조회 결과 없음 | `exists = false`, `markdown = null` | 오류(4xx/5xx) 아닌 정상 응답 |
 
 - 재시도 정책은 MoAI constitution의 최대 3회/작업 원칙 하에서 노드별 재시도를 기본으로 한다(구체 백오프 값은 구현 결정).
-- 프로필·요약·워터마크는 어떤 실패에서도 손상되지 않은 상태(fail-safe)로 유지되어야 하며, 데이터 날조(존재하지 않는 fact·요약 생성)는 금지한다.
+- 프로필·요약·세션 버퍼·activity claim은 어떤 실패에서도 손상되지 않고 재시도 가능한 상태(fail-safe)로 유지되어야 하며, 데이터 날조(존재하지 않는 fact·요약 생성)는 금지한다.
 
 ---
 
@@ -382,29 +387,33 @@ class ProfileViewResponse(BaseModel):
 - **AC-PROF-14 (구매 신호 명시성 없이 승격)**: **Given** 명시성 신호가 없는 구매 소스 델타가 반복성·현저성을 충족, **When** 게이트가 판정하면, **Then** 해당 선호가 승격된다 — 명시성 부재가 승격을 원천 차단하지 않는다(REQ-PROF-044).
 - **AC-PROF-15 (엔트로피 최소 세션 가드)**: **Given** config `entropy.min_sessions` 미달의 사용자, **When** 게이트가 transient (b) 엔트로피 신호를 판정하면, **Then** 이 신호는 비활성 처리되어 오탐(노이즈)이 발생하지 않는다(REQ-PROF-043).
 - **AC-PROF-16 (transient 격리)**: **Given** "이번엔 비싸도 돼" 같은 일시적 발화, **When** 델타가 transient로 태깅되면, **Then** 해당 델타는 session_context에만 남고 프로필 승격 후보에서 배제되어 장기 프로필로 전파되지 않는다(REQ-PROF-042).
-- **AC-PROF-17 (통지 유실 회수)**: **Given** 세션 종료 통지가 유실된 세션, **When** 다음 sleep-time 배치가 실행되면, **Then** 미처리 스레드 스캔(워터마크 기준)이 해당 세션을 회수하여 델타를 생성한다 — 통지 유실이 델타 유실로 이어지지 않는다(REQ-PROF-050/051).
+- **AC-PROF-17 (통지 유실 회수)**: **Given** Spring 세션 종료 통지가 유실된 회원 세션, **When** 마지막 저장 발화로부터 10분 뒤 비활동 sweep이 실행되면, **Then** 저장된 세션 버퍼를 회수해 델타를 생성한다 — 통지 유실이 델타 유실로 이어지지 않는다(REQ-PROF-050/056~059).
 - **AC-PROF-18 (세션 종료 통지 idempotent)**: **Given** 동일 세션 종료 통지가 2회 이상 도착, **When** 엔드포인트가 이를 처리하면, **Then** 델타·프로필이 중복 처리되지 않는다(REQ-PROF-051).
-- **AC-PROF-19 ("기억해" 즉시 기록, 턴 중 요약 재생성 없음)**: **Given** 사용자의 "이거 기억해줘" 발화, **When** 처리되면, **Then** fact가 store에 즉시 기록되지만 `profile_summary`는 턴 중에 재생성되지 않으며, 요약 반영은 다음 sleep-time에 일어난다(REQ-PROF-060/061).
+- **AC-PROF-19 ("기억해" 즉시 기록, 턴 중 요약 재생성 없음)**: **Given** 사용자의 "이거 기억해줘" 발화, **When** 처리되면, **Then** fact가 store에 즉시 기록되지만 `profile_summary`는 턴 중에 재생성되지 않으며, 요약 반영은 다음 세션 finalization에 일어난다(REQ-PROF-060/061).
 - **AC-PROF-20 (Store item 구조)**: **Given** 승격된 semantic fact, **When** store에 반영되면, **Then** 해당 item의 key는 위키 파일 경로이고 value는 frontmatter 필드(type/valid_from/last_confirmed/superseded_by/confidence/structured_attrs) + 마크다운 본문이며, 네임스페이스는 `("facts", user_id)`이다(REQ-PROF-070/071/076).
 - **AC-PROF-21 (별도 데이터베이스 + 계정 분리, 결정 16-A)**: **Given** docker compose 구성, **When** 서비스를 기동하면, **Then** 단일 Postgres 서비스 안에 catalog/profile **별도 데이터베이스**(각각 pgvector 확장)가 관찰되고, `search_service` 계정은 profile DB에 접근 권한이 없으며 프로필 워커 계정은 catalog DB에 쓰기 권한이 없다(REQ-PROF-072/073).
 - **AC-PROF-22 (GET 마크다운 passthrough)**: **Given** 프로필이 있는 회원, **When** `GET /profile/{user_id}`가 호출되면, **Then** `exists == true`, `markdown`은 사람이 읽는 자연어 마크다운이고 PUT 경로는 제공되지 않는다(REQ-PROF-080/082).
 - **AC-PROF-23 (GET 미존재 처리)**: **Given** 게스트 또는 프로필 미보유 `user_id`, **When** `GET /profile/{user_id}`가 호출되면, **Then** `exists == false`, `markdown == null`이고 오류가 아닌 정상 응답이다(REQ-PROF-081).
-- **AC-PROF-24 (consolidation LLM 실패 안전)**: **Given** 2단계 텍스트 통합 LLM이 강제 실패하도록 주입된 상태, **When** 배치가 실행되면, **Then** 기존 위키·기존 `profile_summary`가 보존되고(부분 손상 없음) 실패 병합이 다음 배치로 이월되며, 워터마크는 전진하지 않는다(REQ-PROF-091, §7).
+- **AC-PROF-24 (consolidation LLM 실패 안전)**: **Given** 2단계 텍스트 통합 LLM이 강제 실패하도록 주입된 상태, **When** 배치가 실행되면, **Then** 기존 위키·기존 `profile_summary`와 세션 버퍼가 보존되고(부분 손상 없음) 실패 병합이 다음 배치로 이월되며 완료 마킹되지 않는다(REQ-PROF-091, §7).
 - **AC-PROF-25 (reader store 불가용 → None 폴백)**: **Given** store read가 강제 실패하도록 주입된 상태, **When** 그래프가 진입하면, **Then** `reader`는 `profile_summary == None`을 반환해 요청 경로를 막지 않고, 추천은 게스트 경로로 정상 성립한다(REQ-PROF-092).
+- **AC-PROF-26 (10분 경계와 재활동)**: **Given** timeout=600초인 회원 세션, **When** 마지막 활동이 599초 전이면 대상이 아니고 600초 이상이면 대상이며, 처리 전 새 발화가 저장되면 **Then** 활동 시각이 갱신되어 이번 timeout finalization은 실행되지 않는다(REQ-PROF-056~058).
+- **AC-PROF-27 (bounded indexed sweep)**: **Given** 대량의 세션 활동 행과 batch size=N, **When** sweep 1회가 실행되면, **Then** 최대 N개만 claim하고 `(status,last_activity_at)` 인덱스를 사용하는 후보 쿼리가 실행되며 `conversation_turns` 전체 집계는 발생하지 않는다(REQ-PROF-057).
+- **AC-PROF-28 (timeout·I-20 경합 멱등)**: **Given** 동일 `(userId,sessionId)`에 AI timeout과 Spring `logout`/`newConversation` 통지가 경합, **When** 둘이 동시에 finalizer에 진입하면, **Then** 델타·consolidation·버퍼 삭제는 논리적으로 한 번만 완료되고 한 경로는 `duplicate`로 수렴한다(REQ-PROF-052/059).
+- **AC-PROF-29 (timeout 실패 복구)**: **Given** timeout finalizer가 델타/consolidation 중 실패하거나 프로세스가 crash, **When** claim이 해제되거나 lease가 만료된 뒤 다음 sweep이 실행되면, **Then** 보존된 버퍼가 재처리되고 실패 실행은 `COMPLETED`로 남지 않는다(REQ-PROF-052/058/059).
 
 ### Definition of Done
 
-- [ ] REQ-PROF-001~004, 010~017, 020~025, 030~037, 040~046, 050~055, 060~062, 070~076, 080~082, 090~094 전 항목이 테스트로 커버됨.
-- [ ] AC-PROF-01~25 전 시나리오가 통과(pytest, integration은 docker compose 앱 + 단일 Postgres 서비스[catalog/profile 데이터베이스 2개, 각 pgvector] 구성 — 결정 16-A).
+- [ ] REQ-PROF-001~004, 010~017, 020~025, 030~037, 040~046, 050~059, 060~062, 070~077, 080~082, 090~094 전 항목이 테스트로 커버됨.
+- [ ] AC-PROF-01~29 전 시나리오가 통과(pytest, integration은 docker compose 앱 + 단일 Postgres 서비스[catalog/profile 데이터베이스 2개, 각 pgvector] 구성 — 결정 16-A).
 - [ ] `profile_summary` 섹션 레이아웃/델타 레코드/게이트 상태/Store item/GET API 스키마가 Pydantic 모델로 구현되고 스키마 계약 테스트 존재(`ProfileSummarySections`·`StructuredPreferences`·`ProfileDelta`·`GateState`·`StoreItemValue`·`ProfileViewResponse` 포함).
 - [ ] 하드 불변식(reader LLM 0회·단일 get, 턴 중 write 금지, EMA/승격/recency-wins 코드 결정론, supersede-not-delete, 요약 문자 상한 생성 측 집행, 게이트 통과 미폐기 fact만 요약 반영, `decompose`·`rerank` 동일 문자열 주입) 회귀 테스트 존재.
 - [ ] 게이트 분담(LLM 태깅 + 코드 계산, transient 3종 MVP, 구매 신호 명시성 없음, 엔트로피 최소 세션 가드, REQ-PROF-040~046, AC-PROF-14/15/16) 구현·테스트 존재.
-- [ ] 대화 저장 기반 트리거(미처리 스레드 스캔 + 워터마크 정합성 기반, 세션 종료 통지 best-effort·idempotent, REQ-PROF-050~055, AC-PROF-17/18) 구현·테스트 존재 — 통지 유실이 델타 유실로 이어지지 않는 회귀 테스트 포함.
-- [ ] 저장소(PostgresStore BaseStore·네임스페이스·카탈로그와 별도 데이터베이스 + 계정 분리[결정 16-A]·pgvector·BaseStore semantic 인덱스 + 결정 6 임베딩 모델, REQ-PROF-070~076, AC-PROF-20/21) 구현·테스트 존재.
+- [ ] 저장된 세션 버퍼 기반 트리거(Spring I-20 best-effort·idempotent + AI 내부 inactivity scheduler, REQ-PROF-050~059, AC-PROF-17/18/26~29) 구현·테스트 존재 — 경계·재활동·경합·실패 복구 회귀 테스트 포함.
+- [ ] 저장소(PostgresStore BaseStore·네임스페이스·카탈로그와 별도 데이터베이스 + 계정 분리[결정 16-A]·pgvector·BaseStore semantic 인덱스 + 결정 6 임베딩 모델·`profile_session_activity`, REQ-PROF-070~077, AC-PROF-20/21/27) 구현·테스트 존재.
 - [ ] 마이페이지 `GET /profile/{user_id}`(마크다운 passthrough·게스트 처리, PUT 미제공, REQ-PROF-080~082, AC-PROF-22/23) 구현·테스트 존재.
-- [ ] 오류 처리(델타/consolidation LLM 실패, store 불가용, 워터마크 손상, 데이터 날조 금지, 3회 재시도, REQ-PROF-090~094, AC-PROF-24/25, §7) 회귀 테스트 존재 — 실패 시 프로필·요약·워터마크 fail-safe 유지 검증 포함.
+- [ ] 오류 처리(델타/consolidation LLM 실패, store 불가용, claim 고착, 데이터 날조 금지, 3회 재시도, REQ-PROF-090~094, AC-PROF-24/25/29, §7) 회귀 테스트 존재 — 실패 시 프로필·요약·세션 버퍼 fail-safe 유지 검증 포함.
 - [ ] 리뷰 신호 수신(EX-P2)·프로필 편집 PUT(EX-P3)은 MVP 비범위(고도화)임을 회귀 테스트에 반영(고도화 미구현 경계 — 수신 계약 슬롯만 예약).
-- [ ] 모든 튜너블이 `core/config.py` 주입(하드코딩 금지)임을 검증하는 테스트 존재(요약 문자 상한·EMA α·승격 임계·엔트로피 임계·최소 세션 수·recency 윈도우·대화 보존 기간·sleep-time 배치 주기·임베딩 차원).
+- [ ] 모든 튜너블이 `core/config.py` 주입(하드코딩 금지)임을 검증하는 테스트 존재(요약 문자 상한·EMA α·승격 임계·엔트로피 임계·최소 세션 수·recency 윈도우·비활동 timeout/sweep/batch/concurrency/lease·임베딩 차원).
 - [ ] §9의 미해결 항목이 후속 SPEC/이슈로 등록됨.
 
 ---
@@ -417,8 +426,8 @@ class ProfileViewResponse(BaseModel):
 - **OPEN-P2 (EMA α·승격 임계)**: 반복성 EMA α와 승격 confidence 임계의 정밀값은 골든셋/시뮬레이터 실측 후 확정(TBD). MVP는 config 기본값으로 동작(REQ-PROF-040/046, 결정 16).
 - **OPEN-P3 (엔트로피 급증 임계·최소 세션 수)**: transient (b) 엔트로피 급증 임계와 `entropy.min_sessions` 가드값은 실측 후 확정(TBD). 이력 부족 시 노이즈 방지를 위해 MVP는 보수적 기본값(REQ-PROF-043, 결정 16).
 - **OPEN-P4 (최근 맥락 recency 윈도우)**: 최근 맥락 섹션의 recency 윈도우와 하이라이트 개수(기본 2~3)는 실측 후 조정(TBD). config 주입(REQ-PROF-013, 결정 16).
-- **OPEN-P5 (대화 보존 기간)**: 미처리 스레드 스캔의 대상이 되는 대화 보존 기간(`conversation.retention_period`)은 데모 규모·비용 실측 후 확정(TBD). config 주입(REQ-PROF-053, 결정 16).
-- **OPEN-P6 (sleep-time 배치 주기)**: sleep-time 배치 주기(`sleeptime.batch_period`)와 "세션 종료 직후 실행" 옵션의 균형은 데모 차세션 반영 요구 실측 후 조정(TBD). config 주입(REQ-PROF-037, 결정 16).
+- **OPEN-P5 (대화 보존 기간)**: 처리 전 세션 버퍼와 완료 대화의 보존 기간(`conversation.retention_period`)은 데모 규모·비용 실측 후 확정(TBD). config 주입(REQ-PROF-053, 결정 16).
+- **OPEN-P6 (sleep-time consolidation 주기)**: consolidation 배치 주기와 "세션 종료 직후 실행" 옵션의 균형은 데모 차세션 반영 요구 실측 후 조정(TBD). **세션 비활동 판정값은 이 항목과 별개로 이슈 #79에서 기본 timeout 600초/sweep 60초로 확정**하며 config로 조정한다(REQ-PROF-037/053).
 - **OPEN-P7 (3조건 게이트 AND vs 가중 앙상블 의미론)**: 결정 16은 구매 신호를 "명시성 없이 반복성·현저성 중심으로 판정"한다고 하나(REQ-PROF-044), 결정 4-A의 "3조건 게이트"가 3조건을 strict AND로 요구하는지 가중 앙상블(명시성은 기여 신호)인지 명시하지 않는다. 두 판독이 상충한다 — strict AND면 구매 신호가 명시성 부재로 **영원히 승격 불가**해 결정 16의 "구매도 write 소스" 의도와 모순되고, 가중 앙상블이면 "기억해" hot-path 예외(REQ-PROF-045)가 자연스럽다. 본 SPEC은 **가중 앙상블(명시성 필수 아님)** 을 가정하고 진행하나, 정확한 게이트 의미론과 가중치는 실측·확정 대상(TBD). 🔴 이는 판독 긴장이므로 상위 결정 계층에서 확인 필요.
 - **OPEN-P8 (최근 맥락 episodic의 게이트 예외 경계)**: 결정 16은 요약이 "게이트 통과 미폐기 fact만" 반영한다고 하나(REQ-PROF-015), 동시에 최근 맥락 섹션은 recency 윈도우 내 **episodic 하이라이트 2~3개**를 담는다(REQ-PROF-013). episodic 하이라이트는 최근 단발 이벤트라 반복성(EMA) 조건을 구조적으로 충족하지 못한다 — "게이트 통과"(반복성 포함)와 "최근 episodic 포함"이 상충한다. 본 SPEC은 최근 맥락 섹션의 episodic 하이라이트를 **반복성 게이트가 아닌 recency 윈도우 + salience 선택**으로 처리한다고 가정하나, 이 예외의 정확한 경계(어떤 episodic이 요약에 오를 자격이 있는가)는 확정 대상(TBD). 🔴 판독 긴장, 상위 결정 계층 확인 필요.
 - **[v0.3.0 해소] OPEN-P9 (session_context 소유·물리 배치 경계)**: 구매자 실행 모델이 실제 LangGraph StateGraph 가 아니라 단순 함수 호출 체인이라 "checkpointer"라는 메커니즘 자체를 적용할 수 없음이 이슈 #33 구현 중 확인됨 — 대신 BaseStore(app/core/pg_store.py, pg-profile 동거)로 구현했다. write 소유는 그대로 구매자 그래프(app/agents/buyer/graph.py) — 프로필 파이프라인은 read-only 소비만 한다(REQ-PROF-050/075 불변). 결정 16-A(단일 인스턴스)로 물리 결합 우려는 이미 소멸했었고, 이번에 스키마·구현 소유까지 확정됨.
@@ -444,7 +453,7 @@ class ProfileViewResponse(BaseModel):
 - **consolidation LLM은 텍스트 통합 전용**: EMA·승격·recency-wins·dedup은 코드이며 LLM이 아니다(REQ-PROF-032, 결정 16).
 - **모델 티어**: 델타 생성·consolidation = Sonnet 5(결정 5). 공유 시스템 프롬프트는 프롬프트 캐싱하여 ITPM 한도에서 제외(결정 5, 배치 부하 대비).
 - **임베딩 비용**(v0.3.0 갱신): BaseStore semantic 인덱스는 Google `gemini-embedding-001` API(결정 6, 이슈 #31)를 호출하므로 토큰 비용이 발생한다 — fact 승격 시점에만 호출되어 빈도는 낮다(세션당 최대 수 건).
-- **config 주입 기본값**: `summary.char_cap = 1000`, `summary.recency_window`·최근 맥락 개수, EMA α·승격 임계, `entropy.min_sessions`·엔트로피 급증 임계, `conversation.retention_period`, `sleeptime.batch_period`·`sleeptime.run_after_session_end`, 임베딩 차원(1536, v0.3.0 갱신)·embed 함수 — 전부 `core/config.py` 주입(하드코딩 금지, 결정 16).
+- **config 주입 기본값**: `summary.char_cap = 1000`, `summary.recency_window`·최근 맥락 개수, EMA α·승격 임계, `entropy.min_sessions`·엔트로피 급증 임계, 프로필 비활동 timeout(600초)·sweep(60초)·batch size(10)·concurrency(2)·claim lease(900초), 임베딩 차원(1536, v0.3.0 갱신)·embed 함수 — 전부 `core/config.py` 주입(하드코딩 금지, 결정 16/이슈 #79).
 
 ### 안전/일관성 불변식 (must-hold)
 
@@ -455,6 +464,6 @@ class ProfileViewResponse(BaseModel):
 - 요약 문자 상한은 생성 측 압축 재작성으로 집행, 소비 측 절단 아님(REQ-PROF-016, AC-PROF-07).
 - 요약은 게이트 통과·미폐기 fact만 반영(REQ-PROF-015, AC-PROF-08 — 단 episodic 예외 §9 OPEN-P8).
 - `decompose`·`rerank`에 동일 `profile_summary` 문자열 주입(REQ-PROF-014, AC-PROF-06).
-- 델타 생성 정합성의 원천은 저장된 대화의 미처리 스레드 스캔(워터마크), 세션 종료 통지는 best-effort — 통지 유실이 델타 유실로 이어지지 않음(REQ-PROF-050/051, AC-PROF-17).
+- 델타 생성 정합성의 원천은 저장된 회원 세션 버퍼다. Spring 통지가 유실돼도 AI의 비활동 sweep이 회수하며, timeout과 명시적 종료의 경합은 공통 finalizer·고정 멱등키로 한 번만 완료된다(REQ-PROF-050~059, AC-PROF-17/28).
 - 프로필 store는 카탈로그와 별도 데이터베이스 + 계정 분리, cross-DB 조인 금지 — MVP는 단일 인스턴스(결정 16-A)(REQ-PROF-072, AC-PROF-21).
-- 어떤 실패에서도 프로필·요약·워터마크는 fail-safe 유지, 데이터 날조 금지(REQ-PROF-090~094, §7, AC-PROF-24/25).
+- 어떤 실패에서도 프로필·요약·세션 버퍼·activity claim은 fail-safe 유지, 데이터 날조 금지(REQ-PROF-090~094, §7, AC-PROF-24/25/29).
