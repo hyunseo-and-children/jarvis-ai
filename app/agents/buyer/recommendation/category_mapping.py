@@ -80,9 +80,12 @@ async def map_categories(
         nearest: dict[int, str | None] = {
             need_idx[j]: (hits[0] if hits else None) for j, hits in enumerate(hit_lists)
         }
-    except Exception as exc:  # noqa: BLE001 - 하드 실패는 사유 무관 degrade(never-null 유지)
+    except Exception as exc:  # noqa: BLE001 - 하드 실패(embed/DB 다운)는 사유 무관 degrade
+        # 미검증 raw 를 canonical 처럼 내보내지 않는다(canonical-or-null 불변식, PR #73 #20). raw 는
+        # 검증이 필요할 만큼 자주 틀리므로(이 PR 전제) 가짜 categoryName 으로 0건이 날 위험이 크다 —
+        # 빈 legs 로 degrade 해 카테고리 없이(전체) 검색하게 한다(graph 바깥 except·미매핑과 일관).
         logger.warning("category_hard_fail", extra={"reason": str(exc)})
-        return _dedup_truncate([(r, qtexts[i]) for i, r in enumerate(raws) if r], fanout_max)
+        return []
 
     result: list[tuple[str, str | None]] = []
     for i, r in enumerate(raws):

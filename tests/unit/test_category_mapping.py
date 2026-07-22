@@ -119,11 +119,16 @@ async def test_empty_queries_normalizes_to_utterance_fallback() -> None:
     assert out == [("여행/캠핑 > 여행용품", None)]
 
 
-async def test_hard_failure_keeps_raw_skips_null() -> None:
-    """embed/DB 다운 → raw 있으면 그대로(never-null degrade), null 은 스킵, query 보존."""
+async def test_hard_failure_degrades_to_empty_not_raw() -> None:
+    """embed/DB 다운 → 미검증 raw 를 신뢰하지 않고 빈 legs 로 degrade한다(canonical-or-null, PR #73 #20).
+
+    raw 는 검증이 필요할 만큼 자주 틀린다(이 PR의 전제) — 검증 불가 시 raw 를 보내면 가짜
+    categoryName 으로 0건이 날 수 있어, 카테고리 없이(전체) 검색하도록 빈 리스트로 degrade 한다.
+    graph 바깥 except(#18)·미매핑(#13)과 동일한 canonical-or-null 불변식.
+    """
     m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
     out = await m.run([CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "뭐")])
-    assert out == [("PC부품 > CPU", "cpu")]
+    assert out == []
 
 
 async def test_multi_dedup_and_truncate() -> None:
