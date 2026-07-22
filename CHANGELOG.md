@@ -32,13 +32,11 @@
 - **인증 실배선 E2E (#34)** — jwks 모드 검증을 api-spec §2.3 확정 5종(signature/exp/iss/aud/**scope**)으로 완성: 스트림 티켓 `sub_type`(member|guest) 매핑(+구 role 폴백, 미지 값 fail-closed), `sub` 필수화, 만료/무효 401 코드를 예외 타입 기반 매핑(TOKEN_EXPIRED/TOKEN_INVALID), JWKS fetch 타임아웃(3s)·캐시 TTL config 주입(`jwt_scope`·`jwks_cache_ttl_s` 신설), jwks 모드 기동 시 `JWKS_URL` fail-fast, 레이트 리밋 sub 스코프도 동일 검증 경로로 정합. 테스트는 실 JWKS dict + fetch 계층 패치로 kid 매칭·kid miss refetch 실경로 검증 + 앱 레벨 401/403 봉투·서비스 토큰 인/아웃바운드 회귀 (`tests/unit/_jwks.py`·`test_auth_e2e.py`)
 
 ### Fixed
-- **PR #64 리뷰 — session-end 멱등키를 저장 내용 기반으로 전환** — session-end 는 세션 종료가
-  아니라 프로필 "저장 체크포인트"라 한 `sessionId` 에 여러 번 정당하게 온다(tabClose 저장 후
-  재활동 → inactivityTimeout 재저장 등). 기존 `(userId, sessionId)` 파생 멱등키는 두 번째의
-  새 대화분을 재전송 중복으로 오인해 씹었다. 멱등키를 **저장 대상 세션 버퍼 내용의 해시**로
-  바꿔, 같은 내용 재전송(at-least-once)만 중복 처리하고 새 내용 체크포인트는 처리한다. 버퍼가
-  비면 no-op(202). 버퍼가 비면 스토어가 item 을 삭제해 seq 워터마크가 리셋되므로 워터마크는
-  판별자로 못 쓴다(내용 해시로 회피) (api-spec §2.7·§3.5, v0.15.15)
+- **session-end(I-20) 멱등키 = `(userId, sessionId)` 고정키** — BE 실측: session-end 는 세션을
+  삭제하는 종료(`NEW_CONVERSATION`·`LOGOUT`)에만 오고 `tabClose`·`inactivityTimeout`은 발화되지
+  않는다 → "하나의 `sessionId` = 하나의 논리적 종료"가 성립하므로 `session-end:{userId}:{sessionId}`
+  고정키로 같은 통지 재전송(at-least-once)만 중복 처리한다. (한때 검토한 버퍼 내용 해시 방식은
+  실재하지 않는 "재체크포인트" 방어라 폐기.) 버퍼가 비면 no-op(202) (api-spec §2.7·§3.5, v0.15.15)
 - **이슈 #62 — session-end(I-20) 계약 정렬** — `POST /events/session-end`가 상시 `400`을
   반환해 세션 종료 통지가 전부 실패하던 문제 수정. BE 실측 payload에 맞춰 `SessionEndEvent`에서
   `eventId`·`endedAt`를 제거하고 `userId`를 string → **number(BIGINT)**로 정정, `reason`은
