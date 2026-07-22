@@ -188,6 +188,41 @@ async def test_idle_sweep_enforces_configured_finalizer_concurrency(
     assert peak == 2
 
 
+async def test_idle_sweep_isolates_one_claim_failure_and_releases_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """한 claim의 DB/registry 예외가 같은 batch 결과·로그를 중단하면 안 된다."""
+    settings = get_settings()
+    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
+    failed = ActivityClaim(85, "failed", "t-failed", 0.0)
+    healthy = ActivityClaim(86, "healthy", "t-healthy", 0.0)
+    monkeypatch.setattr(
+        session_activity,
+        "claim_expired_sessions",
+        lambda **kwargs: asyncio.sleep(0, result=[failed, healthy]),
+    )
+    released: list[ActivityClaim] = []
+
+    async def _process(claim, *, idle_timeout_s):
+        if claim is failed:
+            raise TimeoutError("claim revalidation timeout")
+        await asyncio.sleep(0)
+        return finalizer.FinalizationStatus.ACCEPTED.value
+
+    async def _release(claim):
+        released.append(claim)
+
+    monkeypatch.setattr(idle_timeout, "_process_claim", _process)
+    monkeypatch.setattr(idle_timeout, "_release_claim_best_effort", _release)
+
+    result = await idle_timeout.run_idle_sweep()
+
+    assert result.claimed == 2
+    assert result.accepted == 1
+    assert result.retryable == 1
+    assert released == [failed]
+
+
 async def test_cancelled_idle_finalizer_releases_both_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

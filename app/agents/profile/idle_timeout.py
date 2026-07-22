@@ -70,10 +70,17 @@ async def run_idle_sweep() -> IdleSweepResult:
 
     async def _bounded(claim: ActivityClaim) -> str:
         async with semaphore:
-            return await _process_claim(
-                claim,
-                idle_timeout_s=settings.profile_session_idle_timeout_s,
-            )
+            try:
+                return await _process_claim(
+                    claim,
+                    idle_timeout_s=settings.profile_session_idle_timeout_s,
+                )
+            except Exception:  # noqa: BLE001 - 한 claim 실패를 같은 bounded batch에서 격리
+                # claim_is_current 같은 finalizer 바깥 DB 조회가 실패해도 다른 세션은 계속
+                # 처리한다. 즉시 해제가 실패하면 token lease가 최종 복구 경계다.
+                await _release_claim_best_effort(claim)
+                logger.warning("profile idle claim 처리 실패 — retryable로 격리", exc_info=True)
+                return FinalizationStatus.RETRYABLE.value
 
     statuses = await asyncio.gather(*(_bounded(claim) for claim in claims))
     result = IdleSweepResult(
