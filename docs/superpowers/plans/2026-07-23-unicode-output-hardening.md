@@ -362,7 +362,7 @@ Commit the chunk-safe guard as a separate logical change.
 - Consumes: unchanged `_strip_unsafe`, `_strip_unsafe_multiline`, `mask_output`, seller HITL flow
 - Produces: regression evidence for each Issue #72 trust boundary
 
-- [ ] **Step 1: RED/GREEN — seller execution/display split**
+- [x] **Step 1: RED/GREEN — seller execution/display split**
 
 Extend the existing draft/confirm test with an invalid selector/tag payload plus a maskable Bearer token.
 
@@ -373,19 +373,19 @@ Assertions:
 - Spring value contains no invalid VS/Tag characters
 - a legitimate `❤️` sequence in the description remains present in Spring and SSE
 
-- [ ] **Step 2: RED/GREEN — profile markdown**
+- [x] **Step 2: RED/GREEN — profile markdown**
 
 Return markdown containing registered and invalid sequences from the profile reader stub. Assert `/profile/me` preserves registered sequences and removes invalid payload without changing the response schema.
 
-- [ ] **Step 3: RED/GREEN — buyer recommendation boundary**
+- [x] **Step 3: RED/GREEN — buyer recommendation boundary**
 
 Cover `_sanitize_reason()` and `overall_comment` with registered/invalid sequences. Assert Spring push reasons and SSE token comments follow the same policy.
 
-- [ ] **Step 4: Update changelog**
+- [x] **Step 4: Update changelog**
 
 Add one `[Unreleased]` `Security` entry describing what and why. Do not claim an api-spec version change because the wire contract is unchanged.
 
-- [ ] **Step 5: Run boundary test set and commit**
+- [x] **Step 5: Run boundary test set and commit**
 
 ```bash
 uv run pytest \

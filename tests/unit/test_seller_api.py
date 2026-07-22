@@ -564,7 +564,7 @@ def test_product_draft_executes_the_sanitized_after_value(
             DraftChange(
                 field="description",
                 before="기존\x1b[31m 설명\u200b\u202e",
-                after="새\n설명 Bearer abcdefghijklmnop1234\u200b\u202e",
+                after="새\n설명 ❤️ Bearer abcdefghijklmnop1234 A\ufe0fB\U000e0061",
             )
         ],
         summary="설명 수정",
@@ -580,8 +580,10 @@ def test_product_draft_executes_the_sanitized_after_value(
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert draft["changes"][0]["after"] == "새\n설명 [민감 정보 차단]"
-    assert spring.patch.description == "새\n설명 Bearer abcdefghijklmnop1234"
+    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감 정보 차단] AB"
+    assert spring.patch.description == "새\n설명 ❤️ Bearer abcdefghijklmnop1234 AB"
+    assert "[민감 정보 차단]" not in spring.patch.description
+    assert all(char not in spring.patch.description for char in ("\ufe0fB", "\U000e0061"))
 
 
 def test_draft_changes_field_is_camelcase(monkeypatch: pytest.MonkeyPatch) -> None:

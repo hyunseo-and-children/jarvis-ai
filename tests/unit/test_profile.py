@@ -111,6 +111,21 @@ def test_is_remember_command() -> None:
     assert not is_remember_command("기억해줘도 상관없어")  # 활용형(줘도) 제외
 
 
+async def test_profile_me_preserves_registered_and_removes_invalid_unicode() -> None:
+    """프로필 HTTP 경계는 정상 VS·IVS를 보존하고 비정상 은닉 payload만 제거한다."""
+    store = await get_profile_store()
+    await store.set_summary(
+        "322",
+        "# 취향 ❤️\n- A\ufe0fB\U000e0061 㐂\U000e0100",
+        "2026-07-20T09:00:00+00:00",
+    )
+
+    response = client.get("/profile/me", headers=_member_bearer("322"))
+
+    assert response.status_code == 200
+    assert response.json()["markdown"] == "# 취향 ❤️\n- AB 㐂\U000e0100"
+
+
 # ─────────── builder (델타·consolidation) ───────────
 
 

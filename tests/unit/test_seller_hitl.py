@@ -120,12 +120,13 @@ def test_validate_draft_sanitizes_without_masking_executable_value() -> None:
             DraftChange(
                 field="description",
                 before="기존 설명",
-                after="키 sk-abcdefghijklmnop1234\u200b",
+                after="키 ❤️ sk-abcdefghijklmnop1234 A\ufe0fB\U000e0061",
             )
         ]
     )
 
-    assert record.changes[0].after == "키 sk-abcdefghijklmnop1234"
+    assert record.changes[0].after == "키 ❤️ sk-abcdefghijklmnop1234 AB"
+    assert "[민감 정보 차단]" not in record.changes[0].after
 
 
 def test_validate_draft_rejects_uncastable_int() -> None:
