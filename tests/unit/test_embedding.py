@@ -35,6 +35,21 @@ class _FakeClient:
         self.models = _FakeModels(vectors)
 
 
+class _CapturingModels:
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self._vectors = vectors
+        self.last_config = None
+
+    def embed_content(self, *, model, contents, config):
+        self.last_config = config
+        return _FakeResponse(self._vectors)
+
+
+class _CapturingClient:
+    def __init__(self, vectors: list[list[float]]) -> None:
+        self.models = _CapturingModels(vectors)
+
+
 def test_embed_texts_calls_google_and_l2_normalizes(monkeypatch):
     settings = Settings(_env_file=None, google_api_key="test-key", embedding_dim=3)
     monkeypatch.setattr(emb, "get_settings", lambda: settings)
@@ -83,3 +98,25 @@ def test_embed_texts_wraps_malformed_response_parsing_as_embedding_error(monkeyp
 
     with pytest.raises(emb.EmbeddingError):
         emb.embed_texts(["hello"])
+
+
+def test_embed_texts_passes_task_type_when_given(monkeypatch):
+    settings = Settings(_env_file=None, google_api_key="test-key", embedding_dim=3)
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _CapturingClient([[3.0, 4.0, 0.0]])
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    emb.embed_texts(["q"], task_type="RETRIEVAL_QUERY")
+
+    assert client.models.last_config.task_type == "RETRIEVAL_QUERY"
+
+
+def test_embed_texts_omits_task_type_by_default(monkeypatch):
+    settings = Settings(_env_file=None, google_api_key="test-key", embedding_dim=3)
+    monkeypatch.setattr(emb, "get_settings", lambda: settings)
+    client = _CapturingClient([[3.0, 4.0, 0.0]])
+    monkeypatch.setattr(emb, "_client", lambda api_key: client)
+
+    emb.embed_texts(["d"])
+
+    assert getattr(client.models.last_config, "task_type", None) is None
