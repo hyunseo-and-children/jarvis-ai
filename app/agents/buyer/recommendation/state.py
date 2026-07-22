@@ -53,16 +53,34 @@ class CartIntent:
 
 
 @dataclass
+class CategoryQuery:
+    """decompose 가 추출한 카테고리 추측 1건(이슈 #59, 방식 A).
+
+    raw_category 는 LLM 의 자유 추측(매핑 전, DB 실재값이 아닐 수 있음), query 는 그 카테고리
+    전용 검색 키워드(fan-out leg 에서 사용). 그래프가 raw_category 를 임베딩 보정해 canonical
+    카테고리로 바꾼다.
+    """
+
+    raw_category: str | None = None
+    query: str | None = None
+
+
+@dataclass
 class RouteDecision:
     """decompose(Haiku) 1회 산출 — intent 라우팅 + 병합 필터/의미쿼리/case + 폴백 답변 + 장바구니 의도."""
 
     intent: Literal["recommend", "cart_add", "cart_view", "general"]
     filters: ProductSearchFilters
     semantic_query: str
-    case: int = 2
+    case: int = 2  # [폐기, 이슈 #59] 미사용 — 단일/멀티는 len(category_queries)로 판정, 파싱만 유지
     reply: str = ""  # intent == general 일 때만 사용자에게 줄 답변
     cart: CartIntent | None = None  # intent == cart_add/cart_view 일 때
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
+    # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
+    category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
+    categories: list[str] = field(
+        default_factory=list
+    )  # 매핑 후 canonical(그래프가 채움, never-null)
 
 
 @dataclass

@@ -21,6 +21,7 @@ from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.graph import stream_cart_add, stream_cart_view
 from app.agents.buyer.cart.state import get_cart_store
 from app.agents.buyer.fallback import stream_fallback
+from app.agents.buyer.recommendation.category_mapping import map_categories as _map_categories
 from app.agents.buyer.recommendation.decompose import decompose
 from app.agents.buyer.recommendation.state import get_revert_store
 from app.agents.buyer.recommendation.graph import stream_recommendation
@@ -84,11 +85,12 @@ async def run_buyer_turn(
     llm=None,
     search=None,
     push_fn=None,
+    map_categories=None,
     observer=None,
 ) -> AsyncIterator[str]:
     """구매자 1턴을 SSE 프레임으로 스트리밍한다(open_stream 이 감싸는 inner).
 
-    llm/search/push_fn 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
+    llm/search/push_fn/map_categories 미지정 시 라이브 기본값 — 테스트는 fake 를 주입한다.
     LLM 미구성(개발·CI)이면 네트워크 호출 없이 곧바로 LLM_UNAVAILABLE error 를 낸다.
     """
     settings = get_settings()
@@ -149,6 +151,7 @@ async def run_buyer_turn(
             tier="fast",
             last_recommendations=last_reco,
             pending_cart=pending_dict,
+            category_fanout_max=settings.category_fanout_max,
         )
     except LLMError as exc:
         code = "LLM_TIMEOUT" if _is_timeout(exc) else "LLM_UNAVAILABLE"
@@ -188,7 +191,21 @@ async def run_buyer_turn(
             yield frame
         return
 
-    # recommend — 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
+    # recommend — 카테고리 하이브리드 매핑(이슈 #59, 방식 A): decompose 추측을 canonical 로
+    # 보정(never-null). 매핑 자체가 죽어도 추천 스트림은 계속(최후 방어 — raw 그대로).
+    mapper = map_categories or _map_categories
+    try:
+        decision.categories = await mapper(
+            category_queries=decision.category_queries,
+            utterance=request.message,
+            settings=settings,
+        )
+    except Exception:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
+        decision.categories = [q.raw_category for q in decision.category_queries if q.raw_category]
+    if decision.categories:
+        decision.filters.category = decision.categories[0]  # 대표값(단일 필드·칩·멀티턴 승계 호환)
+
+    # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     await thread_store.put(thread_key, decision.filters)
     # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
     # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.

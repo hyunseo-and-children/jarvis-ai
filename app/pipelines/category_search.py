@@ -30,6 +30,29 @@ def rank_categories(
     return [cat for _, cat in scored[:k]]
 
 
+def exact_lookup(values: Sequence[str], dsn: str) -> set[str]:
+    """`categories` 테이블에 그대로 존재하는 값들의 집합을 1왕복으로 조회한다(이슈 #59).
+
+    decompose 추측이 이미 canonical(실재 카테고리)인지 판정한다 — 임베딩 보정 앞단의 빠른 길.
+    빈 입력은 즉시 빈 집합(불필요한 조회 회피).
+    """
+    vals = [v for v in values if v]
+    if not vals:
+        return set()
+    from psycopg_pool import ConnectionPool  # noqa: PLC0415 - LAZY import(유닛테스트 pg 의존 회피)
+
+    pool = ConnectionPool(dsn, open=True)
+    try:
+        with pool.connection() as conn:
+            rows = conn.execute(
+                "SELECT category FROM categories WHERE category = ANY(%s)",
+                (vals,),
+            ).fetchall()
+        return {row[0] for row in rows}
+    finally:
+        pool.close()
+
+
 def search_categories_pg(query_vec: list[float], dsn: str, *, k: int) -> list[str]:
     """pg-catalog `categories` 에서 코사인 top-k 카테고리를 직접 조회한다(HNSW).
 

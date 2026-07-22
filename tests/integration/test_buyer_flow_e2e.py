@@ -149,6 +149,52 @@ def test_conditions_chips_emitted_before_products_ready(client, spring, llm) -> 
     assert types.index("conditions") < types.index("products.ready")
 
 
+def test_mapped_category_overrides_decompose_into_search(client, spring, llm, monkeypatch) -> None:
+    """카테고리 하이브리드 배선(이슈 #59, 방식 A) — map_categories 산출(canonical)이
+    filters.category 를 덮어 I-1 검색의 categoryName 으로 나간다.
+
+    decompose 는 raw 추측("여행용품")을 내지만 매핑이 canonical("캠핑용품")로 보정하면
+    검색에 실리는 건 **매핑값**이어야 한다 — 그래프가 매퍼 결과를 실제로 반영하는지(배선) 검증.
+    매퍼는 임베딩/DB 없이 결정적 fake 로 주입(get_llm 픽스처와 동일한 모듈 monkeypatch 패턴).
+    """
+    import app.agents.buyer.graph as buyer_graph
+
+    # 매핑 대상(canonical)이 실제로 검색되도록 카탈로그에 캠핑용품 1건 추가
+    spring.catalog.append(
+        {
+            "productId": 201,
+            "name": "초경량 캠핑 파우치",
+            "price": 21000,
+            "categoryName": "캠핑용품",
+            "brandName": "캠퍼스",
+            "rating": 4.4,
+            "reviewCount": 64,
+        }
+    )
+    # decompose 는 categoryQueries 추측 + raw filters.category("여행용품")
+    llm._decompose = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "semanticQuery": "여행용 파우치",
+        "categoryQueries": [{"category": "여행용품", "query": "여행 파우치"}],
+        "filters": {"category": "여행용품", "priceMax": 30000},
+    }
+
+    async def _fake_map(*, category_queries, utterance, settings):
+        # 추측을 canonical 로 보정했다고 가정(never-null) — 배선만 검증
+        return ["캠핑용품"]
+
+    monkeypatch.setattr(buyer_graph, "_map_categories", _fake_map)
+
+    resp = _chat(client, headers=auth_header())
+    assert resp.status_code == 200
+
+    search = spring.requests_to("/internal/products/search")[0]
+    # [HARD] 매핑값(캠핑용품)이 raw 추측(여행용품)을 덮어 검색에 실린다 — 매퍼 결과 배선 확인
+    assert search["query"]["categoryName"] == "캠핑용품"
+
+
 def test_cart_add_flow_reaches_spring(client, spring, llm) -> None:
     """ "담아줘" — 직전 추천 상품이 I-2 로 담기고 SSE action 이 나간다 (§4.1).
 

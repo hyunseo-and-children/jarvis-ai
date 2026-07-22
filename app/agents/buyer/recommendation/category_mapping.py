@@ -1,0 +1,87 @@
+"""카테고리 매핑 오케스트레이션 (이슈 #59, 방식 A — LLM 추측 → 임베딩 보정).
+
+decompose 가 추측한 카테고리(raw)들을 실제 DB 카테고리(canonical)로 보정한다. LLM 재호출
+없이 exact match → 임베딩 최근접 → 발화 폴백 순으로 처리하며, **never-null**(정상 흐름은 항상
+canonical 을 낸다). embed·search·exact 는 주입형 seam 이라 유닛테스트가 pg·API 없이 돈다.
+
+블로킹 호출(embed_texts·pgvector 조회·exact SELECT)은 asyncio.to_thread 로 감싸 이벤트 루프를
+막지 않는다(search_service 와 동일 패턴).
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from collections.abc import Callable, Sequence
+
+from app.agents.buyer.recommendation.state import CategoryQuery
+from app.pipelines.category_search import exact_lookup as _exact_lookup
+from app.pipelines.category_search import search_categories_pg as _search_top_k
+from app.pipelines.embedding import embed_texts as _embed_texts
+
+logger = logging.getLogger(__name__)
+
+EmbedFn = Callable[[list[str]], list[list[float]]]
+SearchFn = Callable[..., list[str]]
+ExactFn = Callable[[Sequence[str], str], set[str]]
+
+
+def _dedup_truncate(values: list[str], fanout_max: int) -> list[str]:
+    """순서 보존 dedup 후 fanout_max 로 절단(같은 canonical 로 모인 추측 합침)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for v in values:
+        if v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out[:fanout_max]
+
+
+async def map_categories(
+    *,
+    category_queries: Sequence[CategoryQuery],
+    utterance: str,
+    settings,
+    embed: EmbedFn = _embed_texts,
+    search_top_k: SearchFn = _search_top_k,
+    exact_lookup: ExactFn = _exact_lookup,
+) -> list[str]:
+    """decompose 추측들을 canonical 카테고리 리스트로 보정한다(never-null).
+
+    per-category 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
+    embed(raw) 최근접. (3) raw==null → embed(발화) top-1 폴백. (4) 빈 리스트 → 발화 폴백 1건.
+    (5) 하드 실패(embed/DB 예외) → raw 그대로(있으면)·null 스킵.
+    """
+    dsn = settings.catalog_db_url
+    k = settings.category_top_k
+    fanout_max = settings.category_fanout_max
+    queries = list(category_queries) or [CategoryQuery(None, None)]  # 빈 리스트 → 발화 폴백
+    raws = [q.raw_category for q in queries]
+
+    try:
+        non_null = [r for r in raws if r]
+        exact = await asyncio.to_thread(exact_lookup, non_null, dsn) if non_null else set()
+        # 보정(임베딩) 필요한 것: exact 가 아닌 raw(=raw 앵커) 또는 null(=발화 앵커)
+        need_idx = [i for i, r in enumerate(raws) if not (r and r in exact)]
+        anchors = [raws[i] or utterance for i in need_idx]
+        vecs = await asyncio.to_thread(embed, anchors) if anchors else []
+        nearest: dict[int, str | None] = {}
+        for j, i in enumerate(need_idx):
+            hits = await asyncio.to_thread(search_top_k, vecs[j], dsn, k=k)
+            nearest[i] = hits[0] if hits else None
+    except Exception as exc:  # noqa: BLE001 - 하드 실패는 사유 무관 degrade(never-null 유지)
+        logger.warning("category_hard_fail", extra={"reason": str(exc)})
+        return _dedup_truncate([r for r in raws if r], fanout_max)
+
+    result: list[str] = []
+    for i, r in enumerate(raws):
+        if r and r in exact:
+            logger.info("category_mapped", extra={"raw": r, "canonical": r})
+            result.append(r)
+            continue
+        canonical = nearest.get(i)
+        if canonical:
+            event = "category_repaired" if r else "category_fallback_top1"
+            logger.info(event, extra={"raw": r, "canonical": canonical})
+            result.append(canonical)
+    return _dedup_truncate(result, fanout_max)
