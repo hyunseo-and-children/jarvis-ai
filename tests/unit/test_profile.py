@@ -854,6 +854,7 @@ async def test_processed_events_operations_have_query_deadline(
             lambda: processed_events.unmark_event("e"),
             lambda: processed_events.claim_event("e", lease_s=1),
             lambda: processed_events.complete_claim("e", "token"),
+            lambda: processed_events.claim_is_current("e", "token"),
             lambda: processed_events.release_claim("e", "token"),
         ]
         for operation in operations:

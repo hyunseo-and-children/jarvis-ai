@@ -39,6 +39,23 @@ class _FallbackEvent:
     lease_deadline: float | None = None
 
 
+def session_end_event_id(user_id: str | int, session_id: str) -> str:
+    """세션 종료/idle checkpoint가 공유하는 고정 멱등키를 만든다."""
+    return f"session-end:{int(user_id)}:{session_id}"
+
+
+async def invalidate_session_end_on_connection(
+    conn,  # noqa: ANN001 - caller-owned psycopg AsyncConnection
+    user_id: str | int,
+    session_id: str,
+) -> None:
+    """새 회원 발화와 같은 transaction에서 이전 세션 종료 generation을 무효화한다."""
+    await conn.execute(
+        "DELETE FROM processed_events WHERE event_id = %s",
+        (session_end_event_id(user_id, session_id),),
+    )
+
+
 def set_pool(pool: AsyncConnectionPool | None) -> None:
     """풀 교체(테스트용) — None 이면 다음 사용 시 재초기화한다.
 
@@ -396,6 +413,35 @@ async def complete_claim(event_id: str, token: str) -> bool:
                     WHERE event_id = %s AND status = 'processing' AND claim_token = %s
                     RETURNING event_id
                     """,
+                    (event_id, token),
+                )
+            ).fetchone()
+        return row is not None
+
+    return await run_with_query_timeout(_run())
+
+
+async def claim_is_current(event_id: str, token: str) -> bool:
+    """현재 token이 아직 PROCESSING claim을 소유하는지 확인한다."""
+    pool = await _get_pool()
+    if pool is None:
+        assert _fallback_pool is not None
+        current = _fallback_pool.get(event_id)
+        return bool(
+            current is not None
+            and current.status == "processing"
+            and current.claim_token == token
+            and current.lease_deadline is not None
+            and current.lease_deadline > time.monotonic()
+        )
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT 1 FROM processed_events "
+                    "WHERE event_id = %s AND status = 'processing' AND claim_token = %s "
+                    "AND lease_expires_at > now()",
                     (event_id, token),
                 )
             ).fetchone()

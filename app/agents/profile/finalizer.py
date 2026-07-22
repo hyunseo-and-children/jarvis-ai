@@ -10,7 +10,7 @@ from typing import Awaitable, Callable
 
 from app.agents.profile import processed_events, session_activity
 from app.agents.profile.builder import ConsolidationResult, consolidate, generate_session_delta
-from app.agents.profile.session_activity import ActivityClaim
+from app.agents.profile.session_activity import ActivityClaim, SessionActivity
 from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import Settings, get_settings
 from app.core.conversation import conversation_key
@@ -93,6 +93,29 @@ async def _complete_activity_best_effort(
         return False
 
 
+async def _complete_terminal_activity_best_effort(
+    user_id: int,
+    session_id: str,
+    observed: SessionActivity | None,
+    *,
+    log: logging.Logger,
+) -> bool:
+    try:
+        completed = await session_activity.complete_terminal_session(
+            user_id,
+            session_id,
+            observed=observed,
+        )
+        if not completed:
+            log.info("session-end 처리 중 새 activity 감지 — terminal 완료 취소")
+        return completed
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        log.warning("profile terminal activity 완료 기록 실패 — 재시도 필요", exc_info=True)
+        return False
+
+
 async def finalize_profile_session(
     user_id: str | int,
     session_id: str,
@@ -116,10 +139,11 @@ async def finalize_profile_session(
     numeric_user_id = int(user_id)
     user_key = str(numeric_user_id)
     key = conversation_key(user_key, session_id)
-    dedup_key = f"session-end:{user_key}:{session_id}"
+    dedup_key = processed_events.session_end_event_id(numeric_user_id, session_id)
     processed_token: str | None = None
     processed_completed = False
     activity_completed = False
+    terminal_activity: SessionActivity | None = None
 
     try:
         processed_token = await processed_events.claim_event(
@@ -127,14 +151,12 @@ async def finalize_profile_session(
             lease_s=resolved_settings.session_end_claim_ttl_s,
         )
         if processed_token is None:
-            if await processed_events.get_status(dedup_key) == "completed":
-                activity_completed = await _complete_activity_best_effort(
-                    numeric_user_id,
-                    session_id,
-                    activity_claim,
-                    log=target_log,
-                )
             return FinalizationResult(FinalizationStatus.DUPLICATE)
+
+        if terminal:
+            terminal_activity = await session_activity.get_session(numeric_user_id, session_id)
+            if not await processed_events.claim_is_current(dedup_key, processed_token):
+                return FinalizationResult(FinalizationStatus.RETRYABLE)
 
         factory = store_factory or get_profile_store
         store = await factory()
@@ -161,15 +183,24 @@ async def finalize_profile_session(
             await store.clear_session_ctx_upto(key, watermark)
 
         if terminal:
+            activity_completed = await _complete_terminal_activity_best_effort(
+                numeric_user_id,
+                session_id,
+                terminal_activity,
+                log=target_log,
+            )
+            if not activity_completed:
+                return FinalizationResult(FinalizationStatus.RETRYABLE)
             processed_completed = await processed_events.complete_claim(dedup_key, processed_token)
             if not processed_completed:
                 raise RuntimeError("session-end claim ownership lost")
-        activity_completed = await _complete_activity_best_effort(
-            numeric_user_id,
-            session_id,
-            activity_claim,
-            log=target_log,
-        )
+        else:
+            activity_completed = await _complete_activity_best_effort(
+                numeric_user_id,
+                session_id,
+                activity_claim,
+                log=target_log,
+            )
         return FinalizationResult(FinalizationStatus.ACCEPTED)
     except asyncio.CancelledError:
         raise

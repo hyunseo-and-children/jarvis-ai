@@ -204,6 +204,75 @@ async def test_idle_checkpoint_allows_same_session_to_resume_and_flush_again(
     assert await store.get_session_ctx(key) == []
 
 
+async def test_terminal_end_then_stale_same_session_activity_can_checkpoint_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    llm = _LLM()
+    monkeypatch.setattr(finalizer, "get_llm", lambda: llm)
+    settings = get_settings()
+    monkeypatch.setattr(settings, "profile_session_idle_timeout_s", 600.0)
+    monkeypatch.setattr(settings, "profile_idle_claim_ttl_s", 900.0)
+    monkeypatch.setattr(settings, "profile_idle_sweep_batch_size", 10)
+    monkeypatch.setattr(settings, "profile_idle_max_concurrency", 2)
+    now = 0.0
+    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
+    store = await get_profile_store()
+    key = conversation_key("77", "stale-after-end")
+    await store.append_session_ctx(key, "종료 전 발화")
+    await session_activity.touch_session(77, "stale-after-end")
+
+    ended = await finalizer.finalize_profile_session(77, "stale-after-end")
+    assert ended.status is finalizer.FinalizationStatus.ACCEPTED
+    assert await processed_events.get_status("session-end:77:stale-after-end") == "completed"
+
+    now = 1.0
+    assert await session_activity.touch_session(77, "stale-after-end")
+    assert await processed_events.get_status("session-end:77:stale-after-end") is None
+    await store.append_session_ctx(key, "종료 직후 stale ticket 발화")
+    now = 601.0
+
+    checkpoint = await idle_timeout.run_idle_sweep()
+
+    assert checkpoint.accepted == 1
+    assert await store.get_session_ctx(key) == []
+
+
+async def test_new_activity_during_terminal_finalizer_invalidates_terminal_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delta_started = asyncio.Event()
+    allow_delta = asyncio.Event()
+
+    class _BlockingLLM(_LLM):
+        async def complete(self, **kwargs):
+            if "델타 추출기" in kwargs["system"]:
+                delta_started.set()
+                await allow_delta.wait()
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(finalizer, "get_llm", lambda: _BlockingLLM())
+    now = 0.0
+    monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
+    store = await get_profile_store()
+    key = conversation_key("78", "terminal-race")
+    await store.append_session_ctx(key, "종료가 처리할 이전 발화")
+    await session_activity.touch_session(78, "terminal-race")
+    task = asyncio.create_task(finalizer.finalize_profile_session(78, "terminal-race"))
+    await delta_started.wait()
+
+    now = 1.0
+    await session_activity.touch_session(78, "terminal-race")
+    await store.append_session_ctx(key, "종료 처리 중 들어온 새 발화")
+    allow_delta.set()
+    result = await task
+
+    assert result.status is finalizer.FinalizationStatus.RETRYABLE
+    assert await processed_events.get_status("session-end:78:terminal-race") is None
+    row = await session_activity.get_session(78, "terminal-race")
+    assert row is not None and row.status == "active"
+    assert await store.get_session_ctx(key) == ["종료 처리 중 들어온 새 발화"]
+
+
 async def test_idle_finalizer_does_not_reserve_live_stream_registry(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

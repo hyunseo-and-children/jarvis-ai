@@ -16,6 +16,7 @@ from datetime import datetime
 
 from psycopg_pool import AsyncConnectionPool
 
+from app.agents.profile import processed_events
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo, run_with_query_timeout
 
@@ -179,7 +180,7 @@ async def _get_pool() -> AsyncConnectionPool | None:
 
 
 async def touch_on_connection(conn, user_id: int, session_id: str) -> bool:  # noqa: ANN001
-    """현재 DB transaction에서 활동을 touch한다. idle-completed 세션도 새 발화로 재개한다."""
+    """현재 DB transaction에서 활동과 세션 종료 generation을 함께 갱신한다."""
     row = await (
         await conn.execute(
             """
@@ -194,6 +195,7 @@ async def touch_on_connection(conn, user_id: int, session_id: str) -> bool:  # n
             (user_id, session_id),
         )
     ).fetchone()
+    await processed_events.invalidate_session_end_on_connection(conn, user_id, session_id)
     return row is not None
 
 
@@ -204,6 +206,9 @@ async def touch_session(user_id: int, session_id: str) -> bool:
         assert _fallback_rows is not None
         key = (user_id, session_id)
         _fallback_rows[key] = _FallbackActivity(last_activity_at=_monotonic())
+        await processed_events.unmark_event(
+            processed_events.session_end_event_id(user_id, session_id)
+        )
         return True
 
     async def _run() -> bool:
@@ -415,6 +420,72 @@ async def complete_session(user_id: int, session_id: str, *, token: str | None =
                         RETURNING user_id
                         """,
                         (user_id, session_id, token),
+                    )
+                ).fetchone()
+        return row is not None
+
+    return await run_with_query_timeout(_run())
+
+
+async def complete_terminal_session(
+    user_id: int,
+    session_id: str,
+    *,
+    observed: SessionActivity | None,
+) -> bool:
+    """관찰한 activity generation이 그대로일 때만 terminal COMPLETED로 전환한다.
+
+    Spring 종료 처리 중 새 회원 발화가 저장되면 touch가 ``last_activity_at``을 바꾸고
+    processed-event claim도 삭제한다. 이 조건부 완료는 뒤늦게 끝난 finalizer가 그 새
+    generation을 다시 COMPLETED로 덮는 것을 막는다.
+    """
+    pool = await _get_pool()
+    if pool is None:
+        assert _fallback_rows is not None
+        key = (user_id, session_id)
+        current = _fallback_rows.get(key)
+        if observed is None:
+            if current is not None:
+                return False
+            _fallback_rows[key] = _FallbackActivity(
+                last_activity_at=_monotonic(),
+                status="completed",
+            )
+            return True
+        if current is None or current.last_activity_at != observed.last_activity_at:
+            return False
+        current.status = "completed"
+        current.claim_token = None
+        current.lease_expires_at = None
+        return True
+
+    async def _run() -> bool:
+        async with pool.connection() as conn:
+            if observed is None:
+                row = await (
+                    await conn.execute(
+                        """
+                        INSERT INTO profile_session_activity (
+                            user_id, session_id, last_activity_at, status, updated_at
+                        ) VALUES (%s, %s, now(), 'completed', now())
+                        ON CONFLICT (user_id, session_id) DO NOTHING
+                        RETURNING user_id
+                        """,
+                        (user_id, session_id),
+                    )
+                ).fetchone()
+            else:
+                row = await (
+                    await conn.execute(
+                        """
+                        UPDATE profile_session_activity
+                        SET status = 'completed', claim_token = NULL,
+                            lease_expires_at = NULL, updated_at = now()
+                        WHERE user_id = %s AND session_id = %s
+                          AND last_activity_at = %s
+                        RETURNING user_id
+                        """,
+                        (user_id, session_id, observed.last_activity_at),
                     )
                 ).fetchone()
         return row is not None

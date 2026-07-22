@@ -15,7 +15,9 @@
   주기의 bounded `FOR UPDATE SKIP LOCKED` sweep으로 선점한다. Spring I-20(`logout`·
   `newConversation`)과 timeout은 고정키 claim으로 직렬화되는 공통 finalizer를 사용한다. Spring
   종료만 멱등키를 영구 완료하고, idle 처리는 재개 가능한 checkpoint로 claim을 해제하여 같은
-  sessionId의 후속 발화를 다시 flush한다. scheduler는 라이브 스트림 슬롯을 점유하지 않으며,
+  sessionId의 후속 발화를 다시 flush한다. 새 회원 발화는 같은 DB transaction에서 이전
+  `PROCESSING`/`COMPLETED` 종료 generation을 무효화하고, terminal finalizer는 처리 중 갱신된
+  activity를 `COMPLETED`로 덮지 않는다. scheduler는 라이브 스트림 슬롯을 점유하지 않으며,
   처리 동시성 상한, claim lease/crash 복구, claim별 오류 격리, LLM 실패 시 버퍼 보존을 포함한다.
   `tabClose` 신호나 추가 HTTP API는 도입하지 않았다. (api-spec §3.5, v0.15.19;
   SPEC-PROFILE-001 v0.4.0)

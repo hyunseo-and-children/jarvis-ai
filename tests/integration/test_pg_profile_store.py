@@ -357,6 +357,21 @@ async def test_session_activity_atomic_claim_touch_invalidation_and_completion()
         assert await session_activity.touch_session(user_id, session_id)
         row = await session_activity.get_session(user_id, session_id)
         assert row is not None and row.status == "active"
+        observed = row
+        await asyncio.sleep(0.002)
+        assert await session_activity.touch_session(user_id, session_id)
+        assert not await session_activity.complete_terminal_session(
+            user_id,
+            session_id,
+            observed=observed,
+        )
+        current = await session_activity.get_session(user_id, session_id)
+        assert current is not None and current.status == "active"
+        assert await session_activity.complete_terminal_session(
+            user_id,
+            session_id,
+            observed=current,
+        )
     finally:
         await _delete_activity(user_id, session_id)
         session_activity.set_pool(None)

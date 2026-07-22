@@ -219,6 +219,7 @@ async def test_session_activity_queries_have_application_deadline(
             ),
             lambda: session_activity.claim_is_current(claim, idle_timeout_s=1),
             lambda: session_activity.complete_session(1, "s"),
+            lambda: session_activity.complete_terminal_session(1, "s", observed=None),
             lambda: session_activity.release_claim(claim),
         ]
         for operation in operations:
