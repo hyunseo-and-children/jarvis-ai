@@ -68,10 +68,13 @@ def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http
     # Spring 이 표시 필드를 채워 돌려준다(AI 는 미보유)
     assert all("price" in c for c in cards)
 
-    # push 본문은 숫자 id 목록만 — 표시 필드 미포함(§4.2)
+    # push 본문은 id 목록 + 상품별 근거(reasons)만 — 표시 필드(price/image) 미포함(§4.2)
     pushed = spring.requests_to("/internal/recommendations")[0]["body"]
-    assert set(pushed) == {"sessionId", "listId", "productIds"}
+    assert set(pushed) == {"sessionId", "listId", "productIds", "reasons"}
     assert all(isinstance(pid, int) for pid in pushed["productIds"])
+    # reasons 는 {productId, reason} 항목 — productId 로 키잉(순서 권위는 productIds, §4.2)
+    assert all(set(r) == {"productId", "reason"} for r in pushed["reasons"])
+    assert all(isinstance(r["productId"], int) for r in pushed["reasons"])
 
 
 def test_rerank_order_is_preserved_into_push(client, spring, llm) -> None:

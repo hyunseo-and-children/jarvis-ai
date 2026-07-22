@@ -9,6 +9,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import asyncio
+import re
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -28,7 +29,7 @@ from app.schemas.chat import (
     SuggestionsData,
     TokenData,
 )
-from app.schemas.spring import ProductSearchResult, RecommendationPush
+from app.schemas.spring import ProductSearchResult, RecoReason, RecommendationPush
 from app.services.spring_client import SpringUnavailableError
 
 _INACTIVE_STATUSES = frozenset(
@@ -39,6 +40,32 @@ _INACTIVE_STATUSES = frozenset(
 def _now() -> datetime:
     """현재 시각 — naive-UTC(ordered_at 정규화와 동일 기준으로 비교, 테스트 주입 지점)."""
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+# 비-whitespace 제어문자(C0/C1: NUL·ESC·DEL 등 — \t\n\r 은 아래 WS 접기로 넘김)와
+# zero-width·bidi 포맷 문자(ZWSP·RTL override 등) 제거 — ANSI 이스케이프·양방향 조작·주입 방어.
+_CTRL = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]"
+)
+_WS_RUN = re.compile(r"\s+")
+
+
+def _sanitize_reason(text: str, max_len: int) -> str:
+    """I-21 reason 방어 정제 — 제어·포맷 문자 제거 + 연속 공백 접기 + 안전 상한 truncate.
+
+    rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계(→Spring→CH-5→FE)를
+    넘기 전에 정제한다(§4.2 이슈 #61). (1) 비-whitespace 제어문자(NUL·ESC·DEL 등)와 zero-width·bidi
+    포맷 문자를 제거하고(`\\s` 로는 안 걸리는 표시 조작/주입 문자), (2) 남은 공백류(개행 포함)를 단일
+    공백으로 접은 뒤, (3) max_len 방어캡으로 자른다. 표시 목표(한글 40자)는 프롬프트로 유도하고, max_len
+    은 비정상 초장문·인젝션성 텍스트를 막는 넉넉한 캡이라 정상값은 걸리지 않는다. 초과 시 말줄임표 부착.
+    """
+    stripped = _CTRL.sub("", text)
+    collapsed = _WS_RUN.sub(" ", stripped).strip()
+    if max_len <= 0:  # 오설정 방어 — 0 이하 상한은 음수 슬라이스로 뒤집히지 않게 차단
+        return ""
+    if len(collapsed) > max_len:
+        collapsed = collapsed[: max_len - 1].rstrip() + "…"
+    return collapsed
 
 
 async def stream_recommendation(
@@ -163,9 +190,11 @@ async def stream_recommendation(
             expose_max=settings.expose_max,
         )
         ranked_ids = [pid for pid, _ in rr.ranked]
+        reason_by_id = dict(rr.ranked)  # 상품별 근거(§4.2) — (productId, rationale) 튜플 → 맵
         comment = rr.overall_comment
     except LLMError:
         ranked_ids = [p.product_id for p in candidates[: settings.expose_max]]
+        reason_by_id = {}  # degrade 경로엔 rerank 근거 없음 — reasons 는 빈 배열(계약상 선택)
         comment = "요청하신 조건으로 찾은 상품들이에요."
 
     # 노출 개수 보정 — rerank 가 expose_min 미만을 내면 검색순서(하드 제약 반영)로 채우고
@@ -188,8 +217,19 @@ async def stream_recommendation(
 
     # push — I-21(경로 B). 성공 시에만 products.ready emit(§3.3).
     list_id = uuid4().hex
+    # reasons — 근거가 있는 상품만(빈 rationale·expose_min 보충 상품은 제외). productId 로 키잉,
+    # 순서 권위는 product_ids 라 정렬 불필요(부분집합 허용, §4.2 이슈 #61).
+    # push(신뢰경계) 직전 정제 — 개행 제거·안전 상한(config, 판매자 입력 영향 자유 텍스트 방어).
+    reasons = [
+        RecoReason(product_id=pid, reason=cleaned)
+        for pid in ranked_ids
+        if (cleaned := _sanitize_reason(reason_by_id.get(pid, ""), settings.reason_max_len))
+    ]
     push = RecommendationPush(
-        session_id=request.session_id, list_id=list_id, product_ids=ranked_ids
+        session_id=request.session_id,
+        list_id=list_id,
+        product_ids=ranked_ids,
+        reasons=reasons,
     )
     try:
         pushed = bool(await push_fn(push))

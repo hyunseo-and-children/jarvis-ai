@@ -95,6 +95,10 @@ async def test_happy_path_pipeline() -> None:
     assert push.pushes[0].product_ids[:2] == [101, 102]
     assert set(push.pushes[0].product_ids) <= {101, 102, 103}
 
+    # reasons — rerank rationale 있는 상품만(101,102). expose_min 보충 103 은 근거 없어 제외(이슈 #61).
+    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    assert reasons == {101: "가성비가 좋아요", 102: "음질이 우수해요"}
+
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
 
@@ -154,6 +158,8 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert types[-1] == "done"
     # 검색 순서(101,102,103) 상위 노출 — rerank 없이도 하드 제약(검색 반영) 유지.
     assert push.pushes[0].product_ids == [101, 102, 103]
+    # degrade 경로엔 rerank rationale 이 없으므로 reasons 는 빈 배열(계약상 선택 필드, 이슈 #61).
+    assert push.pushes[0].reasons == []
 
 
 async def test_push_failure_skips_products_ready() -> None:
@@ -272,6 +278,57 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     ids = push.pushes[0].product_ids
     assert 999 not in ids  # 후보 외 id 제거(REQ-REC-081)
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
+
+
+def test_sanitize_reason_strips_control_and_format_chars() -> None:
+    """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
+
+    `\\s` 로는 안 걸리는 표시 조작/주입 문자를 신뢰경계 전에 실제로 벗긴다(§4.2 이슈 #61 보안).
+    """
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    dirty = "방수\x1b[31m등급\x00이\x7f 높아요​‮"
+    clean = _sanitize_reason(dirty, 200)
+    for ch in ("\x1b", "\x00", "\x7f", "​", "‮"):
+        assert ch not in clean
+    # 제어/포맷 문자만 타깃 — 정상 한글·기호 텍스트는 보존.
+    assert "방수" in clean and "등급" in clean and "높아요" in clean
+
+
+def test_sanitize_reason_nonpositive_cap_blocks() -> None:
+    """max_len<=0(오설정)이면 방어캡이 원문을 차단한다 — 경계값에서 무력화되지 않음(PR #66 리뷰)."""
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    text = "가나다라마바사"  # 7자
+    assert _sanitize_reason(text, 0) == ""  # 0 = 사실상 차단(빈 문자열 → reasons 에서 생략)
+    assert _sanitize_reason(text, -5) == ""  # 음수도 통과 안 함
+    assert len(_sanitize_reason(text, 3)) <= 3  # 작은 양수 상한은 지켜짐
+
+
+async def test_reason_sanitized_and_capped_before_push() -> None:
+    """reason 은 push 전 정제된다 — 개행/제어문자 제거 + 안전 상한 truncate (이슈 #61 보안).
+
+    rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계를 넘기 전에
+    방어한다. 정상 40자 reason 은 무영향, 비정상 초장문/개행만 차단.
+    """
+    settings = get_settings()
+    long_reason = "방수\n등급이\t높아요 " + ("가" * (settings.reason_max_len + 50))
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": long_reason}],
+            "overallComment": "c",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    reason_by_id = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    sent = reason_by_id[101]
+    assert "\n" not in sent and "\t" not in sent  # 개행/제어문자 제거
+    assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:

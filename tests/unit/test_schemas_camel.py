@@ -9,6 +9,7 @@ from app.schemas.chat import ChatRequest, DoneData, ProductsReadyData
 from app.schemas.spring import (
     ProductCreate,
     ProductSearchFilters,
+    RecoReason,
     RecommendationPush,
     SellerProductRow,
 )
@@ -42,13 +43,36 @@ def test_search_filters_serialize_camel() -> None:
 
 
 def test_recommendation_push_i21_serializes_camel() -> None:
-    """I-21 추천 push 는 sessionId/listId/productIds(숫자 id만) 로 직렬화된다 (§4.2 v0.15.0)."""
+    """I-21 추천 push 는 sessionId/listId/productIds(숫자 id만) 로 직렬화된다 (§4.2 v0.15.0).
+
+    reasons 미지정 시 빈 배열 — Spring 미수용 상태여도 무해한 하위호환 형태(이슈 #61).
+    """
     push = RecommendationPush(session_id="s-1", list_id="l-1", product_ids=[101, 205, 552])
     d = push.model_dump(by_alias=True)
-    assert d == {"sessionId": "s-1", "listId": "l-1", "productIds": [101, 205, 552]}
+    assert d == {"sessionId": "s-1", "listId": "l-1", "productIds": [101, 205, 552], "reasons": []}
     # 표시 필드·groups 구조 부재 확인 (경로 B — id 만 전달).
     assert "groups" not in d
     assert "price" not in d
+
+
+def test_recommendation_push_reasons_serializes_camel() -> None:
+    """I-21 reasons 는 {productId, reason} camelCase 항목으로 직렬화된다 (§4.2 v0.15.2, 이슈 #61)."""
+    push = RecommendationPush(
+        session_id="s-1",
+        list_id="l-1",
+        product_ids=[101, 205],
+        reasons=[
+            RecoReason(product_id=101, reason="방수 등급이 높아 우천 시에도 안전합니다."),
+            RecoReason(product_id=205, reason="가벼워 휴대가 편합니다."),
+        ],
+    )
+    d = push.model_dump(by_alias=True)
+    assert d["reasons"] == [
+        {"productId": 101, "reason": "방수 등급이 높아 우천 시에도 안전합니다."},
+        {"productId": 205, "reason": "가벼워 휴대가 편합니다."},
+    ]
+    # 순서 권위는 productIds — reasons 는 부분집합/순서무관 허용(계약 §4.2).
+    assert d["productIds"] == [101, 205]
 
 
 def test_seller_product_row_serializes_camel() -> None:
