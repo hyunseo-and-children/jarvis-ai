@@ -280,6 +280,21 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
 
 
+def test_sanitize_reason_strips_control_and_format_chars() -> None:
+    """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
+
+    `\\s` 로는 안 걸리는 표시 조작/주입 문자를 신뢰경계 전에 실제로 벗긴다(§4.2 이슈 #61 보안).
+    """
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    dirty = "방수\x1b[31m등급\x00이\x7f 높아요​‮"
+    clean = _sanitize_reason(dirty, 200)
+    for ch in ("\x1b", "\x00", "\x7f", "​", "‮"):
+        assert ch not in clean
+    # 제어/포맷 문자만 타깃 — 정상 한글·기호 텍스트는 보존.
+    assert "방수" in clean and "등급" in clean and "높아요" in clean
+
+
 async def test_reason_sanitized_and_capped_before_push() -> None:
     """reason 은 push 전 정제된다 — 개행/제어문자 제거 + 안전 상한 truncate (이슈 #61 보안).
 

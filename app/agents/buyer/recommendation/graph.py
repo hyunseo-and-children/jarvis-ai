@@ -42,17 +42,25 @@ def _now() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+# 비-whitespace 제어문자(C0/C1: NUL·ESC·DEL 등 — \t\n\r 은 아래 WS 접기로 넘김)와
+# zero-width·bidi 포맷 문자(ZWSP·RTL override 등) 제거 — ANSI 이스케이프·양방향 조작·주입 방어.
+_CTRL = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]"
+)
 _WS_RUN = re.compile(r"\s+")
 
 
 def _sanitize_reason(text: str, max_len: int) -> str:
-    """I-21 reason 방어 정제 — 개행·제어문자·연속 공백을 단일 공백으로 접고 안전 상한으로 자른다.
+    """I-21 reason 방어 정제 — 제어·포맷 문자 제거 + 연속 공백 접기 + 안전 상한 truncate.
 
     rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계(→Spring→CH-5→FE)를
-    넘기 전에 정제한다(§4.2 이슈 #61). 표시 목표(한글 40자)는 프롬프트로 유도하고, 여기 max_len 은
-    비정상 초장문·인젝션성 텍스트를 막는 방어캡이라 넉넉하다(정상값은 걸리지 않음). 초과 시 말줄임표 부착.
+    넘기 전에 정제한다(§4.2 이슈 #61). (1) 비-whitespace 제어문자(NUL·ESC·DEL 등)와 zero-width·bidi
+    포맷 문자를 제거하고(`\\s` 로는 안 걸리는 표시 조작/주입 문자), (2) 남은 공백류(개행 포함)를 단일
+    공백으로 접은 뒤, (3) max_len 방어캡으로 자른다. 표시 목표(한글 40자)는 프롬프트로 유도하고, max_len
+    은 비정상 초장문·인젝션성 텍스트를 막는 넉넉한 캡이라 정상값은 걸리지 않는다. 초과 시 말줄임표 부착.
     """
-    collapsed = _WS_RUN.sub(" ", text).strip()
+    stripped = _CTRL.sub("", text)
+    collapsed = _WS_RUN.sub(" ", stripped).strip()
     if len(collapsed) > max_len:
         collapsed = collapsed[: max_len - 1].rstrip() + "…"
     return collapsed
