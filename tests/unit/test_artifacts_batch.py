@@ -571,3 +571,38 @@ async def test_batch_default_embed_binds_document_task(monkeypatch):
         fetch=fetch, llm=ScriptedLLM(), store=store, settings=None, full_rebuild=False
     )
     assert seen["task_type"] == "RETRIEVAL_DOCUMENT"
+
+
+async def test_batch_records_provenance_from_settings(monkeypatch):
+    """이슈 #65: 런타임 배치가 임베딩 프로비넌스를 settings 상수로 채우는지 (embedding_meta_complete CHECK 대응)."""
+    monkeypatch.setattr(
+        _embedding,
+        "embed_texts",
+        lambda texts, *, task_type=None: [[1.0, 0.0, 0.0] for _ in texts],
+    )
+
+    async def fetch(cursor, size):
+        return ProductChangesPage(
+            items=[
+                ProductChange(
+                    productId=7,
+                    status="ON_SALE",
+                    updatedAt="2026-07-20T00:00:00Z",
+                    name="상품-7",
+                    description="설명",
+                    category="여행용품",
+                    brand="브랜드",
+                )
+            ],
+            nextCursor=None,
+            hasMore=False,
+        )
+
+    store = CatalogArtifactStore()
+    await _batch.run_artifacts_batch(fetch=fetch, llm=ScriptedLLM(), store=store)
+
+    art = store.get(7)
+    assert art.embed_model == "gemini-embedding-001"
+    assert art.embed_dim == 1536
+    assert art.embed_task == "RETRIEVAL_DOCUMENT"
+    assert art.normalized is True

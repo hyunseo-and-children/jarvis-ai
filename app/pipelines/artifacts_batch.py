@@ -70,6 +70,11 @@ async def _process_change(
             search_doc=doc,
             embedding=vec,
             extras=extras,
+            # 임베딩 프로비넌스 — settings 상수로 채움(이슈 #65, embedding_meta_complete CHECK 대응)
+            embed_model=settings.embedding_model_id,
+            embed_dim=settings.embedding_dim,
+            embed_task=settings.embedding_task_document,
+            normalized=settings.embedding_normalized,
         )
     )
 
