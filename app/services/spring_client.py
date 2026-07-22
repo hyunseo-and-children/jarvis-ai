@@ -72,6 +72,10 @@ class SpringUnavailableError(Exception):
     """Spring 서버 도달 불가/오류 응답. 상위에서 SEARCH_FAILED 등으로 매핑한다."""
 
 
+class InvalidCursorError(SpringUnavailableError):
+    """I-17 400 INVALID_CURSOR — 안전한 전체 재구축이 필요한 신호."""
+
+
 class CartOptionRequired(Exception):
     """I-2 400 CART_OPTION_REQUIRED — 옵션 필수인데 optionId 없음(§4.1). options 목록 동반."""
 
@@ -410,12 +414,23 @@ async def fetch_product_changes(cursor: str | None, limit: int = 500) -> Product
 
     GET {spring_base_url}/internal/products/changes?since={cursor}&limit={limit} + X-Internal-Token.
     응답 공통 envelope {success, data:{items, nextCursor, hasMore}}(BE 2026-07-18 확정). 도달 불가/오류/
-    스키마 불일치는 SpringUnavailableError — 배치는 커서 미전진으로 다음 주기 재개(자연 복구, §4.8).
+    스키마 불일치는 SpringUnavailableError. INVALID_CURSOR만 전용 예외로 분류해 배치가
+    since="0" 전체 재구축으로 복구하고, 나머지는 커서 미전진 상태로 다음 주기에 재개한다(§4.8).
     """
     params: dict[str, object] = {"since": cursor or "0", "limit": limit}
     try:
         async with _client() as client:
             resp = await client.get("/internal/products/changes", params=params)
+            if resp.status_code == 400:
+                try:
+                    error_body = resp.json()
+                except ValueError:
+                    error_body = None
+                if isinstance(error_body, dict):
+                    error = error_body.get("error")
+                    code = error.get("code") if isinstance(error, dict) else error_body.get("code")
+                    if code == "INVALID_CURSOR":
+                        raise InvalidCursorError("fetch_product_changes: INVALID_CURSOR")
             resp.raise_for_status()
             data = resp.json()
         # 200 이어도 success=false / data=null 은 실패 envelope — 빈 페이지로 오인해 배치가

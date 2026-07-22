@@ -69,8 +69,6 @@ async def _process_change(
             search_doc=doc,
             embedding=vec,
             extras=extras,
-            name=change.name,
-            category=change.category,
         )
     )
 
@@ -88,6 +86,7 @@ async def _drain(
     """start_cursor 부터 hasMore 소진까지 target 에 반영한다. persist_cursor=True 면 페이지마다 커서 전진.
 
     페이지 처리 중 예외는 그대로 전파 — 해당 페이지 커서 미전진으로 다음 주기 재개(자연 복구).
+    이미 성공한 앞 페이지는 artifact와 커서가 함께 저장된 유효 체크포인트이므로 롤백하지 않는다.
     """
     cursor = start_cursor
     processed = delisted = pages = 0
@@ -133,25 +132,40 @@ async def run_artifacts_batch(
             "run_artifacts_batch: LLM 미구성 — enrichment 불가(config anthropic_api_key)"
         )
 
-    if full_rebuild:
+    async def rebuild() -> BatchResult:
         # 임시 스토어에 전체 구축 후 성공 시 원자 교체 — 중간 실패해도 기존 데이터 보존 + stale 제거.
         work = CatalogArtifactStore()
-        result = await _drain(
+        rebuilt = await _drain(
             fetch, "0", work, llm=llm, embed=embed, settings=settings, persist_cursor=False
         )
-        store.replace_all(work.all())
-        store.set_cursor(result.cursor)
+        store.replace_all_and_set_cursor(work.all(), rebuilt.cursor)
+        return rebuilt
+
+    did_rebuild = full_rebuild
+    if full_rebuild:
+        result = await rebuild()
     else:
         start = store.get_cursor() or "0"
-        result = await _drain(
-            fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
-        )
+        try:
+            result = await _drain(
+                fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
+            )
+        except spring_client.InvalidCursorError:
+            checkpoint = store.get_cursor()
+            if start == "0" and checkpoint in (None, "0"):
+                raise
+            # 앞서 성공한 페이지가 있으면 그 artifact·cursor 체크포인트는 유지한다. rebuild는 별도
+            # 임시 스토어에서 수행하므로 실패해도 이 마지막 성공 체크포인트를 덮어쓰지 않는다.
+            # 최초 실행도 실제 커서가 0에서 전진했다면 이후 INVALID_CURSOR를 즉시 복구한다.
+            _log.warning("I-17 커서 무효 — since=0 원자적 전체 재구축으로 복구")
+            result = await rebuild()
+            did_rebuild = True
 
     _log.info(
         "artifacts batch: processed=%d delisted=%d pages=%d rebuild=%s",
         result.processed,
         result.delisted,
         result.pages,
-        full_rebuild,
+        did_rebuild,
     )
     return result

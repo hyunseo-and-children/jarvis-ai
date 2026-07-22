@@ -16,14 +16,12 @@ from typing import Protocol, runtime_checkable
 
 @dataclass
 class CatalogArtifact:
-    """상품 1건의 AI 생성물 (원본 컬럼 사본 아님). name·category 는 후보 표시/디버깅용 최소 보조."""
+    """상품 1건의 AI 생성물. 상품 원본 필드는 별도 컬럼으로 보관하지 않는다."""
 
     product_id: int
     search_doc: str
     embedding: list[float]
     extras: dict = field(default_factory=dict)
-    name: str | None = None
-    category: str | None = None
 
 
 @runtime_checkable
@@ -37,6 +35,9 @@ class ArtifactStore(Protocol):
     def delete(self, product_id: int) -> None: ...
     def clear(self) -> None: ...
     def replace_all(self, artifacts: list[CatalogArtifact]) -> None: ...
+    def replace_all_and_set_cursor(
+        self, artifacts: list[CatalogArtifact], cursor: str | None
+    ) -> None: ...
     def get(self, product_id: int) -> CatalogArtifact | None: ...
     def all(self) -> list[CatalogArtifact]: ...
     def count(self) -> int: ...
@@ -63,6 +64,13 @@ class CatalogArtifactStore:
     def replace_all(self, artifacts: list[CatalogArtifact]) -> None:
         """전체 재구축 원자 교체 — 성공한 임시 결과로 한 번에 스왑(중간 실패 시 기존 데이터 보존)."""
         self._items = {a.product_id: a for a in artifacts}
+
+    def replace_all_and_set_cursor(
+        self, artifacts: list[CatalogArtifact], cursor: str | None
+    ) -> None:
+        """전체 생성물과 커서를 한 상태 전환으로 교체한다."""
+        self._items = {a.product_id: a for a in artifacts}
+        self._cursor = cursor
 
     def get(self, product_id: int) -> CatalogArtifact | None:
         return self._items.get(product_id)

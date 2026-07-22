@@ -47,8 +47,6 @@ def test_upsert_and_get_roundtrip(store):
             search_doc="여행 방수 파우치",
             embedding=_vec(0.6, 0.8),
             extras={"tags": ["여행"]},
-            name="파우치",
-            category="여행용품",
         )
     )
     art = store.get(1)
@@ -57,8 +55,6 @@ def test_upsert_and_get_roundtrip(store):
     assert art.search_doc == "여행 방수 파우치"
     assert art.embedding == pytest.approx(_vec(0.6, 0.8))
     assert art.extras == {"tags": ["여행"]}
-    assert art.name == "파우치"
-    assert art.category == "여행용품"
 
 
 def test_upsert_is_idempotent_update(store):
@@ -91,6 +87,20 @@ def test_replace_all_atomic_swap_removes_stale(store):
     assert store.get(99) is None
     assert store.get(1) is not None
     assert store.count() == 1
+
+
+def test_replace_all_and_cursor_commit_together(store):
+    store.upsert(CatalogArtifact(product_id=99, search_doc="stale", embedding=_vec(1.0)))
+    store.set_cursor("old")
+
+    store.replace_all_and_set_cursor(
+        [CatalogArtifact(product_id=1, search_doc="fresh", embedding=_vec(0.0, 1.0))],
+        "fresh-cursor",
+    )
+
+    assert store.get(99) is None
+    assert store.get(1) is not None
+    assert store.get_cursor() == "fresh-cursor"
 
 
 def test_cursor_persists_across_store_instances(store):

@@ -32,8 +32,6 @@ def _seed_store():
             product_id=1,
             search_doc="여행 방수 파우치",
             embedding=_embed(["여행 방수"])[0],
-            name="파우치",
-            category="여행용품",
         )
     )
     store.upsert(
@@ -41,8 +39,6 @@ def _seed_store():
             product_id=2,
             search_doc="무선 이어폰",
             embedding=_embed(["무선 이어폰"])[0],
-            name="이어폰",
-            category="이어폰",
         )
     )
     store.upsert(
@@ -50,8 +46,6 @@ def _seed_store():
             product_id=3,
             search_doc="린넨 셔츠",
             embedding=_embed(["린넨 셔츠"])[0],
-            name="셔츠",
-            category="의류",
         )
     )
     return store
