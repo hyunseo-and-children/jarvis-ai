@@ -10,9 +10,32 @@ top-k 만 조회하는 라이브 경로 — 통합(실 pg-catalog) 검증 소관
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 
 from app.services.search_service import _cosine
+
+_pool = None  # 모듈 전역 ConnectionPool (lazy 생성·프로세스 수명 재사용)
+_pool_lock = threading.Lock()
+
+
+def _get_pool(dsn: str):
+    """모듈 전역 ConnectionPool 을 lazy 하게 한 번만 만들어 재사용한다(요청마다 open/close 회피).
+
+    exact_lookup·search_categories_pg 가 recommend 턴마다 여러 번 호출되는데 매번 풀을 새로
+    open/close 하면 연결 수립 비용이 직렬로 쌓인다(PR #73 리뷰). pg_artifact_store·
+    processed_events 등 다른 pg 경로와 동일한 모듈 캐싱 패턴이다. vector 쿼리를 위해
+    register_vector 를 configure 로 걸어 exact_lookup(비-vector)과 단일 풀을 공유한다.
+    """
+    global _pool
+    if _pool is None:
+        with _pool_lock:
+            if _pool is None:
+                from pgvector.psycopg import register_vector  # noqa: PLC0415 - LAZY(유닛 pg 의존 회피)
+                from psycopg_pool import ConnectionPool  # noqa: PLC0415
+
+                _pool = ConnectionPool(dsn, configure=register_vector, open=True)
+    return _pool
 
 
 def rank_categories(
@@ -39,18 +62,12 @@ def exact_lookup(values: Sequence[str], dsn: str) -> set[str]:
     vals = [v for v in values if v]
     if not vals:
         return set()
-    from psycopg_pool import ConnectionPool  # noqa: PLC0415 - LAZY import(유닛테스트 pg 의존 회피)
-
-    pool = ConnectionPool(dsn, open=True)
-    try:
-        with pool.connection() as conn:
-            rows = conn.execute(
-                "SELECT category FROM categories WHERE category = ANY(%s)",
-                (vals,),
-            ).fetchall()
-        return {row[0] for row in rows}
-    finally:
-        pool.close()
+    with _get_pool(dsn).connection() as conn:
+        rows = conn.execute(
+            "SELECT category FROM categories WHERE category = ANY(%s)",
+            (vals,),
+        ).fetchall()
+    return {row[0] for row in rows}
 
 
 def search_categories_pg(query_vec: list[float], dsn: str, *, k: int) -> list[str]:
@@ -59,22 +76,16 @@ def search_categories_pg(query_vec: list[float], dsn: str, *, k: int) -> list[st
     임베딩 미채움(NULL) 행은 제외한다. `<=>` 는 코사인 거리(작을수록 유사).
     """
     from pgvector import Vector  # noqa: PLC0415 - LAZY import(유닛테스트 pg 의존 회피)
-    from pgvector.psycopg import register_vector  # noqa: PLC0415
-    from psycopg_pool import ConnectionPool  # noqa: PLC0415
 
-    pool = ConnectionPool(dsn, configure=register_vector, open=True)
-    try:
-        with pool.connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT category
-                FROM categories
-                WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> %s
-                LIMIT %s
-                """,  # noqa: S608 - 컬럼 상수만 사용, 파라미터 바인딩
-                (Vector(query_vec), k),
-            ).fetchall()
-        return [row[0] for row in rows]
-    finally:
-        pool.close()
+    with _get_pool(dsn).connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT category
+            FROM categories
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> %s
+            LIMIT %s
+            """,  # noqa: S608 - 컬럼 상수만 사용, 파라미터 바인딩
+            (Vector(query_vec), k),
+        ).fetchall()
+    return [row[0] for row in rows]
