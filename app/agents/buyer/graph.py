@@ -201,9 +201,15 @@ async def run_buyer_turn(
             settings=settings,
         )
     except Exception:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
-        decision.category_legs = [
-            (q.raw_category, q.query) for q in decision.category_queries if q.raw_category
-        ]
+        # 정상·내부 하드실패 경로(_dedup_truncate)와 일관되게 canonical(raw) 기준 dedup +
+        # fanout_max 절단 — LLM 이 같은 카테고리를 중복 추출해도 fan-out leg 가 중복되지 않게.
+        seen: set[str] = set()
+        legs: list[tuple[str, str | None]] = []
+        for q in decision.category_queries:
+            if q.raw_category and q.raw_category not in seen:
+                seen.add(q.raw_category)
+                legs.append((q.raw_category, q.query))
+        decision.category_legs = legs[: settings.category_fanout_max]
     if decision.category_legs:
         # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
         decision.filters.category = decision.category_legs[0][0]

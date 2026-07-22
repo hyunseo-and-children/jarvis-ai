@@ -262,3 +262,47 @@ async def test_fanout_conditions_reflect_all_categories() -> None:
     cat_chips = [c for c in conditions["chips"] if c["field"] == "category"]
     assert len(cat_chips) == 1
     assert set(cat_chips[0]["value"]) == {"여행/캠핑 > 여행용품", "가전 > 어댑터"}
+
+
+# ─────────── mapper 예외 시 최후 방어 fallback dedup (PR #73 리뷰 #9) ───────────
+
+
+async def test_mapper_failure_fallback_dedups_legs() -> None:
+    """mapper() 자체가 예외를 던지면 category_queries 로 폴백하되 중복 raw_category 는 dedup·절단한다.
+
+    정상 경로/내부 하드실패는 _dedup_truncate 를 거치는데 이 바깥 catch 만 원본을 그대로 써,
+    LLM 이 같은 카테고리를 두 번 추출하면 fan-out leg 가 중복 생성됐다(중복 검색). 일관되게 dedup.
+    """
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _boom_mapper(*, category_queries, utterance, settings):
+        raise RuntimeError("mapper down")
+
+    llm = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "reply": "",
+            "case": 2,
+            "semanticQuery": "여행",
+            "categoryQueries": [
+                {"category": "여행 > 여행용품", "query": "파우치"},
+                {"category": "여행 > 여행용품", "query": "가방"},  # 중복 raw_category
+            ],
+            "filters": {},
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_boom_mapper,
+        )
+    )
+    assert calls == ["여행 > 여행용품"]  # 중복 카테고리는 leg 1개로 → 검색 1회
