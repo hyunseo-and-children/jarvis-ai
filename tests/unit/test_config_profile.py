@@ -43,3 +43,13 @@ def test_profile_idle_scheduler_defaults_are_bounded() -> None:
 def test_profile_idle_scheduler_settings_must_be_positive(field: str, value: int) -> None:
     with pytest.raises(ValidationError):
         Settings(_env_file=None, **{field: value})
+
+
+def test_profile_idle_claim_ttl_must_cover_every_configured_batch_wave() -> None:
+    with pytest.raises(ValidationError, match="all configured batch waves"):
+        Settings(
+            _env_file=None,
+            profile_idle_sweep_batch_size=11,
+            profile_idle_max_concurrency=2,
+            profile_idle_claim_ttl_s=700,
+        )

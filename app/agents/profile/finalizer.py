@@ -87,9 +87,8 @@ async def _complete_activity_best_effort(
     except asyncio.CancelledError:
         raise
     except Exception:
-        # processed_event가 이미 COMPLETED면 profile 결과는 성공이다. activity 행은 다음 sweep이
-        # completed duplicate를 관찰해 자가 치유하므로 HTTP 202/프로필 결과를 되돌리지 않는다.
-        log.warning("profile session activity 완료 기록 실패 — 다음 sweep이 복구", exc_info=True)
+        # 호출자가 retryable로 집계하고 finally에서 activity/processed claim을 해제한다.
+        log.warning("profile session activity 완료 기록 실패 — 재시도 필요", exc_info=True)
         return False
 
 
@@ -201,6 +200,8 @@ async def finalize_profile_session(
                 activity_claim,
                 log=target_log,
             )
+            if not activity_completed:
+                return FinalizationResult(FinalizationStatus.RETRYABLE)
         return FinalizationResult(FinalizationStatus.ACCEPTED)
     except asyncio.CancelledError:
         raise

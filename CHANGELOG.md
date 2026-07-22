@@ -18,7 +18,8 @@
   sessionId의 후속 발화를 다시 flush한다. 새 회원 발화는 같은 DB transaction에서 이전
   `PROCESSING`/`COMPLETED` 종료 generation을 무효화하고, terminal finalizer는 처리 중 갱신된
   activity를 `COMPLETED`로 덮지 않는다. scheduler는 라이브 스트림 슬롯을 점유하지 않으며,
-  처리 동시성 상한, claim lease/crash 복구, claim별 오류 격리, LLM 실패 시 버퍼 보존을 포함한다.
+  처리 동시성 상한, 전체 batch wave를 포괄하는 claim TTL 검증, claim lease/crash 복구,
+  claim별 오류 격리, activity 완료 실패의 retryable 집계, LLM 실패 시 버퍼 보존을 포함한다.
   `tabClose` 신호나 추가 HTTP API는 도입하지 않았다. (api-spec §3.5, v0.15.19;
   SPEC-PROFILE-001 v0.4.0)
 

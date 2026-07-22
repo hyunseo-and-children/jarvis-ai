@@ -261,9 +261,13 @@ class Settings(BaseSettings):
             raise ValueError("PROFILE_IDLE_SWEEP_BATCH_SIZE must be positive")
         if self.profile_idle_max_concurrency <= 0:
             raise ValueError("PROFILE_IDLE_MAX_CONCURRENCY must be positive")
-        if self.profile_idle_claim_ttl_s <= min_claim_ttl:
+        idle_batch_waves = (
+            self.profile_idle_sweep_batch_size + self.profile_idle_max_concurrency - 1
+        ) // self.profile_idle_max_concurrency
+        if self.profile_idle_claim_ttl_s <= idle_batch_waves * min_claim_ttl:
             raise ValueError(
-                "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget"
+                "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget "
+                "for all configured batch waves"
             )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")

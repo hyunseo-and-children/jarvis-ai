@@ -361,6 +361,28 @@ async def test_idle_sweep_isolates_one_claim_failure_and_releases_it(
     assert released == [failed]
 
 
+async def test_idle_activity_completion_failure_is_reported_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claim = await _expired_claim(monkeypatch, 87, "completion-lost")
+
+    async def _lose_completion(*args, **kwargs):
+        return False
+
+    monkeypatch.setattr(session_activity, "complete_session", _lose_completion)
+
+    result = await finalizer.finalize_profile_session(
+        claim.user_id,
+        claim.session_id,
+        activity_claim=claim,
+        terminal=False,
+    )
+
+    assert result.status is finalizer.FinalizationStatus.RETRYABLE
+    row = await session_activity.get_session(claim.user_id, claim.session_id)
+    assert row is not None and row.status == "active"
+
+
 async def test_cancelled_idle_finalizer_releases_both_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
