@@ -10,19 +10,27 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import logging
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 
 from app.agents.profile import processed_events
-from app.agents.profile.builder import consolidate, generate_session_delta, record_remember
+from app.agents.profile.builder import (
+    ConsolidationResult,
+    consolidate,
+    generate_session_delta,
+    record_remember,
+)
 from app.agents.profile.gate import is_remember_command, should_promote
 from app.agents.profile.reader import read_profile_summary
 from app.agents.profile.store import ProfileStore, get_profile_store
 from app.core.config import get_settings
 from app.core.conversation import conversation_key
+from app.core.llm import LLMError
 from app.main import app
+from app.schemas.profile import SessionEndEvent
 
 client = TestClient(app)
 
@@ -190,14 +198,15 @@ async def test_generate_session_delta_degrades_without_llm_or_buffer() -> None:
 async def test_consolidate_writes_summary() -> None:
     store = await get_profile_store()
     await store.add_fact("8", "무선이어폰 선호")
-    ok = await consolidate("8", llm=_ProfileLLM(), settings=get_settings())
-    assert ok is True
+    result = await consolidate("8", llm=_ProfileLLM(), settings=get_settings())
+    assert result is ConsolidationResult.UPDATED
     summary = await store.get_summary("8")
     assert summary and "취향 요약" in summary.markdown and summary.generated_at
 
 
 async def test_consolidate_degrades_without_facts() -> None:
-    assert await consolidate("nofacts", llm=_ProfileLLM(), settings=get_settings()) is False
+    result = await consolidate("nofacts", llm=_ProfileLLM(), settings=get_settings())
+    assert result is ConsolidationResult.NO_WORK
 
 
 async def test_record_remember_hot_path() -> None:
@@ -265,28 +274,141 @@ async def test_profile_me_strips_unsafe_llm_markdown() -> None:
 # ─────────── POST /events/session-end ───────────
 
 
-async def test_session_end_202_and_idempotent(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_session_end_202_and_processes_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.api.events as ev
 
     monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
     store = await get_profile_store()
     key = conversation_key("777", "sess-9")
     await store.append_session_ctx(key, "3만원 무선이어폰 찾아줘")
-    payload = {"eventId": "se-1", "userId": "777", "sessionId": "sess-9", "reason": "logout"}
+    payload = {"userId": 777, "sessionId": "sess-9", "reason": "logout"}
     r1 = client.post("/events/session-end", json=payload)
     assert r1.status_code == 202 and r1.json()["status"] == "accepted"
     # 프로필 생성됨 + 버퍼 정리됨
     assert await store.get_summary("777") is not None
     assert await store.get_session_ctx(key) == []
-    # 멱등 — 같은 eventId 재수신은 duplicate
-    r2 = client.post("/events/session-end", json=payload)
+
+
+async def test_session_end_dedups_same_session_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """같은 (userId, sessionId) 재전송은 duplicate — at-least-once 중복 방어(§2.7, 고정 멱등키)."""
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("777", "sess-dup"), "발화")
+    # 동일 통지가 이미 처리됐다고 가정 — (userId, sessionId) 고정 멱등키를 선점.
+    dup_key = "session-end:777:sess-dup"
+    assert await processed_events.mark_if_new(dup_key)
+    r = client.post("/events/session-end", json={"userId": 777, "sessionId": "sess-dup"})
+    assert r.status_code == 202 and r.json()["status"] == "duplicate"
+
+
+async def test_session_end_same_session_second_is_duplicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """같은 sessionId 의 두 번째 session-end 는 duplicate — 하나의 sessionId=하나의 논리적 종료.
+
+    Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 세션당 한 번만 온다.
+    같은 (userId, sessionId) 재수신은 at-least-once 재전송으로 보고 고정 멱등키로 중복 처리한다.
+    """
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    key = conversation_key("900", "sess-multi")
+    await store.append_session_ctx(key, "무선이어폰 3만원대")
+    r1 = client.post("/events/session-end", json={"userId": 900, "sessionId": "sess-multi"})
+    assert r1.json()["status"] == "accepted"
+    assert await store.get_session_ctx(key) == []  # 처리·정리
+    # 같은 sessionId 재수신(재전송) — 새 발화가 있어도 고정키로 중복 처리(세션당 1회 종료 전제)
+    await store.append_session_ctx(key, "겨울 등산화도 볼래")
+    r2 = client.post("/events/session-end", json={"userId": 900, "sessionId": "sess-multi"})
     assert r2.status_code == 202 and r2.json()["status"] == "duplicate"
+    assert await store.get_session_ctx(key) == ["겨울 등산화도 볼래"]  # 중복이라 미처리·미정리
+
+
+async def test_session_end_no_buffer_is_noop_accepted() -> None:
+    """빈 버퍼도 신규 통지는 accepted 로 기록하며 재전송은 duplicate 로 판정한다."""
+    payload = {"userId": 5, "sessionId": "empty-sess"}
+
+    first = client.post("/events/session-end", json=payload)
+    second = client.post("/events/session-end", json=payload)
+
+    assert first.status_code == 202 and first.json()["status"] == "accepted"
+    assert second.status_code == 202 and second.json()["status"] == "duplicate"
+    assert await processed_events.seen_event("session-end:5:empty-sess")
+
+
+def test_session_end_rejects_missing_identity() -> None:
+    """userId·sessionId 누락은 400(§2.5) — 멱등키·프로필 스코프에 필수(이슈 #62)."""
+    assert client.post("/events/session-end", json={"sessionId": "s"}).status_code == 400
+    assert client.post("/events/session-end", json={"userId": 1}).status_code == 400
+
+
+def test_session_end_rejects_empty_session_id() -> None:
+    """빈 sessionId 는 400 — 필수 불투명 키(§3.5 essential), 퇴화 멱등키/버퍼 키 방어(PR #64 리뷰)."""
+    assert (
+        client.post("/events/session-end", json={"userId": 1, "sessionId": ""}).status_code == 400
+    )
+
+
+def test_session_end_reason_has_64_character_safety_cap() -> None:
+    """reason은 enum을 강제하지 않되 서비스 경계에서 무제한 문자열은 거부한다."""
+    accepted = client.post(
+        "/events/session-end",
+        json={"userId": 1, "sessionId": "reason-cap-ok", "reason": "r" * 64},
+    )
+    rejected = client.post(
+        "/events/session-end",
+        json={"userId": 1, "sessionId": "reason-cap-over", "reason": "r" * 65},
+    )
+
+    assert accepted.status_code == 202
+    assert rejected.status_code == 400
+    assert rejected.json()["error"]["code"] == "BAD_REQUEST"
+
+
+def test_session_end_rejects_userid_out_of_bigint_range() -> None:
+    """userId 는 양의 BIGINT 범위만 허용 — 거대 정수 키 남용 방어(int 전환 후에도 유지)."""
+    assert (
+        client.post("/events/session-end", json={"userId": 0, "sessionId": "s"}).status_code == 400
+    )
+    assert (
+        client.post("/events/session-end", json={"userId": 2**63, "sessionId": "s"}).status_code
+        == 400
+    )
+
+
+@pytest.mark.parametrize("invalid_user_id", ["1", 1.0, True])
+def test_session_end_rejects_non_integer_json_userid(invalid_user_id: object) -> None:
+    """userId는 JSON number 정수만 허용하며 문자열·실수·bool 강제 변환은 하지 않는다."""
+    response = client.post(
+        "/events/session-end",
+        json={"userId": invalid_user_id, "sessionId": "s"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "BAD_REQUEST"
+
+
+async def test_session_end_idempotency_scoped_per_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """멱등키는 (userId, sessionId) 파생 — 같은 sessionId라도 userId가 다르면 서로 중복 아님."""
+    import app.api.events as ev
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ProfileLLM())
+    store = await get_profile_store()
+    await store.append_session_ctx(conversation_key("111", "shared-sess"), "x")
+    await store.append_session_ctx(conversation_key("222", "shared-sess"), "y")
+    r1 = client.post("/events/session-end", json={"userId": 111, "sessionId": "shared-sess"})
+    r2 = client.post("/events/session-end", json={"userId": 222, "sessionId": "shared-sess"})
+    assert r1.json()["status"] == "accepted"
+    assert r2.json()["status"] == "accepted"  # 다른 userId → 중복 아님
 
 
 def test_session_end_service_token_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(get_settings(), "auth_mode", "jwks")  # 운영: 서비스 토큰 fail-closed
     monkeypatch.setattr(get_settings(), "internal_api_token", "secret-xyz")
-    payload = {"eventId": "se-2", "userId": "1", "sessionId": "s"}
+    payload = {"userId": 1, "sessionId": "s"}
     # 토큰 없음 → 401
     assert client.post("/events/session-end", json=payload).status_code == 401
     # 일치 → 202
@@ -298,9 +420,7 @@ async def test_session_end_degrades_without_llm() -> None:
     """LLM 미구성이어도 세션 종료는 202(best-effort, 프로필 미갱신)."""
     store = await get_profile_store()
     await store.append_session_ctx(conversation_key("55", "s"), "x")
-    r = client.post(
-        "/events/session-end", json={"eventId": "se-3", "userId": "55", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 55, "sessionId": "s"})
     assert r.status_code == 202
     assert await store.get_summary("55") is None  # LLM 없어 미갱신
     # degrade 시 transient 버퍼는 보존(성공 시에만 정리) — 회수 여지
@@ -325,18 +445,16 @@ async def test_end_to_end_profile_from_chat(monkeypatch: pytest.MonkeyPatch, buy
     store = await get_profile_store()
     assert await store.get_session_ctx(conversation_key("888", "e2e"))  # 버퍼에 쌓임
     # 세션 종료 → 델타·consolidation
-    client.post(
-        "/events/session-end", json={"eventId": "e2e-end", "userId": "888", "sessionId": "e2e"}
-    )
+    client.post("/events/session-end", json={"userId": 888, "sessionId": "e2e"})
     # 조회
     body = client.get("/profile/me", headers=hdr).json()
     assert body["exists"] is True and "무선이어폰" in body["markdown"]
 
 
-def test_session_end_rejects_oversized_identifier() -> None:
-    """eventId/userId/sessionId 길이 상한 초과는 422(스토어 키 남용 방어)."""
+def test_session_end_rejects_oversized_session_id() -> None:
+    """sessionId 길이 상한 초과는 400(불투명 스레드 키·스토어 키 남용 방어)."""
     big = "x" * 100000
-    r = client.post("/events/session-end", json={"eventId": big, "userId": "1", "sessionId": "s"})
+    r = client.post("/events/session-end", json={"userId": 1, "sessionId": big})
     assert r.status_code == 400  # 앱이 검증 오류를 400 봉투로 매핑(§2.5)
 
 
@@ -353,9 +471,7 @@ async def test_session_end_clears_buffer_on_normal_rejection(
     key = conversation_key("66", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "음 별로")
-    r = client.post(
-        "/events/session-end", json={"eventId": "rej-1", "userId": "66", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 66, "sessionId": "s"})
     assert r.status_code == 202
     assert await store.get_session_ctx(key) == []  # 정상 처리 → 버퍼 정리
 
@@ -401,7 +517,7 @@ async def test_append_session_ctx_caps_count() -> None:
 
 
 async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
-    """처리 실패(LLM 오류) 시 eventId 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
+    """처리 실패(LLM 오류) 시 멱등키 마킹 해제 + 버퍼 보존 — 재전송이 재처리 가능(멱등은 성공에만)."""
     import app.api.events as ev
     from app.core.llm import LLMError
 
@@ -416,12 +532,181 @@ async def test_session_end_unmarks_on_failure(monkeypatch: pytest.MonkeyPatch) -
     key = conversation_key("44", "s")
     store = await get_profile_store()
     await store.append_session_ctx(key, "취향 신호")
-    r = client.post(
-        "/events/session-end", json={"eventId": "f-1", "userId": "44", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202
-    assert not await processed_events.seen_event("f-1")  # 언마크 → 재전송 시 재처리
+    # 언마크 → 재전송 시 재처리 (고정 멱등키)
+    assert not await processed_events.seen_event("session-end:44:s")
     assert await store.get_session_ctx(key) != []  # 버퍼 보존
+
+
+async def test_session_end_preserves_buffer_when_consolidation_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """델타 성공 뒤 consolidation 실패도 미처리로 남겨 재시도할 수 있어야 한다."""
+    import app.api.events as ev
+
+    class _ConsolidationFails(_ProfileLLM):
+        async def complete(self, *, system, user, tier, max_tokens=1024, json_output=True):
+            if "델타 추출기" in system:
+                return await super().complete(
+                    system=system,
+                    user=user,
+                    tier=tier,
+                    max_tokens=max_tokens,
+                    json_output=json_output,
+                )
+            raise LLMError("consolidation unavailable")
+
+    monkeypatch.setattr(ev, "get_llm", lambda: _ConsolidationFails())
+    key = conversation_key("45", "consolidation-failure")
+    store = await get_profile_store()
+    await store.append_session_ctx(key, "파란색 상품을 선호해")
+
+    response = client.post(
+        "/events/session-end",
+        json={"userId": 45, "sessionId": "consolidation-failure"},
+    )
+
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert await store.get_session_ctx(key) == ["파란색 상품을 선호해"]
+    assert await store.get_summary("45") is None
+    assert not await processed_events.seen_event("session-end:45:consolidation-failure")
+
+
+async def test_session_end_releases_claim_when_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """선마킹 뒤 요청이 취소돼도 처리 중 claim이 영구 멱등 마커로 남지 않는다."""
+    import app.api.events as ev
+
+    started = asyncio.Event()
+
+    async def _block_until_cancelled():
+        started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(ev, "get_profile_store", _block_until_cancelled)
+    task = asyncio.create_task(
+        ev.session_end(
+            SessionEndEvent(userId=46, sessionId="cancelled-session"),
+            None,
+        )
+    )
+    await started.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert not await processed_events.seen_event("session-end:46:cancelled-session")
+
+
+async def test_processed_event_stale_claim_can_be_reclaimed_but_completed_cannot() -> None:
+    """crash로 남은 PROCESSING claim만 lease 만료 후 재선점하고 완료 row는 영구 중복 처리한다."""
+    event_id = "session-end:47:lease-recovery"
+    first = await processed_events.claim_event(event_id, lease_s=0.001)
+    assert first is not None
+
+    await asyncio.sleep(0.01)
+    second = await processed_events.claim_event(event_id, lease_s=0.001)
+    assert second is not None and second != first
+    assert not await processed_events.release_claim(event_id, first)
+    assert await processed_events.complete_claim(event_id, second)
+
+    await asyncio.sleep(0.01)
+    assert await processed_events.claim_event(event_id, lease_s=0.001) is None
+
+
+async def test_session_end_release_failure_falls_back_to_lease_recovery(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """claim 해제 DB까지 실패해도 202를 유지하고 lease 만료 뒤 영구 poison 없이 재선점한다."""
+    import app.api.events as ev
+
+    async def _store_failure():
+        raise RuntimeError("profile store unavailable")
+
+    async def _release_failure(*args, **kwargs):
+        raise RuntimeError("processed_events unavailable")
+
+    original_release = processed_events.release_claim
+    monkeypatch.setattr(get_settings(), "session_end_claim_ttl_s", 0.001)
+    monkeypatch.setattr(ev, "get_profile_store", _store_failure)
+    monkeypatch.setattr(processed_events, "release_claim", _release_failure)
+
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        response = client.post(
+            "/events/session-end",
+            json={"userId": 48, "sessionId": "release-failure"},
+        )
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    assert await processed_events.seen_event("session-end:48:release-failure")
+    assert "session-end claim 해제 실패" in caplog.text
+
+    monkeypatch.setattr(processed_events, "release_claim", original_release)
+    await asyncio.sleep(0.01)
+    reclaimed = await processed_events.claim_event(
+        "session-end:48:release-failure",
+        lease_s=1,
+    )
+    assert reclaimed is not None
+    assert await processed_events.release_claim("session-end:48:release-failure", reclaimed)
+
+
+async def test_session_end_logs_claim_ownership_loss(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """claim ownership race는 202로 degrade하되 운영에서 관측 가능한 warning을 남긴다."""
+
+    async def _lose_claim(*args, **kwargs) -> bool:
+        return False
+
+    monkeypatch.setattr(processed_events, "complete_claim", _lose_claim)
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        response = client.post(
+            "/events/session-end",
+            json={"userId": 49, "sessionId": "ownership-lost"},
+        )
+
+    assert response.status_code == 202 and response.json()["status"] == "accepted"
+    record = next(
+        record
+        for record in caplog.records
+        if record.message == "session-end 내부 처리 실패 — 202 degrade"
+    )
+    assert record.exc_info is not None
+    assert isinstance(record.exc_info[1], RuntimeError)
+    assert str(record.exc_info[1]) == "session-end claim ownership lost"
+
+
+async def test_release_claim_best_effort_retrieves_internal_task_cancellation(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """outer 요청과 무관하게 release task가 취소돼도 task를 재-await해 결과를 회수한다."""
+    import app.api.events as ev
+
+    class _CountingCancelledFuture(asyncio.Future):
+        await_count = 0
+
+        def __await__(self):
+            self.await_count += 1
+            return super().__await__()
+
+    cancelled = _CountingCancelledFuture()
+    cancelled.cancel()
+
+    def _create_cancelled_task(coro):
+        coro.close()
+        return cancelled
+
+    monkeypatch.setattr(ev.asyncio, "create_task", _create_cancelled_task)
+    with caplog.at_level(logging.WARNING, logger="app.api.events"):
+        await ev._release_claim_best_effort("session-end:50:cancelled-release", "token")
+
+    assert cancelled.await_count == 2
+    assert "session-end claim 해제 task 취소" in caplog.text
 
 
 async def test_session_end_returns_202_when_profile_store_unavailable(
@@ -438,11 +723,10 @@ async def test_session_end_returns_202_when_profile_store_unavailable(
         raise RuntimeError("pg-profile 일시 장애")
 
     monkeypatch.setattr(ev, "get_profile_store", _raise)
-    r = client.post(
-        "/events/session-end", json={"eventId": "store-down-1", "userId": "44", "sessionId": "s"}
-    )
+    r = client.post("/events/session-end", json={"userId": 44, "sessionId": "s"})
     assert r.status_code == 202 and r.json()["status"] == "accepted"
-    assert not await processed_events.seen_event("store-down-1")  # 언마크 → 재전송 시 재처리
+    # store 실패 시 선점한 멱등키를 해제해 재전송이 다시 처리될 수 있게 한다.
+    assert not await processed_events.seen_event("session-end:44:s")
 
 
 async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
@@ -458,10 +742,10 @@ async def test_session_end_returns_202_and_preserves_buffer_on_store_timeout(
     async def _timeout(*args, **kwargs):
         raise TimeoutError("pg query deadline")
 
-    monkeypatch.setattr(ev.processed_events, "mark_if_new", _timeout)
+    monkeypatch.setattr(ev.processed_events, "claim_event", _timeout)
     response = client.post(
         "/events/session-end",
-        json={"eventId": "timeout-1", "userId": "44", "sessionId": "timeout-session"},
+        json={"userId": 44, "sessionId": "timeout-session"},
     )
 
     assert response.status_code == 202
@@ -566,6 +850,9 @@ async def test_processed_events_operations_have_query_deadline(
             lambda: processed_events.seen_event("e"),
             lambda: processed_events.mark_event("e"),
             lambda: processed_events.unmark_event("e"),
+            lambda: processed_events.claim_event("e", lease_s=1),
+            lambda: processed_events.complete_claim("e", "token"),
+            lambda: processed_events.release_claim("e", "token"),
         ]
         for operation in operations:
             with pytest.raises(TimeoutError):

@@ -268,3 +268,22 @@ async def test_processed_events_unmark_allows_reprocessing() -> None:
     finally:
         await processed_events.unmark_event(event_id)
         processed_events.set_pool(None)
+
+
+async def test_processed_events_stale_claim_recovery_and_completion() -> None:
+    """PROCESSING lease는 crash 후 재선점되고 COMPLETED row는 다시 선점되지 않는다."""
+    processed_events.set_pool(None)
+    event_id = f"it-claim-{uuid.uuid4().hex}"
+    try:
+        first = await processed_events.claim_event(event_id, lease_s=0.01)
+        assert first is not None
+        await asyncio.sleep(0.02)
+
+        second = await processed_events.claim_event(event_id, lease_s=1)
+        assert second is not None and second != first
+        assert not await processed_events.release_claim(event_id, first)
+        assert await processed_events.complete_claim(event_id, second)
+        assert await processed_events.claim_event(event_id, lease_s=0.01) is None
+    finally:
+        await processed_events.unmark_event(event_id)
+        processed_events.set_pool(None)

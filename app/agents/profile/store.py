@@ -4,7 +4,7 @@
 session_ctx(transient 세션 버퍼, 격리). fact 는 1개 = store item 1개로 저장해(REQ-PROF-070)
 BaseStore 의 semantic 인덱스가 fact 단위로 실제 동작하게 한다 — 임베딩은 카탈로그 파이프라인과
 모델 공유(app.pipelines.embedding.embed_texts, Google gemini-embedding-001 / config.embedding_dim,
-결정 16-A: 인스턴스는 카탈로그와 별도[pg-profile]). session-end 멱등(processed eventId)은
+결정 16-A: 인스턴스는 카탈로그와 별도[pg-profile]). session-end 멱등(userId+sessionId 파생키)은
 get→put 두 단계가 원자적이지 않아 이 스토어가 아니라 전용 테이블(processed_events.py)이 맡는다.
 
 dev 폴백은 app/agents/seller/history.py 와 동일 규약(InMemoryStore + 경고 1회), 운영(jwks)은

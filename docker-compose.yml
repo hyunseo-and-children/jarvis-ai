@@ -7,9 +7,9 @@
 # products(AI 생성물: search_doc·embedding vector(1536)·extras) + HNSW 인덱스가 MVP 로 되살아남
 # (db/catalog/init/00_products.sql). pg-profile 은 프로필 스토어로 계속 필요하다.
 # [변경 2026-07-20, 이슈 #33] ProfileStore·구매자 스레드 상태(Thread/Cart/Revert)를 LangGraph
-# BaseStore(pg-profile)로 이관 — processed_events(session-end 멱등 원자 테이블, 신설)만
-# init-script(db/profile/init/00_processed_events.sql)로 관리하고, 나머지 스키마는
-# AsyncPostgresStore.setup() 이 앱 기동 시 자체 생성한다(pgvector 확장 포함).
+# BaseStore(pg-profile)로 이관 — processed_events(session-end 멱등 lifecycle 테이블)는
+# 빈 볼륨에서 init-script가 생성하고 기존 볼륨은 앱 연결 시 idempotent migration한다.
+# 나머지 스키마는 AsyncPostgresStore.setup() 이 앱 기동 시 자체 생성한다(pgvector 확장 포함).
 
 services:
   app:

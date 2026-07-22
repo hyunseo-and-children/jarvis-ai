@@ -13,6 +13,26 @@
 
 ---
 
+## [2026-07-22] 멱등 row 하나로 PROCESSING과 COMPLETED를 겸하면 부분 실패가 영구 duplicate가 된다
+- 증상: I-20이 버퍼 처리 전에 영구 마커를 넣은 뒤 consolidation의 `False` 반환을 무시해 버퍼를 삭제했고, 요청 취소·프로세스 crash 때는 cleanup이 실행되지 않아 미완료 통지가 이후 영구 `duplicate`가 됐다.
+- 원인: 수신 선점 락과 처리 완료 기록을 같은 불변 row로 표현했고, consolidation도 정상 no-op과 실패를 같은 boolean `False`로 표현했다. 서로 다른 상태를 합치니 호출자가 실패와 성공을 구분할 수 없었다.
+- 규칙:
+  - 외부 부수효과 전 멱등 선점이 필요하면 `PROCESSING` claim(token+lease)과 `COMPLETED`를 분리한다.
+  - 실패·취소는 소유 token이 일치하는 claim만 해제하고, crash 잔재는 lease 만료 뒤 재선점한다. 완료 row는 lease와 무관하게 영구 중복 처리한다.
+  - 다단계 결과는 `updated/no_work/failed`처럼 의미를 분리한다. 실패 때는 입력 버퍼와 재시도 경로를 모두 보존한다.
+  - 기존 볼륨에 상태 컬럼을 추가할 때는 init script만 믿지 말고 앱 기동 idempotent migration을 제공한다.
+- 관련: `app/api/events.py`, `app/agents/profile/{builder,processed_events}.py`, `db/profile/init/00_processed_events.sql`, api-spec §3.5(v0.15.17)
+
+## [2026-07-22] 멱등 응답 판정은 처리 대상 조회보다 먼저 해야 빈 버퍼 재전송도 duplicate가 된다
+- 증상: PR #64 구현은 session-end 버퍼를 먼저 조회해 비어 있으면 즉시 `accepted`를 반환했다. 첫 통지를 정상 처리해 버퍼가 비워진 뒤 같은 통지가 재전송되면, 이미 저장된 멱등키가 있어도 확인하지 않아 `duplicate`가 아니라 `accepted`로 잘못 응답했다. 기존 테스트는 두 응답의 HTTP 202만 확인해 응답 본문 회귀를 놓쳤다.
+- 원인: "처리할 데이터가 없으면 no-op"과 "이 통지를 이미 수신했는가"를 같은 조건으로 취급했다. 멱등성은 현재 버퍼 상태가 아니라 통지 신원 `(userId, sessionId)`의 이력에 관한 계약이라 버퍼 조회보다 우선해야 한다.
+- 규칙:
+  - 통지 엔드포인트는 **인증·스키마 검증 → 원자적 멱등 판정 → 처리 대상 조회** 순서를 지킨다.
+  - 첫 유효 통지는 버퍼가 없어도 `accepted`로 기록하고, 이후 같은 통지는 버퍼 상태와 무관하게 `duplicate`로 응답한다.
+  - 내부 처리 실패 때만 마킹을 되돌려 재시도를 허용하고 버퍼를 보존한다.
+  - 멱등 테스트는 상태 코드뿐 아니라 실제 순서의 응답 본문(`accepted` 다음 `duplicate`)을 검증한다.
+- 관련: `app/api/events.py::session_end()`, `tests/unit/test_profile.py`, `tests/integration/test_profile_flow_e2e.py`, api-spec §2.7/§3.5(v0.15.17), 이슈 #62, PR #64
+
 ## [2026-07-22] FE 오류 계약을 논할 때 "FastAPI 기본 422" 로 단정하지 말 것 — 이 앱은 검증 오류를 400 으로 매핑한다
 - 증상: 판매자 챗 FE 계약 1차 분석에서 "요청 본문 검증 실패(threadId 누락 등)는 FastAPI 기본 422 로 나온다, 노션의 400 은 틀렸다"고 적었는데 반대였다 — 앱은 `RequestValidationError` 를 **400 `BAD_REQUEST` 봉투**로 매핑한다(`app/core/errors.py::_validation_exception_handler`, `add_exception_handler(RequestValidationError, ...)`). 노션의 400 이 옳았고 내 진단이 틀렸다.
 - 원인: FastAPI의 프레임워크 기본값(422)을 앱의 실제 동작으로 착각했다. 이 리포는 모든 오류를 공통 봉투(§2.5)로 통일하려고 검증 오류까지 400 으로 재매핑하는 커스텀 핸들러를 둔다 — 기본값 지식이 아니라 코드를 봐야 알 수 있다.
@@ -31,6 +51,24 @@
   - 실수로 lock 을 만들었으면 **즉시** `rm -f .git/index.lock` 을 시도하고, 실패하면 사용자에게 Windows 에서 `del .git\index.lock` 을 요청한다 — 방치하면 사용자 쪽 git 이 전부 막힌다.
   - 이 리포에서 "전 파일이 수정됨"으로 보이면 실제 변경이 아니라 CRLF 노이즈를 먼저 의심한다 — 판단 기준은 항상 `git diff --ignore-cr-at-eol`.
 - 관련: `docs/specs/` 판매자 문서 정리(2026-07-22), 구 `HANDOFF-GIT-SYNC-20260719`(삭제됨 — git 히스토리 참조)
+
+## [2026-07-21] 통지 엔드포인트의 멱등키는 "그 이벤트가 몇 번 오는지"를 BE 실측으로 확인한 뒤 정한다 — 가정 금지
+- 증상: PR #64 — session-end 멱등키를 놓고 두 모델이 충돌했다. (a) `(userId, sessionId)` 고정키(세션당 1회 종료 전제) vs (b) 버퍼 내용 해시(세션이 살아남아 재체크포인트된다는 전제 — tabClose 저장 후 재활동 → inactivityTimeout 재저장). 어느 쪽이 맞는지는 **"session-end 가 한 sessionId 에 몇 번 오는가"** 라는 BE 사실에 달렸는데, 그걸 확인하지 않고 (b)로 갔다가 뒤집혔다.
+- 원인·확인: BE(`ChatSessionService`) 실측 — session-end 를 발화하는 `NEW_CONVERSATION`(issue 축출)·`LOGOUT`(endSession)은 **모두 세션을 Redis 에서 삭제**하며, `tabClose`·`inactivityTimeout`(IDLE_TIMEOUT)은 **아예 발화되지 않는다**. 즉 "한 sessionId = 한 번의 논리적 종료"가 참이라 (b)가 방어하려던 재체크포인트는 실재하지 않았다 → 고정키(a)가 정답이고 내용 해시는 과설계.
+- 규칙:
+  - **멱등키 모델을 정하기 전에 "이 이벤트가 한 번 오는가, 여러 번 오는가"를 생산자(BE) 코드/실측으로 확인**한다 — 가정으로 "여러 번 온다"고 단정하면 불필요한 내용/버전 키로 과설계한다. 한 번이면 신원 고정키가 가장 단순·안전하다.
+  - **seq/카운터를 멱등키에 쓰기 전 "그 값이 리셋되는 경로"를 확인**한다(여기선 버퍼가 비면 item 삭제로 seq 리셋 → 판별자 부적합).
+  - 멱등 판별자는 "같은 통지 재전송 → 중복", "빈 내용 → no-op" 경로를 테스트로 고정한다.
+- 관련: `app/api/events.py`(고정 멱등키), `ChatSessionService`(종료=세션 삭제), api-spec §2.7/§3.5, PR #64
+
+## [2026-07-21] inbound 계약을 "제안/초안"인 채 required 필드로 굳히면 엔드포인트가 상시 400으로 조용히 실패한다
+- 증상: 이슈 #62 — `POST /events/session-end`가 항상 `400`을 반환해 세션 종료 통지가 전부 실패, 프로필 조기 트리거가 조용히 죽어 있었다. 원인은 3자 불일치: api-spec §3.5가 `eventId`/`userId(string)`/`endedAt`를 **"제안(초안)"** 표기인 채 두었고, `SessionEndEvent`는 그 초안을 **required**로 굳혔는데, Spring 실측 payload는 `eventId`가 없고 `userId`가 **숫자**였다. 초안 필드가 필수라 매 요청이 검증 단계에서 튕겨 핸들러에 도달조차 못 했다.
+- 원인: 인바운드(Spring→AI) 계약은 우리가 소유(결정 21)하지만 **데이터 생산자는 Spring**이다. 소유권이 우리에게 있다고 초안을 실측 대조 없이 required 로 확정하면, 우리 코드는 "옳지만" 실제 호출은 100% 실패한다. best-effort·통지 채널이라 500도 안 나고 202도 안 나가 **관측되지 않는 상시 실패**가 된다.
+- 규칙:
+  - **api-spec에 `제안`/`초안`/🔴 협의 표시가 붙은 인바운드 필드를 스키마 required 로 굳히기 전에, BE 실측 payload와 대조**한다. 특히 `eventId` 같은 "우리가 만들어낸 멱등 필드"는 생산자가 실제로 보내는지 확인 — 안 보내면 파생키(본문 신원)로 전환한다.
+  - **타입도 대조한다** — id는 이 프로젝트에서 BIGINT 숫자가 기준(CLAUDE.md). 인바운드 신원 필드를 `str`로 두면 숫자 payload가 조용히 400난다.
+  - 통지/best-effort 엔드포인트는 실패가 눈에 안 띈다 — **계약 정렬 후 "누락·타입오류→400, 정상→202, 중복→202 duplicate"를 명시적 테스트로 고정**한다.
+- 관련: `app/schemas/profile.py::SessionEndEvent`, `app/api/events.py::session_end()`, api-spec §3.5/§2.7(v0.15.17), 이슈 #62
 
 ## [2026-07-20] SSE 응답 제너레이터의 finally 블록에서 던진 예외는 종결 프레임/취소 전파를 덮어쓴다
 - 증상: PR #48 후속 리뷰가 `app/core/stream.py::open_stream()`의 `_wrapped()` `finally` 블록(303행)에서 `observer.finish()`(이제 실제 conversation store DB I/O)가 보호 없이 호출된다고 지적. 이 시점은 이미 SSE 헤더/프레임이 클라이언트로 전송된 뒤라, `finish()`가 예외를 던지면 (1) 정상 종료 경로에서는 `StopAsyncIteration` 대신 그 새 예외가 `body_iterator` 소비자에게 전파되어 스트림이 비정상 종료되고, (2) `except asyncio.CancelledError: ... raise` 로 취소가 전파되던 중이라면 Python 의 `finally`-중 예외가 진행 중이던 예외를 덮어쓰는 규칙 때문에 정상 client disconnect(CancelledError)가 엉뚱한 새 예외로 둔갑한다. `finalize_assistant` 를 raise 하는 fake 로 재현 — 수정 전엔 `body_iterator` 소비 자체가 raise, 수정 후(try/except 로 감싸 로그만)엔 정상 종료.
@@ -169,8 +207,8 @@
   - 덮어쓰기 전 대상 파일을 확인 — 내가 만든 게 아니면 멈추고 점검.
 - 관련: `CLAUDE.md`, `.claude/settings.json`
 
-## [2026-07-15] api-spec 사본이 정본과 어긋날 위험
-- 증상: 계약(SSE 이벤트·오류 코드)이 코드/사본/정본 세 곳에 흩어져 드리프트 우려.
-- 원인: 정본은 기획 repo, hk-final엔 사본만 존재.
-- 규칙: 계약 변경은 **정본(기획 repo api-spec) 먼저** 개정 → 사본(`docs/api-spec.md`) 동기화 → 코드. 사본과 정본이 다르면 정본 우선. SPEC 사본의 낡은 SSE 명명도 api-spec 우선.
+## [2026-07-15; 정책 전환 2026-07-22] api-spec 사본이 정본과 어긋날 위험
+- 증상: 계약(SSE 이벤트·오류 코드)이 코드/외부 정본/로컬 사본 세 곳에 흩어져 드리프트했다.
+- 해소: 2026-07-22부터 외부 사본 의존을 폐기하고 **repo-local `docs/api-spec.md`를 정본으로 승격**했다.
+- 규칙: 계약 변경은 `docs/api-spec.md`를 먼저 개정하고 코드를 같은/후속 커밋에서 맞춘다. SPEC의 낡은 외부 계약 명명도 repo-local api-spec이 우선한다.
 - 관련: `docs/api-spec.md`, `docs/specs/`

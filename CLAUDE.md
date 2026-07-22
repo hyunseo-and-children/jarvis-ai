@@ -43,7 +43,7 @@
 3. `uv run pytest` 통과 확인 (테스트 없이 커밋 금지).
 4. **diff 내용을 근거로** Conventional Commit 메시지 생성 — `<type>(<scope>): <subject>` + 본문(왜). 추측이 아니라 실제 변경에서 뽑는다.
 5. 관련 파일만 스테이징 → 커밋. 무관한 변경은 **별도 커밋**으로 분리(한 커밋 = 한 논리 단위).
-6. 주제 완료 시 CHANGELOG.md 갱신, 계약 변경 시 api-spec 사본 동기화를 같은/선행 커밋에.
+6. 주제 완료 시 CHANGELOG.md 갱신, 계약 변경 시 정본 `docs/api-spec.md` 개정을 같은/선행 커밋에.
 - Claude Code 보조 커밋은 co-author 트레일러를 남긴다.
 
 ## 실수 방지 (Lessons) — 하네스

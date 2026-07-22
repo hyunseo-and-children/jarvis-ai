@@ -2,7 +2,7 @@
 
 사용자 대면 API(/chat·/seller/chat)는 사용자 JWT 를 검증해 Identity 를 만든다.
 
-[변경] /events/* 서비스 토큰 의존성은 이벤트 채널이 고도화(post-MVP)로 이동해 제거했다.
+[I-20] /events/session-end는 MVP inbound 채널로 유지하며 X-Internal-Token을 검증한다.
 
 [보안] Identity 는 오직 토큰에서 도출된다 — 요청 본문의 식별자는 신뢰하지 않는다.
 """

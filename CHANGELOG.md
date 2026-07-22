@@ -49,6 +49,23 @@
 - **인증 실배선 E2E (#34)** — jwks 모드 검증을 api-spec §2.3 확정 5종(signature/exp/iss/aud/**scope**)으로 완성: 스트림 티켓 `sub_type`(member|guest) 매핑(+구 role 폴백, 미지 값 fail-closed), `sub` 필수화, 만료/무효 401 코드를 예외 타입 기반 매핑(TOKEN_EXPIRED/TOKEN_INVALID), JWKS fetch 타임아웃(3s)·캐시 TTL config 주입(`jwt_scope`·`jwks_cache_ttl_s` 신설), jwks 모드 기동 시 `JWKS_URL` fail-fast, 레이트 리밋 sub 스코프도 동일 검증 경로로 정합. 테스트는 실 JWKS dict + fetch 계층 패치로 kid 매칭·kid miss refetch 실경로 검증 + 앱 레벨 401/403 봉투·서비스 토큰 인/아웃바운드 회귀 (`tests/unit/_jwks.py`·`test_auth_e2e.py`)
 
 ### Fixed
+- **I-20 실패 안전 멱등 lifecycle** — `processed_events`를 단일 영구 마커에서
+  `PROCESSING`(claim token+유한 lease) / `COMPLETED`로 분리. 요청 취소·내부 실패는 claim을
+  cancellation-safe하게 해제하고, 프로세스 crash·해제 DB 실패 잔재는 lease 만료 후 재선점한다.
+  delta 성공 뒤 consolidation 실패를 별도 `failed` 상태로 구분해 버퍼를 지우거나 완료 마킹하지
+  않는다. 기존 볼륨은 앱 연결 시 idempotent 스키마 migration으로 완료 row를 보존한다.
+- **session-end(I-20) 멱등키 = `(userId, sessionId)` 고정키** — BE 실측: session-end 는 세션을
+  삭제하는 종료(`NEW_CONVERSATION`·`LOGOUT`)에만 오고 `tabClose`·`inactivityTimeout`은 발화되지
+  않는다 → "하나의 `sessionId` = 하나의 논리적 종료"가 성립하므로 `session-end:{userId}:{sessionId}`
+  고정키로 같은 통지 재전송(at-least-once)만 중복 처리한다. (한때 검토한 버퍼 내용 해시 방식은
+  실재하지 않는 "재체크포인트" 방어라 폐기.) 신규 통지는 버퍼가 비어도 `accepted`로 기록하고,
+  이후 동일 통지는 버퍼 상태와 무관하게 `duplicate`로 응답한다 (api-spec §2.7·§3.5, v0.15.17)
+- **이슈 #62 — session-end(I-20) 계약 정렬** — `POST /events/session-end`가 상시 `400`을
+  반환해 세션 종료 통지가 전부 실패하던 문제 수정. BE 실측 payload에 맞춰 `SessionEndEvent`에서
+  `eventId`·`endedAt`를 제거하고 `userId`를 string → **number(BIGINT)**로 정정, `reason`은
+  optional·enum 미강제·최대 64자. 멱등키를 `eventId` 필드 대신 **`session-end:{userId}:{sessionId}`
+  파생 복합키**로 전환(같은 sessionId라도 userId가 다르면 서로 중복 아님). `userId`는 양의
+  BIGINT 정수만 엄격히 받아 string/float/bool coercion을 거부한다 (api-spec §3.5·§2.7, v0.15.17)
 - 프로필 세션 종료(session-end) 처리 중 동시에 새 채팅 턴이 들어오면 세션 버퍼가 통째로
   삭제되던 레이스 수정 — `clear_session_ctx_upto`(seq 워터마크 기준)로 스냅샷 분석분만
   정리하고 미분석 발화는 보존 (`newConversation` 트리거·버퍼 상한(cap) 트리밍 상황 모두 안전)
