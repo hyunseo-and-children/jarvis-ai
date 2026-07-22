@@ -18,7 +18,7 @@ import uuid
 import pytest
 from langgraph.store.postgres.aio import AsyncPostgresStore
 
-from app.agents.profile import processed_events
+from app.agents.profile import processed_events, session_activity
 from app.agents.profile import store as profile_store_module
 from app.agents.profile.store import ProfileStore
 from app.core.config import get_settings
@@ -287,3 +287,112 @@ async def test_processed_events_stale_claim_recovery_and_completion() -> None:
     finally:
         await processed_events.unmark_event(event_id)
         processed_events.set_pool(None)
+
+
+# ─────────── profile_session_activity (이슈 #79) ───────────
+
+
+async def _delete_activity(user_id: int, session_id: str) -> None:
+    pool = await session_activity._get_pool()
+    assert pool is not None
+    async with pool.connection() as conn:
+        await conn.execute(
+            "DELETE FROM profile_session_activity WHERE user_id = %s AND session_id = %s",
+            (user_id, session_id),
+        )
+
+
+async def test_session_activity_atomic_claim_touch_invalidation_and_completion() -> None:
+    session_activity.set_pool(None)
+    user_id = int(uuid.uuid4().hex[:15], 16)
+    session_id = f"it-activity-{uuid.uuid4().hex}"
+    idle_timeout_s = 60 * 60 * 24 * 365 * 50
+    try:
+        assert await session_activity.touch_session(user_id, session_id)
+        # 프로세스/풀 재시작 뒤에도 DB activity가 남아 다음 sweep에서 회수 가능해야 한다.
+        session_activity.set_pool(None)
+        await session_activity._drain_pending_cleanup()
+        persisted = await session_activity.get_session(user_id, session_id)
+        assert persisted is not None and persisted.status == "active"
+        pool = await session_activity._get_pool()
+        assert pool is not None
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE profile_session_activity SET last_activity_at = '1900-01-01T00:00:00Z' "
+                "WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )
+        [first] = await session_activity.claim_expired_sessions(
+            idle_timeout_s=idle_timeout_s,
+            lease_s=1,
+            batch_size=1,
+        )
+        # 새 회원 발화는 PROCESSING claim을 무효화하고 ACTIVE로 되돌린다.
+        assert await session_activity.touch_session(user_id, session_id)
+        assert not await session_activity.claim_is_current(first, idle_timeout_s=idle_timeout_s)
+
+        async with pool.connection() as conn:
+            await conn.execute(
+                "UPDATE profile_session_activity SET last_activity_at = '1900-01-01T00:00:00Z' "
+                "WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )
+        results = await asyncio.gather(
+            *(
+                session_activity.claim_expired_sessions(
+                    idle_timeout_s=idle_timeout_s,
+                    lease_s=1,
+                    batch_size=1,
+                )
+                for _ in range(5)
+            )
+        )
+        claims = [claim for batch in results for claim in batch]
+        assert len(claims) == 1
+        assert await session_activity.complete_session(
+            user_id,
+            session_id,
+            token=claims[0].claim_token,
+        )
+        assert await session_activity.touch_session(user_id, session_id)
+        row = await session_activity.get_session(user_id, session_id)
+        assert row is not None and row.status == "active"
+        observed = row
+        await asyncio.sleep(0.002)
+        assert await session_activity.touch_session(user_id, session_id)
+        assert not await session_activity.complete_terminal_session(
+            user_id,
+            session_id,
+            observed=observed,
+        )
+        current = await session_activity.get_session(user_id, session_id)
+        assert current is not None and current.status == "active"
+        assert await session_activity.complete_terminal_session(
+            user_id,
+            session_id,
+            observed=current,
+        )
+    finally:
+        await _delete_activity(user_id, session_id)
+        session_activity.set_pool(None)
+        await session_activity._drain_pending_cleanup()
+
+
+async def test_session_activity_due_query_has_indexed_access_path() -> None:
+    session_activity.set_pool(None)
+    pool = await session_activity._get_pool()
+    assert pool is not None
+    async with pool.connection() as conn:
+        await conn.execute("SET enable_seqscan = off")
+        plan_rows = await (
+            await conn.execute(
+                "EXPLAIN SELECT user_id, session_id FROM profile_session_activity "
+                "WHERE status = 'active' AND last_activity_at <= now() "
+                "ORDER BY last_activity_at, user_id, session_id LIMIT 10"
+            )
+        ).fetchall()
+    session_activity.set_pool(None)
+    await session_activity._drain_pending_cleanup()
+
+    plan = "\n".join(str(row[0]) for row in plan_rows)
+    assert "idx_profile_session_activity_due" in plan

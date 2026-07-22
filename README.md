@@ -99,7 +99,7 @@ flowchart LR
 1. **동기화 방식: 이벤트(CDC) vs 배치** — 실시간 웹훅 대신, AI가 필요 시 당겨오는 **pull 배치**로 확정. Spring의 스케줄러·재시도 부담을 없애고, 유실 시 다음 주기가 자연 복구. 상품 원본은 복제하지 않고 AI 생성물만 upsert.
 2. **검색 아키텍처 OPEN** — ①AI 벡터 검색 → Spring id 조회 ②Spring 검색 → 임베딩 재랭킹, 두 방식을 `SearchBackend` 인터페이스 뒤에 두고 **골든셋 실측으로 확정**하도록 교체 가능하게 설계.
 3. **SSE 스트림 수명주기** — 세션당 활성 스트림 1개(`409`), 클라이언트 취소(`AbortController`) 감지 시 **LLM 스트림 즉시 중단(토큰 비용 차단)**, 계층별 타임아웃, 대화 저장 상태(`COMPLETED/FAILED/CANCELLED`) 관리.
-4. **개인화 프로필** — 매 발화 저장이 아닌 **반복성·현저성·명시성 게이트** 통과 시에만 승격, 세션 종료 후 sleep-time 배치로 병합. 저장 포맷은 OKF 스타일 자연어 위키.
+4. **개인화 프로필** — 매 발화 저장이 아닌 **반복성·현저성·명시성 게이트** 통과 시에만 승격. Spring의 `logout`/`newConversation` 통지 또는 AI가 판단한 10분 비활동 뒤 공통 finalizer로 병합한다. idle은 같은 sessionId가 다시 활동할 수 있는 checkpoint이며 탭 닫기 신호는 사용하지 않는다. 저장 포맷은 OKF 스타일 자연어 위키.
 5. **계약 우선 개발** — 3팀 병렬 개발을 위해 API 계약(`api-spec`)을 코드보다 먼저 확정하고 버전 관리. 스텁마다 `api-spec §` 참조 주석으로 코드↔명세를 연결.
 
 ---
@@ -158,7 +158,7 @@ uv run ruff check
 | POST | `/chat` | 구매자 챗봇 (SSE) — 추천 · 장바구니 · 폴백 |
 | POST | `/seller/chat` | 판매자 챗봇 (SSE) — 통계 Q&A · draft, 판매자 스코프 필수 |
 | GET | `/profile/me` | 마이페이지 프로필 조회 |
-| POST | `/events/session-end` | 세션 종료 통지 수신 (Spring → AI 유일 이벤트) |
+| POST | `/events/session-end` | 명시적 세션 종료 통지 수신 (Spring → AI, `logout`/`newConversation`) |
 | GET | `/health` | 헬스 체크 |
 
 SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`budget`·`products.ready`·`done`·`error` / 판매자: `token`·`draft`·`done`·`error` (camelCase).
@@ -177,6 +177,11 @@ SSE 이벤트 — 구매자: `token`·`conditions`·`action`·`suggestions`·`bu
 | `JWT_SCOPE` | 미설정 | **주입 권장** | 미설정 시 scope 검증 생략 + 기동 경고. 값은 C-1 확정 후(제안 `chat:stream`) |
 | `INTERNAL_API_TOKEN` | 선택 | **필수** | AI→Spring `X-Internal-Token`(아웃바운드) + Spring→AI 이벤트 검증(인바운드) 공용 |
 | `SPRING_BASE_URL` | 기본 `localhost:8080` | 필수 | 역호출 대상. AI→Spring 타임아웃은 전 구간 3s |
+| `PROFILE_SESSION_IDLE_TIMEOUT_S` | `600` | 조정 가능 | 마지막 저장 회원 발화 뒤 프로필 버퍼를 inactivity 종료로 보는 시간(초) |
+| `PROFILE_IDLE_SWEEP_INTERVAL_S` | `60` | 조정 가능 | 비활성 세션 bounded sweep 실행 주기(초). 탭 닫기 신호를 대신하지 않고 자체 활동 시각만 사용 |
+| `PROFILE_IDLE_SWEEP_BATCH_SIZE` | `10` | 조정 가능 | sweep 1회가 원자 선점하는 최대 세션 수 |
+| `PROFILE_IDLE_MAX_CONCURRENCY` | `2` | 조정 가능 | timeout finalizer 최대 동시 실행 수 |
+| `PROFILE_IDLE_CLAIM_TTL_S` | `900` | 조정 가능 | 처리 중 crash 복구용 activity claim lease(초) |
 | `PII_HASH_PEPPER` | 선택 | **필수** | 로그 PII 지문용 — `jwks` 모드에서 미설정 시 기동 실패 |
 
 ```bash

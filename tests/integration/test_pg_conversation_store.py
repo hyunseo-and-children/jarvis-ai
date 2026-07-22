@@ -17,6 +17,7 @@ import uuid
 import pytest
 from psycopg_pool import AsyncConnectionPool
 
+from app.agents.profile import processed_events, session_activity
 from app.core import conversation as conversation_module
 from app.core.conversation import PgConversationStore, TurnStatus
 from app.core.config import get_settings
@@ -103,6 +104,34 @@ async def test_setup_backfills_legacy_rows_in_previous_logical_order(pool) -> No
     assert [turn.turn_id for turn in turns] == [second_id, first_id]
 
 
+async def test_setup_holds_shared_activity_schema_advisory_lock(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observer_pool = AsyncConnectionPool(get_settings().profile_db_url, open=False)
+    await observer_pool.open(wait=True)
+    original = session_activity.ensure_schema_on_connection
+
+    async def _assert_shared_lock(conn):
+        async with observer_pool.connection() as observer:
+            acquired = (
+                await (
+                    await observer.execute(
+                        "SELECT pg_try_advisory_xact_lock(hashtextextended(%s, 0))",
+                        (session_activity.SCHEMA_LOCK_KEY,),
+                    )
+                ).fetchone()
+            )[0]
+        assert acquired is False
+        await original(conn)
+
+    monkeypatch.setattr(session_activity, "ensure_schema_on_connection", _assert_shared_lock)
+    try:
+        await PgConversationStore(pool).setup()
+    finally:
+        await observer_pool.close()
+
+
 async def test_turns_for_uses_insert_order_when_timestamps_match(pool) -> None:
     store = PgConversationStore(pool)
     conversation_id = _conversation_id()
@@ -183,3 +212,173 @@ async def test_get_conversation_store_concurrent_calls_single_connection() -> No
         assert len({id(s) for s in stores}) == 1
     finally:
         conversation_module.set_store(None)
+
+
+async def test_member_turn_insert_and_activity_touch_commit_together(pool) -> None:
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    user_id = int(suffix[:12], 16)
+    session_id = f"activity-{suffix}"
+    conversation_id = f"{user_id}:{session_id}"
+    event_id = processed_events.session_end_event_id(user_id, session_id)
+
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO processed_events (event_id, status) VALUES (%s, 'completed')",
+                (event_id,),
+            )
+        turn_id = await store.save_user_message(
+            conversation_id,
+            str(user_id),
+            "member",
+            "활동 갱신",
+            session_id=session_id,
+        )
+
+        async with pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT status, claim_token FROM profile_session_activity "
+                    "WHERE user_id = %s AND session_id = %s",
+                    (user_id, session_id),
+                )
+            ).fetchone()
+            processed_count = (
+                await (
+                    await conn.execute(
+                        "SELECT count(*) FROM processed_events WHERE event_id = %s",
+                        (event_id,),
+                    )
+                ).fetchone()
+            )[0]
+        assert await store.get_turn(turn_id) is not None
+        assert row == ("active", None)
+        assert processed_count == 0
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )
+            await conn.execute("DELETE FROM processed_events WHERE event_id = %s", (event_id,))
+
+
+async def test_guest_and_seller_turns_do_not_touch_profile_activity(pool) -> None:
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    guest_session = f"guest-{suffix}"
+    seller_session = f"seller-{suffix}"
+
+    await store.save_user_message(
+        f"guest:{guest_session}",
+        "guest-uuid",
+        "guest",
+        "게스트",
+        session_id=guest_session,
+    )
+    await store.save_user_message(
+        f"12:{seller_session}",
+        "12",
+        "seller",
+        "판매자",
+        session_id=seller_session,
+    )
+
+    async with pool.connection() as conn:
+        count = (
+            await (
+                await conn.execute(
+                    "SELECT count(*) FROM profile_session_activity WHERE session_id IN (%s, %s)",
+                    (guest_session, seller_session),
+                )
+            ).fetchone()
+        )[0]
+    assert count == 0
+
+
+async def test_activity_touch_failure_rolls_back_member_turn(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = PgConversationStore(pool)
+    session_id = f"rollback-{uuid.uuid4().hex}"
+    conversation_id = f"99:{session_id}"
+
+    async def _fail_touch(*args, **kwargs):
+        raise RuntimeError("activity unavailable")
+
+    monkeypatch.setattr(session_activity, "touch_on_connection", _fail_touch)
+
+    with pytest.raises(RuntimeError, match="activity unavailable"):
+        await store.save_user_message(
+            conversation_id,
+            "99",
+            "member",
+            "원자성 확인",
+            session_id=session_id,
+        )
+
+    assert await store.turns_for(conversation_id) == []
+
+
+async def test_processed_generation_invalidation_rolls_back_with_member_turn(
+    pool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = PgConversationStore(pool)
+    suffix = uuid.uuid4().hex
+    user_id = int(suffix[:12], 16)
+    session_id = f"generation-rollback-{suffix}"
+    conversation_id = f"{user_id}:{session_id}"
+    event_id = processed_events.session_end_event_id(user_id, session_id)
+    original = processed_events.invalidate_session_end_on_connection
+
+    async def _fail_after_invalidation(conn, *args, **kwargs):
+        await original(conn, *args, **kwargs)
+        raise RuntimeError("generation invalidation failed")
+
+    try:
+        async with pool.connection() as conn:
+            await conn.execute(
+                "INSERT INTO processed_events (event_id, status) VALUES (%s, 'completed')",
+                (event_id,),
+            )
+        monkeypatch.setattr(
+            processed_events,
+            "invalidate_session_end_on_connection",
+            _fail_after_invalidation,
+        )
+
+        with pytest.raises(RuntimeError, match="generation invalidation failed"):
+            await store.save_user_message(
+                conversation_id,
+                str(user_id),
+                "member",
+                "원자적 롤백",
+                session_id=session_id,
+            )
+
+        async with pool.connection() as conn:
+            marker = await (
+                await conn.execute(
+                    "SELECT status FROM processed_events WHERE event_id = %s",
+                    (event_id,),
+                )
+            ).fetchone()
+            activity = await (
+                await conn.execute(
+                    "SELECT 1 FROM profile_session_activity WHERE user_id = %s AND session_id = %s",
+                    (user_id, session_id),
+                )
+            ).fetchone()
+        assert await store.turns_for(conversation_id) == []
+        assert marker == ("completed",)
+        assert activity is None
+    finally:
+        async with pool.connection() as conn:
+            await conn.execute("DELETE FROM processed_events WHERE event_id = %s", (event_id,))
+            await conn.execute(
+                "DELETE FROM profile_session_activity WHERE user_id = %s AND session_id = %s",
+                (user_id, session_id),
+            )

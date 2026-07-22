@@ -614,6 +614,7 @@ async def test_processed_event_stale_claim_can_be_reclaimed_but_completed_cannot
 
     await asyncio.sleep(0.01)
     assert await processed_events.claim_event(event_id, lease_s=0.001) is None
+    assert await processed_events.get_status(event_id) == "completed"
 
 
 async def test_session_end_release_failure_falls_back_to_lease_recovery(
@@ -848,10 +849,12 @@ async def test_processed_events_operations_have_query_deadline(
         operations = [
             lambda: processed_events.mark_if_new("e"),
             lambda: processed_events.seen_event("e"),
+            lambda: processed_events.get_status("e"),
             lambda: processed_events.mark_event("e"),
             lambda: processed_events.unmark_event("e"),
             lambda: processed_events.claim_event("e", lease_s=1),
             lambda: processed_events.complete_claim("e", "token"),
+            lambda: processed_events.claim_is_current("e", "token"),
             lambda: processed_events.release_claim("e", "token"),
         ]
         for operation in operations:

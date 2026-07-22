@@ -169,6 +169,13 @@ class Settings(BaseSettings):
     # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
     # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
     session_end_claim_ttl_s: float = 180.0
+    # 회원 발화 저장 시 touch한 DB activity 기준 프로필 버퍼 inactivity 종료(이슈 #79).
+    profile_session_idle_timeout_s: float = 600.0
+    profile_idle_sweep_interval_s: float = 60.0
+    profile_idle_sweep_batch_size: int = 10
+    profile_idle_max_concurrency: int = 2
+    # batch=10/concurrency=2에서 2단 LLM 처리가 여러 wave로 이어져도 claim이 만료되지 않게 둔다.
+    profile_idle_claim_ttl_s: float = 900.0
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # AsyncPostgresStore(pg-profile) 초기 연결 대기 상한(이슈 #33) — 초과 시 dev 는 InMemory 폴백.
@@ -246,6 +253,22 @@ class Settings(BaseSettings):
         min_claim_ttl = self.llm_timeout_s * (self.llm_max_retries + 1) * 2
         if self.session_end_claim_ttl_s <= min_claim_ttl:
             raise ValueError("SESSION_END_CLAIM_TTL_S must exceed the two-stage LLM timeout budget")
+        if self.profile_session_idle_timeout_s <= 0:
+            raise ValueError("PROFILE_SESSION_IDLE_TIMEOUT_S must be positive")
+        if self.profile_idle_sweep_interval_s <= 0:
+            raise ValueError("PROFILE_IDLE_SWEEP_INTERVAL_S must be positive")
+        if self.profile_idle_sweep_batch_size <= 0:
+            raise ValueError("PROFILE_IDLE_SWEEP_BATCH_SIZE must be positive")
+        if self.profile_idle_max_concurrency <= 0:
+            raise ValueError("PROFILE_IDLE_MAX_CONCURRENCY must be positive")
+        idle_batch_waves = (
+            self.profile_idle_sweep_batch_size + self.profile_idle_max_concurrency - 1
+        ) // self.profile_idle_max_concurrency
+        if self.profile_idle_claim_ttl_s <= idle_batch_waves * min_claim_ttl:
+            raise ValueError(
+                "PROFILE_IDLE_CLAIM_TTL_S must exceed the two-stage LLM timeout budget "
+                "for all configured batch waves"
+            )
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
         if self.state_store_pool_min_size > self.state_store_pool_max_size:

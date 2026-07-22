@@ -27,7 +27,7 @@ from weakref import WeakValueDictionary
 from langgraph.store.base import BaseStore
 from langgraph.store.memory import InMemoryStore
 
-from app.agents.profile import processed_events
+from app.agents.profile import processed_events, session_activity
 from app.core.config import get_settings
 from app.core.pg_resilience import (
     hardened_pg_conninfo,
@@ -172,7 +172,7 @@ class ProfileStore:
                 )
             )
             # 동일 텍스트가 이미 있으면 재승격 스킵(멱등) — cap 유무와 무관하게 항상 수행한다.
-            # session_end 재처리(clear_session_ctx_upto 실패·재전송·다음 sleep-time 배치)로 같은
+            # session finalizer 재처리(clear_session_ctx_upto 실패·I-20 재전송·다음 idle sweep)로 같은
             # 델타가 다시 뽑혀도 중복 fact 가 안 쌓이게 하는데, dedup 을 cap 분기 안에만 두면 새
             # 호출부가 cap 인자를 실수로 빠뜨렸을 때 이 보호가 조용히 무력화된다(PR #47 후속 리뷰).
             if any(it.value["fact"] == fact for it in items):
@@ -394,6 +394,7 @@ def reset_profile_store() -> None:
     global _init_lock
     set_store(InMemoryStore(index=_fallback_index_config()))
     processed_events.reset()
+    session_activity.reset()
     _init_lock = asyncio.Lock()
     _session_locks.clear()
     _fact_locks.clear()

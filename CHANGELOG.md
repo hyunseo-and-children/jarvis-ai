@@ -9,6 +9,22 @@
 
 ## [Unreleased]
 
+### Added
+- **이슈 #79 — AI 내부 프로필 inactivity timeout** — 회원 발화 저장과 같은 pg-profile
+  transaction에서 세션별 `last_activity_at`을 DB 시각으로 갱신하고, 10분 비활동 세션을 1분
+  주기의 bounded `FOR UPDATE SKIP LOCKED` sweep으로 선점한다. Spring I-20(`logout`·
+  `newConversation`)과 timeout은 고정키 claim으로 직렬화되는 공통 finalizer를 사용한다. Spring
+  종료만 멱등키를 영구 완료하고, idle 처리는 재개 가능한 checkpoint로 claim을 해제하여 같은
+  sessionId의 후속 발화를 다시 flush한다. 새 회원 발화는 같은 DB transaction에서 이전
+  `PROCESSING`/`COMPLETED` 종료 generation을 무효화하고, terminal finalizer는 처리 중 갱신된
+  activity를 `COMPLETED`로 덮지 않는다. scheduler는 라이브 스트림 슬롯을 점유하지 않으며,
+  처리 동시성 상한, 전체 batch wave를 포괄하는 claim TTL 검증, claim lease/crash 복구,
+  claim별 오류 격리, activity 완료 실패의 retryable 집계, LLM 실패 시 버퍼 보존을 포함한다.
+  conversation/activity 양쪽 schema 초기화는 동일 advisory lock을 사용해 콜드스타트 DDL 경합을 막는다.
+  I-20 입력 파생 단계의 내부 예외도 `retryable`/202로 강등해 best-effort 응답 계약을 유지한다.
+  `tabClose` 신호나 추가 HTTP API는 도입하지 않았다. (api-spec §3.5, v0.15.19;
+  SPEC-PROFILE-001 v0.4.0)
+
 ### Changed
 - **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 등 미정의 값은 항목별로 skip하지 않고 페이지 전체를 fail-closed 처리해 artifact·커서를 유지하며, Spring 수정 후 같은 `since`부터 재처리한다. 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.18)
 

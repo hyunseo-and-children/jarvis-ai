@@ -30,8 +30,9 @@ class SessionEndEvent(CamelModel):
     [v0.15.17, 이슈 #62] BE 실측 payload 정렬 — 구 초안의 eventId·endedAt 제거, userId 를
     number(BIGINT)로 정정. 멱등키는 `session-end:{userId}:{sessionId}` 고정키(app/api/events.py) —
     Spring 이 쏘는 종료(NEW_CONVERSATION·LOGOUT)는 모두 세션을 삭제하므로 "하나의 sessionId = 하나의
-    논리적 종료" 가 성립한다(BE 실측: tabClose·idle 은 미발화). 같은 (userId, sessionId) 재전송만 중복 처리.
-    reason: logout | tabClose | inactivityTimeout | newConversation 등 — enum 미강제, 최대 64자.
+    논리적 종료"가 성립한다. 같은 (userId, sessionId) 재전송만 중복 처리한다. Spring의 알려진 reason은
+    logout | newConversation이며 enum은 강제하지 않고 최대 64자로 제한한다. inactivity timeout은 AI
+    내부 스케줄러가 같은 finalizer로 처리하며 tabClose wire 신호는 사용하지 않는다.
     """
 
     # 세션 소유 회원 id(BIGINT, JWT sub 와 동종) — 프로필 스코프·멱등키 요소.
