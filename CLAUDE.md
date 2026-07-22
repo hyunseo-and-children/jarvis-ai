@@ -4,7 +4,7 @@
 
 ## 계약 우선 (가장 중요)
 
-- 외부 계약의 정본은 **api-spec v0.15.4** (기획 repo `project-planning/my-project/docs/api-spec.md`, 로컬 사본 `docs/api-spec.md`). 계약(엔드포인트·SSE 이벤트·필드·오류 코드)을 바꾸려면 **명세 개정이 먼저** — 코드에서 임의 변경 금지.
+- 계약 정본 `docs/api-spec.md`. 계약(엔드포인트·SSE 이벤트·필드·오류 코드)을 바꾸려면 **명세 개정이 먼저** — 코드에서 임의 변경 금지.
 - 와이어 포맷은 **camelCase** — Pydantic `CamelModel`(by_alias) 규약 유지 (`app/schemas/`).
 - 상품·옵션·장바구니·주문 id는 **숫자(BIGINT)** — DB 스키마 기준(product/product_option/cart_item/order). 회원·판매자 id도 숫자(JWT `sub`). **게스트 id는 UUID 문자열**(guest.id CHAR(36)). SSE는 상품 카드/id를 싣지 않는다(경로 B).
 - **신원은 절대 요청 본문에서 받지 않는다** — AI가 검증한 JWT `sub`에서 도출 (IDOR 방지).

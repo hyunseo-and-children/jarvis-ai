@@ -96,6 +96,26 @@ class CartError(Exception):
     """I-2 담기 운영 오류(401 INTERNAL_TOKEN_INVALID·도달 불가·미상 코드) → action CART_ERROR."""
 
 
+class CartStockInsufficient(Exception):
+    """I-2 담기 재고 부족(400 CART_STOCK_INSUFFICIENT) → action reason STOCK_INSUFFICIENT.
+
+    합산 수량 > 재고(재고는 상품 단위, 옵션별 재고 없음, 2026-07-22 신설). available_stock 은
+    BE error.detail.availableStock(남은 재고) — LLM "재고가 N개뿐이에요" 안내용. 없으면 None.
+    """
+
+    def __init__(self, available_stock: int | None) -> None:
+        self.available_stock = available_stock
+        super().__init__(f"CART_STOCK_INSUFFICIENT (available={available_stock})")
+
+
+class CartQuantityExceeded(CartError):
+    """I-2 담기 수량 상한 초과(400 VALIDATION_ERROR, 합산 > 99) → action reason CART_ERROR.
+
+    BE는 합산 수량 > CartItem.MAX_QUANTITY(99)일 때 VALIDATION_ERROR로 차단(CartService.addItem,
+    재고검사보다 먼저). CartError 하위라 전용 핸들러가 없어도 CART_ERROR로 낙성한다.
+    """
+
+
 def _client() -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
@@ -167,7 +187,7 @@ def _parse_search_response(data: object) -> ProductSearchResult:
     return ProductSearchResult(products=products, total_count=len(products))
 
 
-def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption]]:
+def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption], int | None]:
     """I-2 실패 응답에서 code·options 를 방어적으로 파싱한다(§4.1, BE 스키마 🔴).
 
     code 는 error.code | code. options 는 [BE 확정 2026-07-18] **error.detail.options**
@@ -177,9 +197,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     try:
         body = resp.json()
     except ValueError:
-        return None, []
+        return None, [], None
     if not isinstance(body, dict):
-        return None, []
+        return None, [], None
     err = body.get("error") if isinstance(body.get("error"), dict) else None
     code = (err or {}).get("code") or body.get("code")
     detail = (err or {}).get("detail") if isinstance((err or {}).get("detail"), dict) else None
@@ -232,7 +252,19 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
             )
         elif dropped:
             _log.warning("cart 옵션 %d/%d개 파싱 실패(부분, code=%r)", dropped, len(raw), code)
-    return code, options
+    # 재고 부족(CART_STOCK_INSUFFICIENT)일 때 error.detail.availableStock(남은 재고). 병적 입력 방어.
+    available_stock: int | None = None
+    if detail is not None:
+        raw_stock = detail.get("availableStock")
+        if isinstance(raw_stock, bool):
+            raw_stock = None
+        if isinstance(raw_stock, int) and raw_stock >= 0:
+            available_stock = raw_stock
+        elif isinstance(raw_stock, float) and math.isfinite(raw_stock) and raw_stock >= 0:
+            # BE(Java) Double 직렬화가 4.9999998·5.0000002 처럼 올 수 있어 반올림(extraPrice 파싱과 동일).
+            # int() 절삭은 실제보다 1 적게 안내할 수 있음(재고는 정수 count).
+            available_stock = round(raw_stock)
+    return code, options, available_stock
 
 
 async def search_products(filters: ProductSearchFilters) -> ProductSearchResult:
@@ -284,9 +316,11 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     """장바구니 담기 — BE I-2 문서 채택 (api-spec §4.1). [배선 완료]
 
     POST {spring_base_url}/internal/cart/items + X-Internal-Token. 본문 신원(userId|guestId)은
-    AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 재고검증 없음(C-3 해소 v0.15.5 — OUT_OF_STOCK 폐기).
-    실패 코드는 typed 예외로 전파: CART_OPTION_REQUIRED→CartOptionRequired(options),
-    CART_OPTION_INVALID→CartOptionInvalid(options), 404→CartProductNotFound, 그 외→CartError.
+    AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 BE 재고검증 있음(합산 수량 > 재고 →
+    CART_STOCK_INSUFFICIENT + availableStock, 2026-07-22). 실패 코드는 typed 예외로 전파:
+    CART_OPTION_REQUIRED→CartOptionRequired(options), CART_OPTION_INVALID→CartOptionInvalid(options),
+    CART_STOCK_INSUFFICIENT→CartStockInsufficient(availableStock), VALIDATION_ERROR(합산>99)→
+    CartQuantityExceeded, 404→CartProductNotFound, 그 외→CartError.
     """
     try:
         async with _client() as client:
@@ -303,11 +337,24 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
         cart_item_id = payload.get("cartItemId") if isinstance(payload, dict) else None
         return AddToCartResult(success=True, cart_item_id=cart_item_id)
 
-    code, options = _parse_cart_error(resp)
+    code, options, available_stock = _parse_cart_error(resp)
     if resp.status_code == 400 and code == "CART_OPTION_REQUIRED":
         raise CartOptionRequired(options)
     if resp.status_code == 400 and code == "CART_OPTION_INVALID":
         raise CartOptionInvalid(options)
+    if resp.status_code == 400 and code == "CART_STOCK_INSUFFICIENT":
+        raise CartStockInsufficient(available_stock)
+    if resp.status_code == 400 and code == "VALIDATION_ERROR":
+        # 현 계약(api-spec §4.1)상 이 엔드포인트의 VALIDATION_ERROR 는 "합산 수량 > 99"뿐 → 수량 상한으로 매핑.
+        # BE 가 다른 검증 실패를 같은 코드로 재사용하면 계약 드리프트이므로 message 를 남겨 관측 가능하게 한다.
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        err = body.get("error") if isinstance(body, dict) else None
+        be_message = err.get("message") if isinstance(err, dict) else None
+        _log.warning("cart VALIDATION_ERROR → 수량초과로 매핑(드리프트 관측): message=%r", be_message)
+        raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()
     # 401 INTERNAL_TOKEN_INVALID·미상 코드 → 운영 오류

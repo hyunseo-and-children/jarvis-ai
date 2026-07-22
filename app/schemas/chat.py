@@ -126,7 +126,9 @@ class ActionData(CamelModel):
     """`action` 이벤트 — 장바구니 담기 결과 (api-spec §3.1 (3)).
 
     type: CART_ADDED | CART_ADD_FAILED.
-    reason(실패 시, v0.6.0 재편): PRODUCT_NOT_FOUND | CART_ERROR | OUT_OF_STOCK(🔴 협의 C-3).
+    reason(실패 시): PRODUCT_NOT_FOUND | STOCK_INSUFFICIENT | CART_ERROR (STOCK_INSUFFICIENT는
+    BE I-2 CART_STOCK_INSUFFICIENT + availableStock 매핑, 2026-07-22 신설 — 남은 재고 수 안내.
+    OUT_OF_STOCK 폐기: 품절=0 표현이라 'N개 남음'과 불일치, CH-2).
     GUEST_NOT_ALLOWED 폐기 — 게스트 담기 허용(결정 8 개정). 옵션 되물음(CART_OPTION_REQUIRED)은
     실패 action 이 아니라 token 재질문 멀티턴으로 처리한다(api-spec §3.1·§4.1).
     """
@@ -134,7 +136,7 @@ class ActionData(CamelModel):
     type: Literal["CART_ADDED", "CART_ADD_FAILED"]
     message: str
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
-    reason: Literal["OUT_OF_STOCK", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None = None
+    reason: Literal["STOCK_INSUFFICIENT", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None = None
 
 
 class ProductsReadyData(CamelModel):

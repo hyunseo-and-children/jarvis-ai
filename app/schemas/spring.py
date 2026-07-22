@@ -191,7 +191,8 @@ class AddToCartResult(CamelModel):
 
     실패는 HTTP 오류로 옴: 400 CART_OPTION_REQUIRED(options 목록 → 되물음 멀티턴) /
     400 CART_OPTION_INVALID / 404 PRODUCT_NOT_FOUND / 401 INTERNAL_TOKEN_INVALID.
-    SSE action.reason 매핑: PRODUCT_NOT_FOUND | CART_ERROR | OUT_OF_STOCK(🔴 협의).
+    SSE action.reason 매핑: PRODUCT_NOT_FOUND | STOCK_INSUFFICIENT | CART_ERROR (STOCK_INSUFFICIENT는
+    BE CART_STOCK_INSUFFICIENT+availableStock 유래, 2026-07-22).
     """
 
     success: bool
