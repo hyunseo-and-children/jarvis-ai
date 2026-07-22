@@ -32,10 +32,10 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 async def _main(full: bool) -> None:
     result = await run_artifacts_batch(full_rebuild=full)
     _log.info(
-        "run_batch 완료: full=%s processed=%d delisted=%d pages=%d cursor=%s",
+        "run_batch 완료: full=%s processed=%d hidden=%d pages=%d cursor=%s",
         full,
         result.processed,
-        result.delisted,
+        result.hidden,
         result.pages,
         result.cursor,
     )

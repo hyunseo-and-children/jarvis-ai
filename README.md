@@ -196,7 +196,7 @@ uv run pytest tests/integration/test_buyer_flow_e2e.py -q
 |---|---|
 | `test_buyer_flow_e2e.py` | 발화→decompose→검색(I-1)→rerank→push(I-21)→`products.ready`→**카드 조회(CH-5)** — 경로 B 종단, dedup(I-19), 멀티턴, 담기(I-2)·조회(I-18) |
 | `test_profile_flow_e2e.py` | 발화 누적→`session-end`(I-20)→델타·게이트 승격→consolidation→`GET /profile/me`, 멱등·"기억해" hot-path |
-| `test_batch_flow_e2e.py` | I-17 pull→enrich→search_doc→임베딩→upsert, `hasMore` 페이지네이션·커서 전진·`DELISTED`·full_rebuild |
+| `test_batch_flow_e2e.py` | I-17 pull→enrich→search_doc→임베딩→upsert, `hasMore` 페이지네이션·커서 전진·`HIDDEN`·full_rebuild |
 | `test_degrade_e2e.py` | `SEARCH_FAILED`·`LLM_UNAVAILABLE`/`LLM_TIMEOUT`·rerank 폴백·push 실패(`done` 종료)·이력 실패·옵션 되물음 |
 | `test_auth_e2e_flow.py` | **운영 인증 레인** — RS256 스트림 티켓 + JWKS 로컬 검증 위에서 같은 흐름 완주, 신원=검증된 `sub`(IDOR), 무토큰 401 |
 

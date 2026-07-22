@@ -76,7 +76,7 @@ class PgCatalogArtifactStore:
                 ),
             )
 
-    def delete(self, product_id: int) -> None:  # DELISTED — 생성물 제거(유령 상품 방지, §4.8)
+    def delete(self, product_id: int) -> None:  # HIDDEN — 생성물 제거(유령 상품 방지, §4.8)
         with self._pool.connection() as conn:
             conn.execute("DELETE FROM products WHERE product_id = %s", (product_id,))
 

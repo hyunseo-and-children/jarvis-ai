@@ -42,9 +42,9 @@ def _run_incremental_batch() -> None:
     try:
         result = asyncio.run(run_artifacts_batch(full_rebuild=False))
         _log.info(
-            "scheduler 증분 배치 완료: processed=%d delisted=%d pages=%d cursor=%s",
+            "scheduler 증분 배치 완료: processed=%d hidden=%d pages=%d cursor=%s",
             result.processed,
-            result.delisted,
+            result.hidden,
             result.pages,
             result.cursor,
         )

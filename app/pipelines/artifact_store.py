@@ -55,7 +55,7 @@ class CatalogArtifactStore:
         self._items[artifact.product_id] = artifact
 
     def delete(self, product_id: int) -> None:
-        self._items.pop(product_id, None)  # DELISTED — 생성물 제거(유령 상품 방지, §4.8)
+        self._items.pop(product_id, None)  # HIDDEN — 생성물 제거(유령 상품 방지, §4.8)
 
     def clear(self) -> None:
         self._items.clear()

@@ -19,6 +19,7 @@ Python 속성은 snake_case, 직렬화는 by_alias=True 로 camelCase, 입력은
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
@@ -261,13 +262,13 @@ class RecommendationPush(CamelModel):
 
 
 class ProductChange(CamelModel):
-    """I-17 변경분 항목. status=DELISTED 필수 — AI 생성물 삭제/비활성 트리거 (§4.8).
+    """I-17 변경분 항목. status=HIDDEN 은 AI 생성물 삭제/비활성 트리거 (§4.8).
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     """
 
     product_id: int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
-    status: str  # ACTIVE | DELISTED
+    status: Literal["ON_SALE", "HIDDEN"]
     updated_at: str  # ISO-8601
     name: str | None = None
     description: str | None = None

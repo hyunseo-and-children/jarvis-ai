@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from app.core.config import get_settings
 from app.pipelines import embedding as _embedding
@@ -33,7 +34,7 @@ def _embed(texts):
     return [[float(len(t)), 1.0] for t in texts]  # 결정적 2차원(값 자체는 미검증)
 
 
-def _change(pid, status="ACTIVE", name="여행 방수 파우치"):
+def _change(pid, status="ON_SALE", name="여행 방수 파우치"):
     return ProductChange(
         product_id=pid,
         status=status,
@@ -44,6 +45,19 @@ def _change(pid, status="ACTIVE", name="여행 방수 파우치"):
         brand="트래블",
         attributes={"방수": True},
     )
+
+
+@pytest.mark.parametrize("status", ["ON_SALE", "HIDDEN"])
+def test_product_change_accepts_spring_product_status(status):
+    change = ProductChange(product_id=1, status=status, updated_at="2026-07-20T00:00:00Z")
+
+    assert change.status == status
+
+
+@pytest.mark.parametrize("status", ["ACTIVE", "DELISTED"])
+def test_product_change_rejects_legacy_status(status):
+    with pytest.raises(ValidationError):
+        ProductChange(product_id=1, status=status, updated_at="2026-07-20T00:00:00Z")
 
 
 # ── HTTP fake (fetch_product_changes 배선 검증) ──
@@ -108,7 +122,7 @@ async def test_batch_processes_and_upserts():
         fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
     )
     assert result.processed == 2
-    assert result.delisted == 0
+    assert result.hidden == 0
     assert store.count() == 2
     art = store.get(1)
     assert art is not None and art.embedding and art.search_doc
@@ -116,19 +130,19 @@ async def test_batch_processes_and_upserts():
     assert store.get_cursor() == "c1"
 
 
-async def test_batch_delisted_removes_artifact():
+async def test_batch_hidden_removes_artifact():
     store = CatalogArtifactStore()
     store.upsert(CatalogArtifact(product_id=1, search_doc="x", embedding=[1.0, 0.0]))
 
     async def fetch(cursor, limit):
         return ProductChangesPage(
-            items=[_change(1, status="DELISTED")], next_cursor="c1", has_more=False
+            items=[_change(1, status="HIDDEN")], next_cursor="c1", has_more=False
         )
 
     result = await run_artifacts_batch(
         fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
     )
-    assert result.delisted == 1
+    assert result.hidden == 1
     assert result.processed == 0
     assert store.get(1) is None
 
@@ -191,7 +205,7 @@ async def test_fetch_product_changes_parses_envelope(monkeypatch):
     body = {
         "success": True,
         "data": {
-            "items": [{"productId": 7, "status": "ACTIVE", "updatedAt": "t", "name": "n"}],
+            "items": [{"productId": 7, "status": "ON_SALE", "updatedAt": "t", "name": "n"}],
             "nextCursor": "c9",
             "hasMore": True,
         },
@@ -201,6 +215,24 @@ async def test_fetch_product_changes_parses_envelope(monkeypatch):
     assert page.has_more is True
     assert page.next_cursor == "c9"
     assert page.items[0].product_id == 7
+
+
+@pytest.mark.parametrize("status", ["ACTIVE", "DELISTED"])
+async def test_fetch_product_changes_rejects_legacy_status(monkeypatch, status):
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [{"productId": 7, "status": status, "updatedAt": "t"}],
+            "nextCursor": None,
+            "hasMore": False,
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, body)))
+
+    with pytest.raises(sc.SpringUnavailableError, match="fetch_product_changes 실패"):
+        await sc.fetch_product_changes("0", 500)
 
 
 async def test_fetch_product_changes_error_raises(monkeypatch):

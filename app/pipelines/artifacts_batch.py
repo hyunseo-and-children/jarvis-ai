@@ -1,7 +1,7 @@
 """AI 생성물 갱신 배치 — I-17 pull 러너 (api-spec §4.8, C-4, 이슈 #7).
 
-fetch_product_changes 로 변경분을 커서 기반 pull(hasMore 루프) → DELISTED 는 생성물 삭제 →
-나머지는 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store upsert. 커서는 페이지 처리
+fetch_product_changes 로 변경분을 커서 기반 pull(hasMore 루프) → HIDDEN 은 생성물 삭제 →
+ON_SALE 은 enrich(Haiku) → search_doc 조립 → 임베딩 → artifact_store upsert. 커서는 페이지 처리
 성공 후에만 전진(자연 복구, §4.8).
 
 증분(기본): 대상 스토어에 직접 upsert 하고 페이지마다 커서 전진.
@@ -31,7 +31,7 @@ from app.schemas.spring import ProductChange, ProductChangesPage
 from app.services import spring_client
 
 _log = logging.getLogger(__name__)
-_DELISTED = "DELISTED"
+_HIDDEN = "HIDDEN"
 
 Fetch = Callable[[str | None, int], Awaitable[ProductChangesPage]]
 Embed = Callable[[list[str]], list[list[float]]]
@@ -40,7 +40,7 @@ Embed = Callable[[list[str]], list[list[float]]]
 @dataclass
 class BatchResult:
     processed: int
-    delisted: int
+    hidden: int
     pages: int
     cursor: str | None
 
@@ -90,13 +90,13 @@ async def _drain(
     페이지 처리 중 예외는 그대로 전파 — 해당 페이지 커서 미전진으로 다음 주기 재개(자연 복구).
     """
     cursor = start_cursor
-    processed = delisted = pages = 0
+    processed = hidden = pages = 0
     while True:
         page = await fetch(cursor, settings.catalog_batch_page_size)
         for change in page.items:
-            if change.status == _DELISTED:
+            if change.status == _HIDDEN:
                 target.delete(change.product_id)
-                delisted += 1
+                hidden += 1
                 continue
             await _process_change(change, llm=llm, embed=embed, store=target, settings=settings)
             processed += 1
@@ -110,7 +110,7 @@ async def _drain(
         if not page.next_cursor:
             _log.warning("hasMore=True 이나 nextCursor 없음 — 배치 중단(무한루프 방지)")
             break
-    return BatchResult(processed=processed, delisted=delisted, pages=pages, cursor=cursor)
+    return BatchResult(processed=processed, hidden=hidden, pages=pages, cursor=cursor)
 
 
 async def run_artifacts_batch(
@@ -148,9 +148,9 @@ async def run_artifacts_batch(
         )
 
     _log.info(
-        "artifacts batch: processed=%d delisted=%d pages=%d rebuild=%s",
+        "artifacts batch: processed=%d hidden=%d pages=%d rebuild=%s",
         result.processed,
-        result.delisted,
+        result.hidden,
         result.pages,
         full_rebuild,
     )

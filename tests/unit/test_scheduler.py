@@ -72,7 +72,7 @@ def test_run_incremental_batch_calls_run_artifacts_batch_with_full_rebuild_false
 
     async def fake_run_artifacts_batch(*, full_rebuild):
         calls.append(full_rebuild)
-        return BatchResult(processed=1, delisted=0, pages=1, cursor="c1")
+        return BatchResult(processed=1, hidden=0, pages=1, cursor="c1")
 
     monkeypatch.setattr(sched_mod, "run_artifacts_batch", fake_run_artifacts_batch)
 

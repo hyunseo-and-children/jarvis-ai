@@ -1,6 +1,6 @@
 """AI 생성물 배치 흐름 E2E 스모크 (이슈 #35) — I-17 pull → enrich → search_doc → 임베딩 → upsert.
 
-api-spec §4.8(I-17 변경분 pull, hasMore 루프·커서 전진·DELISTED)이 실 HTTP 경계를 통해
+api-spec §4.8(I-17 변경분 pull, hasMore 루프·커서 전진·HIDDEN)이 실 HTTP 경계를 통해
 동작하는지 확인한다. 임베딩은 주입형 fake(torch 미설치 CI 에서도 동작).
 AI Postgres 에는 **AI 생성물만** 저장한다 — 상품 원본 컬럼 사본 금지(§4.8).
 """
@@ -22,7 +22,7 @@ def fake_embed(texts: list[str]) -> list[list[float]]:
 def _change(product_id: int, **overrides) -> dict:
     change = {
         "productId": product_id,
-        "status": "ACTIVE",
+        "status": "ON_SALE",
         "updatedAt": "2026-07-20T00:00:00Z",
         "name": f"상품-{product_id}",
         "description": "여행용 방수 파우치",
@@ -91,13 +91,13 @@ async def test_batch_cursor_advances_for_next_cycle(spring, batch_llm) -> None:
     assert store.get(103) is not None, "2주기는 커서 이후 변경분을 받아야 한다"
 
 
-async def test_batch_removes_delisted_artifacts(spring, batch_llm) -> None:
-    """DELISTED 는 생성물을 삭제한다 — 판매 종료 상품이 추천 후보에 남지 않게(§4.8)."""
+async def test_batch_removes_hidden_artifacts(spring, batch_llm) -> None:
+    """HIDDEN 은 생성물을 삭제한다 — 판매 종료 상품이 추천 후보에 남지 않게(§4.8)."""
     spring.changes_pages = [
         {"since": "0", "items": [_change(101)], "nextCursor": "c1", "hasMore": False},
         {
             "since": "c1",
-            "items": [_change(101, status="DELISTED")],
+            "items": [_change(101, status="HIDDEN")],
             "nextCursor": "c2",
             "hasMore": False,
         },
@@ -108,7 +108,7 @@ async def test_batch_removes_delisted_artifacts(spring, batch_llm) -> None:
     assert store.get(101) is not None
 
     result = await run_artifacts_batch(llm=batch_llm, embed=fake_embed, store=store)
-    assert result.delisted == 1
+    assert result.hidden == 1
     assert store.get(101) is None
 
 

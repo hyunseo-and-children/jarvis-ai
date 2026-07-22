@@ -9,6 +9,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 응답은 거부하며 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.16)
+
 ### Security
 - **이슈 #61 후속 — I-21 `reason` 방어 정제 + 길이 목표(PR #66 리뷰 반영)** — rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트인데, #61로 처음 신뢰경계(AI→Spring→CH-5→FE)를 넘어 최종 사용자에게 노출된다. push 직전 `_sanitize_reason`으로 **비-whitespace 제어문자(NUL·ESC·DEL 등)·zero-width·bidi 포맷 문자를 제거하고 공백류(개행 포함)를 접은 뒤 안전 상한(config `reason_max_len`=200)으로 truncate**해 ANSI 이스케이프·양방향 조작·인젝션성 텍스트·초장문을 차단(`\s`로는 안 걸리는 표시 조작 문자 포함). 표시 목표는 rerank 프롬프트로 **한글 ≤40자 1문장** 유도(소프트), 시각적 오버플로(줄임/더보기)는 FE 소관(경로 B). 긴/개행 rationale 정제 회귀 테스트 추가.
 

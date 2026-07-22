@@ -25,7 +25,7 @@ async def test_main_calls_run_artifacts_batch_with_full_rebuild(monkeypatch):
 
     async def fake_run_artifacts_batch(*, full_rebuild):
         calls.append(full_rebuild)
-        return BatchResult(processed=1, delisted=0, pages=1, cursor="c1")
+        return BatchResult(processed=1, hidden=0, pages=1, cursor="c1")
 
     monkeypatch.setattr(run_batch, "run_artifacts_batch", fake_run_artifacts_batch)
 
@@ -39,7 +39,7 @@ async def test_main_incremental_when_not_full(monkeypatch):
 
     async def fake_run_artifacts_batch(*, full_rebuild):
         calls.append(full_rebuild)
-        return BatchResult(processed=0, delisted=0, pages=0, cursor=None)
+        return BatchResult(processed=0, hidden=0, pages=0, cursor=None)
 
     monkeypatch.setattr(run_batch, "run_artifacts_batch", fake_run_artifacts_batch)
 
