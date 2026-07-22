@@ -3,12 +3,12 @@
 CORS 미들웨어(오리진은 설정 주입), MVP 라우터(chat/seller), GET /health 를 구성한다.
 FE 가 AI 서버를 다른 오리진에서 직접 호출하므로 CORS 가 앞단으로 이동했다 (api-spec §2.7 / C-11).
 
-[변경 2026-07-15] MVP 표면은 /chat, /seller/chat, /health 로 축소.
-  - [TODO MVP] GET /profile/me(§3.4)·POST /events/session-end(§3.5) 라우터 등록 필요 —
-    현재 플레이스홀더(app/api/{profile,events}.py). catalog/order 이벤트는 영구 미채택.
+[변경 2026-07-15] MVP 표면은 /chat, /seller/chat, /profile/me,
+  /events/session-end, /health 로 확정. catalog/order 이벤트는 영구 미채택.
   - [완료] §2.9 스트림 수명주기(app/core/stream.py)·§2.8 레이트 리밋(app/core/ratelimit.py)·§2.5 오류 봉투(app/core/errors.py).
 
-[추가 2026-07-20, 이슈 #31] lifespan 에서 I-17 배치 스케줄러(app/pipelines/scheduler.py)를
+[추가 2026-07-20/23, 이슈 #31/#79] lifespan 에서 I-17 증분 pull과 프로필 inactivity
+스케줄러(app/pipelines/scheduler.py)를
 기동/종료한다 — TestClient(app) 를 `with` 없이 쓰는 기존 테스트들은 lifespan 이 발동하지 않아
 영향이 없다(경험적으로 확인).
 """
@@ -41,7 +41,7 @@ from app.pipelines.scheduler import start_scheduler, stop_scheduler
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """앱 기동 시 I-17 증분 배치 스케줄러를 시작하고, 종료 시 정지한다 (이슈 #31)."""
+    """앱 기동 시 I-17·프로필 idle 스케줄러를 시작하고 종료 시 정지한다 (#31/#79)."""
     start_scheduler()
     try:
         yield

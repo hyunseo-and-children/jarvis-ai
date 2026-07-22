@@ -1,14 +1,12 @@
-"""I-17 배치 주기 증분 pull 스케줄러 (이슈 #31, api-spec §4.8).
+"""I-17 증분 pull + 프로필 inactivity 스케줄러 (이슈 #31/#79).
 
-APScheduler BackgroundScheduler 는 잡을 자체 스레드 풀에서 실행한다 — FastAPI 메인
-이벤트루프(요청 처리)와 완전히 분리돼, 배치가 도는 동안에도 사용자 요청 응답이 막히지 않는다.
-잡 함수(_run_incremental_batch)는 동기 콜러블이며, 그 안에서 asyncio.run() 으로 자체 이벤트루프를
-새로 열어 비동기 배치(run_artifacts_batch)를 완결한다. app/main.py 의 lifespan 이 앱 기동/종료에
-맞춰 start_scheduler()/stop_scheduler() 를 호출한다.
+APScheduler AsyncIOScheduler는 FastAPI lifespan의 event loop에 결합한다. async 프로필 idle
+job은 loop-bound pg-profile pool과 활성 스트림 registry를 같은 loop에서 안전하게 사용한다.
+동기 I-17 job은 기본 executor에서 실행되고 내부 ``asyncio.run()``으로 독립 배치를 완결한다.
 
 전체 구축(backfill)은 여기서 다루지 않는다 — 사람이 CLI로 명시 트리거한다(run_batch.py, 이슈 #31).
 
-[MVP 단일 인스턴스 전제, PR #42 리뷰] BackgroundScheduler 는 프로세스 로컬 스케줄러라 분산
+[MVP 단일 인스턴스 전제, PR #42 리뷰] AsyncIOScheduler는 프로세스 로컬 스케줄러라 분산
 락·리더 선출이 없다 — 다중 인스턴스(uvicorn --workers, k8s replica 등)로 배포하면 인스턴스마다
 독립적으로 같은 배치가 동시 실행돼 Google API 호출이 인스턴스 수만큼 배가된다. 이 리포는 아직
 단일 인스턴스 배포만 지원한다(app/core/ratelimit.py·app/core/stream.py 와 동일 전제 — 두 곳 다
@@ -21,20 +19,24 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
+from app.agents.profile.idle_timeout import run_idle_sweep
 from app.core.config import get_settings
 from app.pipelines.artifacts_batch import run_artifacts_batch
 
 _log = logging.getLogger(__name__)
-_JOB_ID = "i17_incremental_pull"
+_I17_JOB_ID = "i17_incremental_pull"
+_PROFILE_IDLE_JOB_ID = "profile_idle_timeout"
+# 하위 호환 — 기존 내부 테스트/운영 도구가 참조하던 이름.
+_JOB_ID = _I17_JOB_ID
 
-_scheduler: BackgroundScheduler | None = None
+_scheduler: AsyncIOScheduler | None = None
 
 
 def _run_incremental_batch() -> None:
-    """BackgroundScheduler 워커 스레드에서 동기 호출 — 자체 이벤트루프로 증분 배치 1회 완결.
+    """AsyncIO scheduler 기본 executor에서 동기 호출 — 자체 이벤트루프로 증분 배치 1회 완결.
 
     잡 실패가 스케줄러 프로세스를 죽이면 안 되므로 예외를 삼키고 로그만 남긴다
     (다음 주기에 저장된 커서부터 자연 재개, §4.8).
@@ -52,31 +54,48 @@ def _run_incremental_batch() -> None:
         _log.exception("scheduler 증분 배치 실패 — 다음 주기 재개")
 
 
-def start_scheduler() -> BackgroundScheduler | None:
+async def _run_profile_idle_sweep() -> None:
+    """FastAPI event loop에서 inactivity sweep 1회를 실행하고 실패를 다음 tick으로 격리한다."""
+    try:
+        await run_idle_sweep()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - job 실패 격리, activity lease가 다음 sweep 복구
+        _log.exception("profile idle sweep 실패 — 다음 주기 재개")
+
+
+def start_scheduler() -> AsyncIOScheduler:
     """스케줄러를 시작하고 인스턴스를 반환한다 (멱등 — 이미 떠 있으면 그대로 반환).
 
-    google_api_key 미구성이면 아예 기동하지 않는다 — 시작해봐야 매 주기 EmbeddingError 로
-    조용히 실패만 반복하기 때문이다(원래 문제, PR #42 리뷰). auth_mode=jwks(운영)는
-    config.py 검증으로 기동 자체가 막히지만, dev 모드는 그 검증을 안 타므로 여기서
-    별도로 막는다.
+    프로필 idle job은 provider 키와 무관하게 항상 등록한다. GOOGLE_API_KEY가 없으면 I-17
+    job만 생략한다. 호출은 FastAPI lifespan 등 실행 중인 event loop 안에서 해야 한다.
     """
     global _scheduler
     if _scheduler is not None:
         return _scheduler
     settings = get_settings()
-    if not settings.google_api_key:
-        _log.warning(
-            "GOOGLE_API_KEY 미설정 — I-17 배치 스케줄러를 기동하지 않습니다 "
-            "(설정 후 재기동하면 활성화됩니다)"
-        )
-        return None
-    scheduler = BackgroundScheduler()
+    scheduler = AsyncIOScheduler(event_loop=asyncio.get_running_loop())
     scheduler.add_job(
-        _run_incremental_batch,
-        IntervalTrigger(seconds=settings.catalog_batch_interval_s),
-        id=_JOB_ID,
+        _run_profile_idle_sweep,
+        IntervalTrigger(seconds=settings.profile_idle_sweep_interval_s),
+        id=_PROFILE_IDLE_JOB_ID,
         replace_existing=True,
+        max_instances=1,
+        coalesce=True,
     )
+    if settings.google_api_key:
+        scheduler.add_job(
+            _run_incremental_batch,
+            IntervalTrigger(seconds=settings.catalog_batch_interval_s),
+            id=_I17_JOB_ID,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+    else:
+        _log.warning(
+            "GOOGLE_API_KEY 미설정 — I-17 job만 비활성화합니다 (profile idle job은 계속 실행됩니다)"
+        )
     scheduler.start()
     _scheduler = scheduler
     return scheduler
@@ -86,5 +105,9 @@ def stop_scheduler() -> None:
     """스케줄러를 정지한다 (앱 종료·테스트 격리 공용)."""
     global _scheduler
     if _scheduler is not None:
-        _scheduler.shutdown(wait=False)
+        try:
+            _scheduler.shutdown(wait=False)
+        except RuntimeError:
+            # 테스트/비정상 종료에서 scheduler가 묶였던 loop가 먼저 닫힌 경우.
+            pass
         _scheduler = None

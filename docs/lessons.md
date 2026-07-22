@@ -55,6 +55,7 @@
 ## [2026-07-21] 통지 엔드포인트의 멱등키는 "그 이벤트가 몇 번 오는지"를 BE 실측으로 확인한 뒤 정한다 — 가정 금지
 - 증상: PR #64 — session-end 멱등키를 놓고 두 모델이 충돌했다. (a) `(userId, sessionId)` 고정키(세션당 1회 종료 전제) vs (b) 버퍼 내용 해시(세션이 살아남아 재체크포인트된다는 전제 — tabClose 저장 후 재활동 → inactivityTimeout 재저장). 어느 쪽이 맞는지는 **"session-end 가 한 sessionId 에 몇 번 오는가"** 라는 BE 사실에 달렸는데, 그걸 확인하지 않고 (b)로 갔다가 뒤집혔다.
 - 원인·확인: BE(`ChatSessionService`) 실측 — session-end 를 발화하는 `NEW_CONVERSATION`(issue 축출)·`LOGOUT`(endSession)은 **모두 세션을 Redis 에서 삭제**하며, `tabClose`·`inactivityTimeout`(IDLE_TIMEOUT)은 **아예 발화되지 않는다**. 즉 "한 sessionId = 한 번의 논리적 종료"가 참이라 (b)가 방어하려던 재체크포인트는 실재하지 않았다 → 고정키(a)가 정답이고 내용 해시는 과설계.
+- 후속 경계(PR #83): 위 결론은 **Spring I-20의 영구 종료**에만 적용된다. AI가 자체 판정하는 inactivity는 생산자 종료 이벤트가 아니라 재개 가능한 checkpoint이므로, 같은 고정키를 동시 실행 mutex(`PROCESSING`)로는 재사용하되 idle 성공으로 `COMPLETED`를 영구 소비하면 안 된다. idle 뒤 같은 sessionId의 새 활동은 activity를 `ACTIVE`로 되돌리고 다음 checkpoint가 다시 처리해야 한다.
 - 규칙:
   - **멱등키 모델을 정하기 전에 "이 이벤트가 한 번 오는가, 여러 번 오는가"를 생산자(BE) 코드/실측으로 확인**한다 — 가정으로 "여러 번 온다"고 단정하면 불필요한 내용/버전 키로 과설계한다. 한 번이면 신원 고정키가 가장 단순·안전하다.
   - **seq/카운터를 멱등키에 쓰기 전 "그 값이 리셋되는 경로"를 확인**한다(여기선 버퍼가 비면 item 삭제로 seq 리셋 → 판별자 부적합).

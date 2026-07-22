@@ -67,6 +67,7 @@ class RequestObservation:
     started: float
     pending_message: str
     pending_key: str
+    pending_session_id: str
     turn_id: str | None = None
     first_token_at: float | None = None
     assistant_parts: list[str] = field(default_factory=list)
@@ -80,7 +81,11 @@ class RequestObservation:
         FAILED 턴)이 다음 컨텍스트를 오염시키지 않는다."""
         if self.turn_id is None:
             self.turn_id = await self.store.save_user_message(
-                self.pending_key, self.user_id, self.role, self.pending_message
+                self.pending_key,
+                self.user_id,
+                self.role,
+                self.pending_message,
+                session_id=self.pending_session_id,
             )
 
     def record_model_call(
@@ -190,6 +195,7 @@ def start_observation(
         started=now,
         pending_message=message,
         pending_key=conversation_key(subject, conversation_id),
+        pending_session_id=conversation_id,
     )
 
 
