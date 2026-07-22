@@ -149,6 +149,7 @@ async def seen_event(event_id: str) -> bool:
     if pool is None:
         assert _fallback_pool is not None
         return event_id in _fallback_pool
+
     async def _run() -> bool:
         async with pool.connection() as conn:
             row = await (
@@ -170,6 +171,7 @@ async def mark_if_new(event_id: str) -> bool:
             return False
         _fallback_pool.add(event_id)
         return True
+
     async def _run() -> bool:
         async with pool.connection() as conn:
             row = await (
@@ -190,6 +192,7 @@ async def mark_event(event_id: str) -> None:
         assert _fallback_pool is not None
         _fallback_pool.add(event_id)
         return
+
     async def _run() -> None:
         async with pool.connection() as conn:
             await conn.execute(
@@ -207,6 +210,7 @@ async def unmark_event(event_id: str) -> None:
         assert _fallback_pool is not None
         _fallback_pool.discard(event_id)
         return
+
     async def _run() -> None:
         async with pool.connection() as conn:
             await conn.execute("DELETE FROM processed_events WHERE event_id = %s", (event_id,))

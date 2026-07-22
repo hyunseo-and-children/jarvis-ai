@@ -104,7 +104,9 @@ class AnalysisPlan(BaseModel):
 
 # judge 채점 축의 단일 출처 — 축 확장 시 ReportScore 에 필드 1개 추가 + 여기 등록(total 자동 합산).
 SCORE_AXES: tuple[str, ...] = ("accuracy", "completeness", "clarity")
-SCORE_AXIS_MAX = 10  # 축당 만점 — 통과 임계(현재 21/30)·루프 횟수는 Settings·verifier 코드 소관(장치 ⑦)
+SCORE_AXIS_MAX = (
+    10  # 축당 만점 — 통과 임계(현재 21/30)·루프 횟수는 Settings·verifier 코드 소관(장치 ⑦)
+)
 
 
 class ReportScore(BaseModel):
@@ -116,15 +118,18 @@ class ReportScore(BaseModel):
     """
 
     accuracy: int = Field(
-        ge=0, le=SCORE_AXIS_MAX,
+        ge=0,
+        le=SCORE_AXIS_MAX,
         description="수치 정합 — 보고서의 수치가 finding evidence 와 일치하는가",
     )
     completeness: int = Field(
-        ge=0, le=SCORE_AXIS_MAX,
+        ge=0,
+        le=SCORE_AXIS_MAX,
         description="완전성 — 전달된 finding 전부를 반영하고 요청 범위를 커버하는가",
     )
     clarity: int = Field(
-        ge=0, le=SCORE_AXIS_MAX,
+        ge=0,
+        le=SCORE_AXIS_MAX,
         description="명료성 — 판매자가 이해하고 실행할 수 있는 서술인가",
     )
     feedback: str = Field(
@@ -139,8 +144,14 @@ class ReportScore(BaseModel):
 
 # update_product 인자 8종과 1:1 — 도구 시그니처가 바뀌면 여기도 함께 갱신한다.
 ProductField = Literal[
-    "name", "price", "original_price", "description",
-    "category", "image_url", "status", "stock_quantity",
+    "name",
+    "price",
+    "original_price",
+    "description",
+    "category",
+    "image_url",
+    "status",
+    "stock_quantity",
 ]
 
 
@@ -165,8 +176,11 @@ class ActionRecommendation(BaseModel):
     """
 
     action_type: Literal[
-        "price_adjust", "description_update", "stock_adjust",
-        "product_visibility", "promotion",
+        "price_adjust",
+        "description_update",
+        "stock_adjust",
+        "product_visibility",
+        "promotion",
     ] = Field(description="추천 유형")
     product_id: int = Field(description="대상 상품 식별자(숫자) — draft 변환의 키(필수)")
     title: str = Field(description="짧은 제목 — '1번: 감귤청 가격 10% 인하' 식 표시 단위")

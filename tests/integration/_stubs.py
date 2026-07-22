@@ -169,7 +169,9 @@ class SpringStub:
             "productName": self._name_of((body or {}).get("productId")),
         }
         self.cart_items.append(item)
-        return httpx.Response(200, json={"success": True, "data": {"cartItemId": item["cartItemId"]}})
+        return httpx.Response(
+            200, json={"success": True, "data": {"cartItemId": item["cartItemId"]}}
+        )
 
     def _cart_view(self) -> httpx.Response:
         return httpx.Response(200, json={"success": True, "data": {"items": self.cart_items}})
@@ -194,7 +196,9 @@ class SpringStub:
             return httpx.Response(500, json={"success": False, "error": {"code": "PUSH_FAILED"}})
         payload = body or {}
         self.pushed_lists[str(payload.get("listId"))] = list(payload.get("productIds") or [])
-        return httpx.Response(200, json={"success": True, "data": {"listId": payload.get("listId")}})
+        return httpx.Response(
+            200, json={"success": True, "data": {"listId": payload.get("listId")}}
+        )
 
     # ── CH-5 목록 조회 (§4.3, FE→Spring) ──
 
@@ -225,7 +229,8 @@ class SpringStub:
                     },
                 )
         return httpx.Response(
-            200, json={"success": True, "data": {"items": [], "nextCursor": since, "hasMore": False}}
+            200,
+            json={"success": True, "data": {"items": [], "nextCursor": since, "hasMore": False}},
         )
 
     # ── 검증 헬퍼 ──
@@ -304,7 +309,9 @@ class ScriptedLLM:
         self._timeout = timeout
         self.calls: list[tuple[str, str]] = []  # (kind, tier)
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
         kind = self._classify(system, tier)
         self.calls.append((kind, tier))
         if kind == "enrich":

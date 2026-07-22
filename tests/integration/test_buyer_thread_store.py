@@ -126,11 +126,10 @@ async def test_revert_store_concurrent_writes_across_postgres_pools() -> None:
     key = _key()
     conninfo = hardened_pg_conninfo(get_settings().profile_db_url)
     pool_config = state_store_pool_config()
-    async with AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config
-    ) as store_a, AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config
-    ) as store_b:
+    async with (
+        AsyncPostgresStore.from_conn_string(conninfo, pool_config=pool_config) as store_a,
+        AsyncPostgresStore.from_conn_string(conninfo, pool_config=pool_config) as store_b,
+    ):
         await store_a.setup()
         await store_b.setup()
         wrappers = [RevertStore(store_a), RevertStore(store_b)]

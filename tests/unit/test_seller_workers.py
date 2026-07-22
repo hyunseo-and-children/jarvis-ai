@@ -52,8 +52,12 @@ WORKERS = [
         SALES_ANOMALY_TOOLS,
         SALES_ANOMALY_PROMPT,
         build_sales_anomaly_agent,
-        {"get_sales_timeseries", "get_order_events", "get_product_change_logs",
-         "search_analysis_guide"},
+        {
+            "get_sales_timeseries",
+            "get_order_events",
+            "get_product_change_logs",
+            "search_analysis_guide",
+        },
     ),
     (
         "conversion",
@@ -74,36 +78,46 @@ WORKERS = [
         CHURN_TOOLS,
         CHURN_PROMPT,
         build_churn_agent,
-        {"get_churn_cohort", "get_order_events", "get_product_change_logs",
-         "get_account_events", "search_analysis_guide"},
+        {
+            "get_churn_cohort",
+            "get_order_events",
+            "get_product_change_logs",
+            "get_account_events",
+            "search_analysis_guide",
+        },
     ),
     (
         "abuse",
         ABUSE_TOOLS,
         ABUSE_PROMPT,
         build_abuse_agent,
-        {"get_behavior_events", "get_order_events", "get_account_events",
-         "search_analysis_guide"},
+        {"get_behavior_events", "get_order_events", "get_account_events", "search_analysis_guide"},
     ),
 ]
 
 _IDS = [w[0] for w in WORKERS]
 
 
-@pytest.mark.parametrize(("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS
+)
 def test_tool_assignment_matches_table(analysis_type, tools, prompt, builder, expected) -> None:
     """배정표(HANDOFF §3)와 정확히 일치 — 초과 배정도 누락도 없다."""
     assert {t.name for t in tools} == expected
 
 
-@pytest.mark.parametrize(("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS
+)
 def test_excludes_write_tools(analysis_type, tools, prompt, builder, expected) -> None:
     """쓰기 도구 3종(create/update/delete)은 분석 워커에 절대 배정되지 않는다(§4)."""
     write_names = {t.name for t in PRODUCT_TOOLS} - {"list_my_products"}
     assert {t.name for t in tools}.isdisjoint(write_names)
 
 
-@pytest.mark.parametrize(("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS
+)
 def test_tools_hide_identity(analysis_type, tools, prompt, builder, expected) -> None:
     """신원 인자(runtime·brand_id·seller_id)는 LLM 노출 스키마에 없다(IDOR)."""
     for t in tools:
@@ -111,7 +125,9 @@ def test_tools_hide_identity(analysis_type, tools, prompt, builder, expected) ->
             assert hidden not in t.args
 
 
-@pytest.mark.parametrize(("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS
+)
 def test_prompt_required_elements(analysis_type, tools, prompt, builder, expected) -> None:
     """확정 프롬프트 필수 요소 — analysis_type 고정·기준서 먼저·공통 규칙 결합."""
     assert analysis_type in prompt  # 워커별 analysis_type 고정 지시
@@ -133,7 +149,9 @@ def test_common_rules_content() -> None:
     assert "날짜를 직접 계산하지 않는다" in WORKER_COMMON_RULES
 
 
-@pytest.mark.parametrize(("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS)
+@pytest.mark.parametrize(
+    ("analysis_type", "tools", "prompt", "builder", "expected"), WORKERS, ids=_IDS
+)
 def test_builder_compiles(analysis_type, tools, prompt, builder, expected) -> None:
     """create_agent 조립이 성공하고 실행 인터페이스(ainvoke)를 갖는다 — LLM 호출 없음."""
     agent = builder()

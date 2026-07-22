@@ -154,7 +154,9 @@ async def rate_limit_middleware(request: Request, call_next):
         # sub 스코프(있으면) 상한 + IP 백스톱 상한(회전/위조 토큰 우회 차단)을 함께 본다.
         over = False
         if sub_key is not None:
-            over = not limiter.allow(sub_key, now, settings.rate_limit_per_min, settings.rate_limit_per_hour)
+            over = not limiter.allow(
+                sub_key, now, settings.rate_limit_per_min, settings.rate_limit_per_hour
+            )
         if not over:
             mult = settings.rate_limit_host_multiplier
             over = not limiter.allow(

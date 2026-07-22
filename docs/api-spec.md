@@ -440,6 +440,8 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 
 #### 요청 (Request) — 제안(초안)
 
+**(a) 일반/제안 요청**
+
 ```json
 {
   "sessionId": "string",
@@ -448,25 +450,47 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
 }
 ```
 
+**(b) 승인 요청(confirm) — [확정 2026-07-22, A-2]**
+
+```json
+{
+  "sessionId": "string",
+  "threadId": "string",
+  "action": "confirm",
+  "draftId": "string"
+}
+```
+
 | 필드 | 타입 | 필수 | 설명 |
 |---|---|---|---|
 | `sessionId` | string | 예 | 세션 식별자(불투명 스레드 키) |
 | `threadId` | string | 예 | 대화 스레드 식별자 |
-| `message` | string | 예 | 통계 질문("이번 주 매출 어때?") 또는 상세 수정 요청("이 상품 설명 더 매력적으로 바꿔줘") |
+| `message` | string | 예¹ | 통계 질문("이번 주 매출 어때?") 또는 상세 수정 요청("이 상품 설명 더 매력적으로 바꿔줘") |
+| `action` | `"confirm"` | 아니오 | **[확정 v0.14.1]** HITL 승인 신호. draft에 대한 `[적용]`. 지정 시 `draftId` 필수 |
+| `draftId` | string | 조건부 | `action == "confirm"` 일 때 실행할 draft 식별자(스트림1 `draft.draftId`). 누락 시 `400 BAD_REQUEST` |
+
+> ¹ `message`는 일반 발화에서 필수다. 승인 요청(`action == "confirm"`)에서는 비워도 된다 — 승인은 발화가 아니라 구조화 신호이기 때문(HITL 안전장치 ②, 발화 ≠ 동의).
 
 > **[보안] `sellerId`·`brandId`는 요청 본문에 없다** — 판매자 식별자는 JWT `sub`·`brandId` 클레임(+`role == "seller"`)에서만 추출한다(사칭 방지, §2.3 a). AI는 `brandId`를 **검증된 토큰에서** 얻어 집계 역호출(§4.4)의 `{brandId}` path에 쓴다 — 사용자 입력 brandId는 신뢰하지 않는다(§2.6).
 
 #### 응답 (Response) — `text/event-stream`
 
-**(1) 통계 Q&A 흐름**: `token`(답변 토큰) → `done` → (오류 시 `error`). 통계 수치는 MVP에서 `token` 산문으로 응답한다(구조화 `stats` 이벤트는 판매자 SPEC에서 확정). 원천은 **I-6 집계 콜백**(§4.4·아래 데이터 소스).
+**[확정 v0.14.1, 2026-07-22 — 화면 전환 신호]** 판매자 스트림은 이벤트 6종을 쓴다: `meta`·`progress`·`token`·`draft`·`done`·`error`. FE 대시보드가 좌(채팅)/우(패널) 분할이라, 서버가 우측 패널 조치를 명시한다.
+
+- **`meta`** (매 스트림 첫 프레임): `{ "type":"meta", "data":{ "lane": "analysis"|"product"|"general"|"confirm"|"apply"|"refused" } }`. FE 가 레인을 즉시 알아 레이아웃 전환·로딩을 준비한다.
+- **`progress`** (analysis 진행, 0회 이상): `{ "type":"progress", "data":{ "text": "…" } }`. 로딩 표시 — 최종 답변이 아니다(`token` 과 분리).
+- **`done`** (종료): `{ "type":"done", "data":{ "finishReason":"stop", "panel":"replace"|"keep"|"refresh" } }`. `panel` 이 우측 패널 조치를 확정한다 — `replace`(리포트·diff 카드로 교체)·`keep`(유지)·`refresh`(쓰기 반영 → 재조회). `error` 로 끝나면 `done` 이 없고 패널은 유지한다.
+- 구현: `app/api/seller.py`. 구매자 `done`(§3.1)에는 `panel` 이 없다 — 판매자 전용 필드다.
+
+**(1) 통계 Q&A 흐름**: `meta{analysis}` → `progress`×N → `token`(리포트) → `done{panel:"replace"}`. 되묻기(기간 불명 등)는 `token` → `done{panel:"keep"}`. 통계 수치는 MVP에서 `token` 산문으로 응답한다. 원천은 **I-6 집계 콜백**(§4.4·아래 데이터 소스).
 
 **(2) 상품 수정/등록/삭제 흐름 — [확정 v0.11.0]**: 판매자 `product_agent`가 상품 쓰기를 **AI가 Spring internal API로 직접 수행**하되, **모든 쓰기는 HITL 승인 게이트를 통과**한다. 채팅 경로 쓰기는 AI가, FE에서 직접 편집하는 경로는 FE↔Spring(AI 표면 밖)이 담당한다.
 
 **2-스트림(interrupt/resume) 흐름** — SSE 1스트림 = 응답 1회(§2.9)라 승인 대기를 한 연결에 물지 않고 끊고-재개한다:
 ```
-[스트림 1 · 제안]  token(근거) → draft{draftId, op, changes} → (LangGraph interrupt, 상태 checkpointer 저장) → done
-                   FE: diff 카드 + [적용]/[취소]
-[스트림 2 · 승인·실행]  FE가 confirm{draftId} 전송 → 그래프 resume → AI가 I-10/I-11/I-12 호출(§4.5) → token(결과) → done
+[스트림 1 · 제안]  meta{product} → draft{draftId, op, changes} → (LangGraph interrupt, 상태 checkpointer 저장) → done{panel:"replace"}
+                   FE: diff 카드 + [적용]/[취소]  (product 레인은 근거 token 없음 — draft.summary 가 요약)
+[스트림 2 · 승인·실행]  FE가 {action:"confirm", draftId} 전송 → meta{confirm} → 그래프 resume → AI가 I-10/I-11/I-12 호출(§4.5) → token(결과) → done{panel:"refresh"(실행)|"keep"(변경없음)}
 ```
 - **읽기(before)**: 대상 확인은 **I-9 자사 상품 목록**(§4.5)으로 조회.
 - **HITL 안전장치 [HARD]**:
@@ -477,7 +501,9 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
   5. **대기 TTL** — 미승인 draft는 N분 후 만료(checkpoint TTL) — 지연 승인 방지.
 - **삭제(I-12)는 필수 HITL** — soft delete(`status=HIDDEN`, 물리 삭제 없음). HITL(그래프) + soft delete(데이터) 이중 방어. (MVP는 전 쓰기 단순 `[적용]` 확인, 삭제만 문구 강조 권장.)
 - **`draftId`는 선택적 권장** — 제안이 항상 하나·즉시 승인이면 checkpointer만으로도 동작하나, 다중 draft·멱등 대비로 부여를 권장.
-- **HITL 승인 이벤트명·confirm 전송 형식(별도 요청 vs 특수 message)은 🔴 판매자 SPEC/BE 확정** (S-2 interrupt/resume 계열).
+- **confirm 전송 형식 = [확정 v0.14.1, 2026-07-22]** 요청 본문 **최상위 `action`/`draftId` 필드**(위 요청 (b)). 구 "message 문자열에 JSON 을 실어 파싱" 방식은 폐기 — FE 가 message 를 이스케이프하지 않는다. AI 코드 정합 완료(`app/schemas/seller.py::SellerChatRequest`, `app/api/seller.py`). HITL 승인은 별도 이벤트명 없이 스트림2가 `token`(결과)+`done` 으로 응답한다.
+- **confirm 결과는 전부 HTTP 200 [확정 v0.14.1]** — 실행/만료/미존재/소유불일치/중복(멱등)/stale 모두 SSE `token`(안내)+`done` 으로 온다(HTTP 오류 아님). 실제 쓰기만 `done{panel:"refresh"}`, 나머지는 `done{panel:"keep"}`. 소유 불일치는 미존재와 동일 문구(존재 비노출). Spring 장애만 `token`+`error{INTERNAL}`(초안 유지, 재confirm 가능). 구 "409 `DRAFT_EXPIRED`/`DRAFT_NOT_FOUND`" 표기는 폐기.
+- **스트림 시작 전 거부(HTTP 오류 봉투 §2.5)**: `400 BAD_REQUEST`(필드 누락·`action=="confirm"`인데 `draftId` 없음, `RequestValidationError`→400)·`401 TOKEN_EXPIRED`/`TOKEN_INVALID`·`403 FORBIDDEN`(role≠seller·brandId 없음)·`409 STREAM_IN_PROGRESS`(동일 sessionId 동시 스트림)·`429 RATE_LIMITED`(config 상한·`/seller/chat` 적용)·`504 UPSTREAM_TIMEOUT`.
 
 **`draft`** — 상세 수정 개정안 (정확히 1회)
 
@@ -491,20 +517,22 @@ FE/BE 문서에 없으나 MVP에 필요한 아래 3종은 **모두 구매자 SSE
     "changes": [
       { "field": "description", "before": "여행용 방수 파우치입니다.", "after": "우천·수영장에도 안심인 IPX8 방수 파우치. 여권·전자기기를 완벽 보호합니다." },
       { "field": "name", "before": "방수 파우치", "after": "여행용 IPX8 방수 파우치" }
-    ]
+    ],
+    "summary": "상품명·설명을 방수 성능 중심으로 개선"
   }
 }
 ```
 
 | 필드 | 타입 | 설명 |
 |---|---|---|
-| `draftId` | string | 이 제안의 식별자. 승인(confirm)이 이 값을 참조해 **보여준 것 == 실행하는 것**을 보장하고 다중 draft·중복 승인을 구분한다(아래 HITL) |
+| `draftId` | string | 이 제안의 식별자. 승인(confirm)이 이 값을 참조해 **보여준 것 == 실행하는 것**을 보장하고 다중 draft·중복 승인을 구분한다(아래 HITL). 서버 발급 UUID |
 | `op` | `"update"` \| `"create"` \| `"delete"` | 실행할 쓰기 종류(I-11/I-10/I-12 매핑) |
-| `productId` | number | 대상 상품 식별자(숫자 BIGINT, §2.6). `create`는 없을 수 있음 |
+| `productId` | number | 대상 상품 식별자(숫자 BIGINT, §2.6). `create`는 없을 수 있음(`null`) |
 | `changes` | array | 필드별 변경 제안 배열 |
-| `changes[].field` | string | 수정 대상 필드(예: `name`·`description`·`price`·`stockQuantity`·`status`) |
-| `changes[].before` | string | I-9(목록)로 읽은 현재 값 |
+| `changes[].field` | string | 수정 대상 필드 — **camelCase** 8종: `name`·`price`·`originalPrice`·`description`·`category`·`imageUrl`·`status`·`stockQuantity` (와이어 규약 §2.2, [C-1 2026-07-22]) |
+| `changes[].before` | string | I-9(목록)로 읽은 현재 값. `create`는 `""` |
 | `changes[].after` | string | LLM 생성 개정안 |
+| `summary` | string | diff 카드 부제용 한 줄 요약 |
 
 - **FE 렌더링**: FE는 `draft`를 **diff 카드**로 렌더하고 `[적용]`/`[취소]` 버튼을 노출한다(승인 UI).
 - **[HARD, 개정 v0.9.0] 반영은 AI가 Spring internal API로 직접 수행** — 판매자 승인(HITL) 후 AI가 **I-11 PATCH(수정)/I-10 POST(등록)/I-12 DELETE(삭제)**(§4.5, `X-Internal-Token`+`{brandId}`)를 호출한다. **구 "FE가 본인 JWT로 S-3 PATCH" 모델은 폐기** — [BE 실측 정정 v0.13.0] **S-3 = `GET /api/seller/products`(SELLER, FE→Spring)** 로 **판매자 본인 FE 대시보드용** 목록이고, AI가 쓰는 목록은 **I-9 `GET /internal/seller/{brandId}/products`(서비스 토큰, AI→Spring)** 로 **별개**다(둘 다 조회, 레인만 다름). 즉 S-3는 PATCH가 아니며 I-9와 동일 엔드포인트도 아니다. 채팅 경로의 쓰기는 AI가 internal API(I-11 등)로 수행한다. (판매자가 **FE에서 직접** 상품을 편집하는 경로는 FE↔Spring 별개, AI 표면 밖.) 반영 결과는 `token`으로 안내.

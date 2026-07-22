@@ -16,7 +16,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from app.agents.seller import hitl
 from app.api import seller as seller_api
 from app.core.auth import Identity
-from app.schemas.chat import ChatRequest
+from app.schemas.seller import SellerChatRequest
 
 _IDENTITY = Identity(user_id=None, is_guest=False, seller_id="7", brand_id="3")
 
@@ -29,8 +29,15 @@ def _hitl_memory_checkpointer():
     hitl.set_checkpointer(None)
 
 
-def _request(message: str) -> ChatRequest:
-    return ChatRequest(session_id="s-1", thread_id="t-1", message=message)
+def _request(message: str) -> SellerChatRequest:
+    return SellerChatRequest(session_id="s-1", thread_id="t-1", message=message)
+
+
+def _confirm_request(draft_id: str) -> SellerChatRequest:
+    """A-2: 승인 요청 — 최상위 action/draftId 구조화 필드(message 는 비운다)."""
+    return SellerChatRequest(
+        session_id="s-1", thread_id="t-1", message="", action="confirm", draft_id=draft_id
+    )
 
 
 class _StubStreamAgent:
@@ -47,7 +54,7 @@ class _StubStreamAgent:
             raise self._exc
 
 
-def _collect(request: ChatRequest) -> list[dict]:
+def _collect(request: SellerChatRequest) -> list[dict]:
     """스트림을 전부 소비해 SSE 페이로드(dict) 목록으로 파싱한다."""
 
     async def run() -> list[str]:
@@ -73,9 +80,11 @@ def test_stream_tokens_then_done(monkeypatch: pytest.MonkeyPatch) -> None:
 
     events = _collect(_request("지난달 매출 알려줘"))
 
-    assert [e["type"] for e in events] == ["token", "token", "done"]
-    assert events[0]["data"]["text"] == "지난달 매출은 "
-    assert events[2]["data"]["finishReason"] == "stop"  # CamelModel by_alias
+    assert [e["type"] for e in events] == ["meta", "token", "token", "done"]
+    assert events[0]["data"]["lane"] == "general"  # 첫 프레임 = 레인(B)
+    assert events[1]["data"]["text"] == "지난달 매출은 "
+    assert events[-1]["data"]["finishReason"] == "stop"  # CamelModel by_alias
+    assert events[-1]["data"]["panel"] == "keep"  # 대화 = 패널 유지
 
 
 def test_stream_sanitizes_chunks_without_losing_boundary_space(
@@ -109,8 +118,8 @@ def test_stream_skips_tool_use_blocks(monkeypatch: pytest.MonkeyPatch) -> None:
 
     events = _collect(_request("매출 조회"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert events[0]["data"]["text"] == "조회 결과입니다."
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[1]["data"]["text"] == "조회 결과입니다."
 
 
 def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -120,8 +129,8 @@ def test_stream_masks_output_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
 
     events = _collect(_request("설정 알려줘"))
 
-    assert "sk-abcdefghijklmnop1234" not in events[0]["data"]["text"]
-    assert "[민감 정보 차단]" in events[0]["data"]["text"]
+    assert "sk-abcdefghijklmnop1234" not in events[1]["data"]["text"]
+    assert "[민감 정보 차단]" in events[1]["data"]["text"]
 
 
 def test_stream_masks_secret_obfuscated_with_unsafe_character(
@@ -133,7 +142,7 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
 
     events = _collect(_request("설정 알려줘"))
 
-    text = events[0]["data"]["text"]
+    text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "sk-abcdefghijklmnop1234" not in text
     assert "[민감 정보 차단]" in text
 
@@ -148,8 +157,8 @@ def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> No
 
     events = _collect(_request("경쟁사 매출 알려줘"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "제공할 수 없습니다" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "제공할 수 없습니다" in events[1]["data"]["text"]
 
 
 def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,8 +171,8 @@ def test_stream_error_event_on_build_failure(monkeypatch: pytest.MonkeyPatch) ->
 
     events = _collect(_request("매출 알려줘"))
 
-    assert [e["type"] for e in events] == ["error"]
-    assert events[0]["data"]["code"] == "INTERNAL"
+    assert [e["type"] for e in events] == ["meta", "error"]
+    assert events[1]["data"]["code"] == "INTERNAL"
 
 
 def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -173,7 +182,8 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 
     events = _collect(_request("매출 알려줘"))
 
-    assert events[0]["type"] == "token"
+    assert events[0]["type"] == "meta"
+    assert events[1]["type"] == "token"
     assert events[-1]["type"] == "error"
     assert events[-1]["data"]["code"] == "INTERNAL"
 
@@ -181,7 +191,7 @@ def test_stream_error_event_on_failure(monkeypatch: pytest.MonkeyPatch) -> None:
 # ── 4-1b: _seller_stream 3분기 디스패치 ──────────────────────────────────────
 
 
-def _collect_seller(request: ChatRequest) -> list[dict]:
+def _collect_seller(request: SellerChatRequest) -> list[dict]:
     """_seller_stream(통합 입구)을 전부 소비해 SSE 페이로드 목록으로 파싱한다."""
 
     async def run() -> list[str]:
@@ -215,10 +225,12 @@ def test_confirm_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPa
     """
     monkeypatch.setattr(seller_api, "route_question", _no_route)
 
-    events = _collect_seller(_request('{"action": "confirm", "draftId": "d-1"}'))
+    events = _collect_seller(_confirm_request("d-1"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "찾을 수 없습니다" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "confirm"
+    assert "찾을 수 없습니다" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "keep"  # 미존재 = 변경 없음
 
 
 def test_confirm_executed_result_streams_token_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -231,10 +243,11 @@ def test_confirm_executed_result_streams_token_done(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
 
-    events = _collect_seller(_request('{"action": "confirm", "draftId": "d-9"}'))
+    events = _collect_seller(_confirm_request("d-9"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "반영했습니다" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "반영했습니다" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "refresh"  # 실제 쓰기 → 우측 재조회
 
 
 def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,10 +259,10 @@ def test_confirm_output_is_masked(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
 
-    events = _collect_seller(_request('{"action": "confirm", "draftId": "d-9"}'))
+    events = _collect_seller(_confirm_request("d-9"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    text = events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    text = events[1]["data"]["text"]
     assert "sk-abcdefghijklmnop1234" not in text
     assert "[민감 정보 차단]" in text
 
@@ -267,11 +280,11 @@ def test_confirm_spring_down_maps_to_apology_and_error(
 
     monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
 
-    events = _collect_seller(_request('{"action": "confirm", "draftId": "d-9"}'))
+    events = _collect_seller(_confirm_request("d-9"))
 
-    assert [e["type"] for e in events] == ["token", "error"]
-    assert "초안은 유지" in events[0]["data"]["text"]
-    assert events[1]["data"]["code"] == "INTERNAL"
+    assert [e["type"] for e in events] == ["meta", "token", "error"]
+    assert "초안은 유지" in events[1]["data"]["text"]
+    assert events[2]["data"]["code"] == "INTERNAL"
 
 
 def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -280,8 +293,10 @@ def test_scope_refusal_short_circuits_before_routing(monkeypatch: pytest.MonkeyP
 
     events = _collect_seller(_request("경쟁사 매출 알려줘"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "제공할 수 없습니다" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "refused"
+    assert "제공할 수 없습니다" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "keep"
 
 
 def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -297,9 +312,11 @@ def test_analysis_route_relays_progress_and_report(monkeypatch: pytest.MonkeyPat
 
     events = _collect_seller(_request("지난달 매출 분석해줘"))
 
-    assert [e["type"] for e in events] == ["token", "token", "done"]
-    assert events[0]["data"]["text"] == "매출 이상 분석 중…"
-    assert events[1]["data"]["text"] == "6월 매출 보고서 본문"
+    assert [e["type"] for e in events] == ["meta", "progress", "token", "done"]
+    assert events[0]["data"]["lane"] == "analysis"
+    assert events[1]["data"]["text"] == "매출 이상 분석 중…"  # 진행 = progress
+    assert events[2]["data"]["text"] == "6월 매출 보고서 본문"  # 보고서 = token
+    assert events[-1]["data"]["panel"] == "replace"  # 보고서 → 우측 패널 교체
 
 
 def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,7 +334,7 @@ def test_analysis_token_strips_unsafe_report_text(monkeypatch: pytest.MonkeyPatc
 
     events = _collect_seller(_request("지난달 매출 분석해줘"))
 
-    assert events[0]["data"]["text"] == "6월[31m 매출\n보고서\n   기대 효과: 유지"
+    assert "".join(e["data"]["text"] for e in events if e["type"] == "token") == "6월[31m 매출\n보고서\n   기대 효과: 유지"
 
 
 def test_analysis_token_masks_secret_after_stripping_unsafe_text(
@@ -337,7 +354,7 @@ def test_analysis_token_masks_secret_after_stripping_unsafe_text(
 
     events = _collect_seller(_request("지난달 매출 분석해줘"))
 
-    text = events[0]["data"]["text"]
+    text = "".join(e["data"]["text"] for e in events if e["type"] == "token")
     assert "Bearer abcdefghijklmnop1234" not in text
     assert "[민감 정보 차단]" in text
 
@@ -354,8 +371,9 @@ def test_analysis_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPa
 
     events = _collect_seller(_request("매출 분석"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "기간" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "기간" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "keep"  # 되묻기 = 대화(패널 유지)
 
 
 def test_analysis_route_exception_maps_to_apology_and_error(
@@ -372,9 +390,9 @@ def test_analysis_route_exception_maps_to_apology_and_error(
 
     events = _collect_seller(_request("매출 분석해줘"))
 
-    assert [e["type"] for e in events] == ["token", "token", "error"]
-    assert "죄송합니다" in events[1]["data"]["text"]
-    assert events[2]["data"]["code"] == "INTERNAL"
+    assert [e["type"] for e in events] == ["meta", "progress", "token", "error"]
+    assert "죄송합니다" in events[2]["data"]["text"]
+    assert events[3]["data"]["code"] == "INTERNAL"
 
 
 def test_analysis_route_timeout_maps_to_llm_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -415,8 +433,10 @@ def test_product_route_emits_draft_event(monkeypatch: pytest.MonkeyPatch) -> Non
 
     events = _collect_seller(_request("감귤청 가격 12900원으로 바꿔줘"))
 
-    assert [e["type"] for e in events] == ["draft", "done"]
-    draft = events[0]["data"]
+    assert [e["type"] for e in events] == ["meta", "draft", "done"]
+    assert events[0]["data"]["lane"] == "product"
+    assert events[-1]["data"]["panel"] == "replace"  # diff 카드 → 우측 패널
+    draft = events[1]["data"]
     assert draft["op"] == "update"
     assert draft["productId"] == 101  # F2 — 숫자 id
     assert draft["draftId"]  # 발급됨(실행 바인딩은 4-2)
@@ -444,7 +464,7 @@ def test_product_draft_strips_llm_and_seller_text(monkeypatch: pytest.MonkeyPatc
 
     events = _collect_seller(_request("설명 바꿔줘"))
 
-    draft = events[0]["data"]
+    draft = next(e for e in events if e["type"] == "draft")["data"]
     assert draft["changes"] == [
         {
             "field": "description",
@@ -499,16 +519,44 @@ def test_product_draft_executes_the_sanitized_after_value(
     set_spring_client(spring)
     try:
         draft_events = _collect_seller(_request("설명 바꿔줘"))
-        draft = draft_events[0]["data"]
+        draft = next(e for e in draft_events if e["type"] == "draft")["data"]
         confirm_events = _collect_seller(
-            _request(json.dumps({"action": "confirm", "draftId": draft["draftId"]}))
+            _confirm_request(draft["draftId"])
         )
     finally:
         set_spring_client(None)
 
-    assert [e["type"] for e in confirm_events] == ["token", "done"]
+    assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
     assert draft["changes"][0]["after"] == "새\n설명 [민감 정보 차단]"
     assert spring.patch.description == "새\n설명 Bearer abcdefghijklmnop1234"
+
+
+def test_draft_changes_field_is_camelcase(monkeypatch: pytest.MonkeyPatch) -> None:
+    """C-1 — 와이어 `changes[].field` 는 camelCase(규약 §2.2). 내부는 snake_case 유지.
+
+    stock_quantity→stockQuantity, original_price→originalPrice, image_url→imageUrl.
+    """
+    from app.agents.seller.schemas import DraftChange, DraftProposal
+
+    proposal = DraftProposal(
+        op="update",
+        product_id=101,
+        changes=[
+            DraftChange(field="stock_quantity", before="100", after="50"),
+            DraftChange(field="original_price", before="30000", after="28000"),
+            DraftChange(field="image_url", before="a.jpg", after="b.jpg"),
+            DraftChange(field="price", before="15000", after="12900"),
+        ],
+        summary="재고·정가·이미지·가격 수정",
+    )
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("product"))
+    monkeypatch.setattr(seller_api, "build_product_agent", lambda: _StubProductAgent(proposal))
+
+    events = _collect_seller(_request("101번 상품 여러 필드 수정"))
+
+    draft = next(e for e in events if e["type"] == "draft")["data"]
+    wire_fields = [c["field"] for c in draft["changes"]]
+    assert wire_fields == ["stockQuantity", "originalPrice", "imageUrl", "price"]
 
 
 def test_product_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -523,8 +571,9 @@ def test_product_route_clarification_is_token_done(monkeypatch: pytest.MonkeyPat
 
     events = _collect_seller(_request("감귤 가격 바꿔줘"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "어느 상품" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "어느 상품" in events[1]["data"]["text"]
+    assert events[-1]["data"]["panel"] == "keep"
 
 
 def test_product_route_invalid_draft_becomes_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -537,8 +586,8 @@ def test_product_route_invalid_draft_becomes_token(monkeypatch: pytest.MonkeyPat
 
     events = _collect_seller(_request("가격 바꿔줘"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "상품" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert "상품" in events[1]["data"]["text"]
 
 
 def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -571,16 +620,15 @@ def test_product_route_draft_is_confirmable(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(seller_api, "build_product_agent", lambda: _StubProductAgent(proposal))
     try:
         draft_events = _collect_seller(_request("감귤청 가격 12900원으로"))
-        draft_id = draft_events[0]["data"]["draftId"]
+        draft_id = draft_events[1]["data"]["draftId"]
 
-        confirm_events = _collect_seller(
-            _request(json.dumps({"action": "confirm", "draftId": draft_id}))
-        )
+        confirm_events = _collect_seller(_confirm_request(draft_id))
     finally:
         set_spring_client(None)
 
-    assert [e["type"] for e in confirm_events] == ["token", "done"]
-    assert "반영했습니다" in confirm_events[0]["data"]["text"]
+    assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
+    assert "반영했습니다" in confirm_events[1]["data"]["text"]
+    assert confirm_events[-1]["data"]["panel"] == "refresh"
     assert spring.patches[0][1] == 101 and spring.patches[0][2].price == 12900
 
 
@@ -590,8 +638,9 @@ def test_apply_message_short_circuits_without_llm(monkeypatch: pytest.MonkeyPatc
 
     events = _collect_seller(_request("1번 적용해줘"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "이력이 없습니다" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "apply"
+    assert "이력이 없습니다" in events[1]["data"]["text"]
 
 
 def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -636,8 +685,9 @@ def test_apply_message_with_history_emits_draft(monkeypatch: pytest.MonkeyPatch)
     finally:
         set_spring_client(None)
 
-    assert [e["type"] for e in events] == ["draft", "done"]
-    draft = events[0]["data"]
+    assert [e["type"] for e in events] == ["meta", "draft", "done"]
+    assert events[-1]["data"]["panel"] == "replace"
+    draft = events[1]["data"]
     assert draft["op"] == "update" and draft["productId"] == 101
     assert draft["changes"] == [{"field": "price", "before": "15000", "after": "13500"}]
     assert draft["summary"] == "감귤청 가격 10% 인하"
@@ -651,5 +701,74 @@ def test_general_route_uses_general_stream(monkeypatch: pytest.MonkeyPatch) -> N
 
     events = _collect_seller(_request("안녕"))
 
-    assert [e["type"] for e in events] == ["token", "done"]
-    assert "도와드릴까요" in events[0]["data"]["text"]
+    assert [e["type"] for e in events] == ["meta", "token", "done"]
+    assert events[0]["data"]["lane"] == "general"
+    assert "도와드릴까요" in events[1]["data"]["text"]
+
+
+# ── 화면 전환 신호(meta/panel) 계약 — FE 요구 1~3 (2026-07-22 B) ──────────────────
+
+
+def test_every_stream_starts_with_meta_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """모든 판매자 스트림의 첫 프레임은 meta{lane} — FE 가 레인을 즉시 안다."""
+    agent = _StubStreamAgent([AIMessageChunk(content="네")])
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("general"))
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+
+    events = _collect_seller(_request("안녕"))
+
+    assert events[0]["type"] == "meta"
+    assert events[0]["data"]["lane"] in {
+        "analysis",
+        "product",
+        "general",
+        "confirm",
+        "apply",
+        "refused",
+    }
+
+
+def test_analysis_progress_is_separate_from_report(monkeypatch: pytest.MonkeyPatch) -> None:
+    """진행 상태는 progress, 최종 보고서는 token — FE 가 로딩과 답변을 구분한다."""
+    from app.agents.seller.orchestrator import PipelineResult
+
+    async def fake_pipeline(question, context, *, today, emit):
+        await emit("워커 실행 중…")
+        await emit("보고서 작성 중…")
+        return PipelineResult(kind="report", text="최종 보고서")
+
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("analysis"))
+    monkeypatch.setattr(seller_api, "run_analysis_pipeline", fake_pipeline)
+
+    events = _collect_seller(_request("매출 분석해줘"))
+
+    assert [e["type"] for e in events] == ["meta", "progress", "progress", "token", "done"]
+    assert [e["data"]["text"] for e in events if e["type"] == "progress"] == [
+        "워커 실행 중…",
+        "보고서 작성 중…",
+    ]
+    assert events[-2]["data"]["text"] == "최종 보고서"  # token
+    assert events[-1]["data"]["panel"] == "replace"
+
+
+def test_panel_action_per_lane(monkeypatch: pytest.MonkeyPatch) -> None:
+    """레인별 종료 panel: general=keep · analysis(report)=replace · confirm(executed)=refresh."""
+    # general → keep
+    monkeypatch.setattr(seller_api, "route_question", _route_stub("general"))
+    monkeypatch.setattr(
+        seller_api,
+        "build_general_agent",
+        lambda today: _StubStreamAgent([AIMessageChunk(content="네")]),
+    )
+    ev = _collect_seller(_request("배송 정책 뭐야?"))
+    assert ev[-1]["data"]["panel"] == "keep"
+
+    # confirm(executed) → refresh
+    async def fake_confirm(draft_id, *, seller_id, brand_id):
+        return hitl.ConfirmOutcome("executed", "반영했습니다.")
+
+    monkeypatch.setattr(seller_api, "route_question", _no_route)
+    monkeypatch.setattr(seller_api, "confirm_draft", fake_confirm)
+    ev2 = _collect_seller(_confirm_request("d-9"))
+    assert ev2[0]["data"]["lane"] == "confirm"
+    assert ev2[-1]["data"]["panel"] == "refresh"

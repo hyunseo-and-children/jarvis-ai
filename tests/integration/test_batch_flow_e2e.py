@@ -73,7 +73,10 @@ async def test_batch_follows_has_more_pagination(spring, batch_llm) -> None:
     assert result.pages == 2
     assert result.processed == 2
     assert store.get(102) is not None
-    assert [r["query"]["since"] for r in spring.requests_to("/internal/products/changes")] == ["0", "c1"]
+    assert [r["query"]["since"] for r in spring.requests_to("/internal/products/changes")] == [
+        "0",
+        "c1",
+    ]
 
 
 async def test_batch_cursor_advances_for_next_cycle(spring, batch_llm) -> None:

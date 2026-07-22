@@ -216,16 +216,12 @@ class ProfileStore:
             )
 
     async def get_session_ctx(self, key: str) -> list[str]:
-        item = await run_with_query_timeout(
-            self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
-        )
+        item = await run_with_query_timeout(self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY))
         return [text for _, text in item.value["items"]] if item else []
 
     async def get_session_ctx_snapshot(self, key: str) -> tuple[list[str], int]:
         """(발화 목록, 스냅샷 워터마크 seq) 반환 — 워터마크는 clear_session_ctx_upto 인자로 그대로 넘긴다."""
-        item = await run_with_query_timeout(
-            self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY)
-        )
+        item = await run_with_query_timeout(self._store.aget((_SESSION_NS_ROOT, key), _SESSION_KEY))
         if not item:
             return [], 0
         buf = item.value["items"]

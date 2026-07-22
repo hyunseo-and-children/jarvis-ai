@@ -27,9 +27,7 @@ def _plan(**overrides: object) -> AnalysisPlan:
 def test_resolve_plan_happy_path() -> None:
     """'지난달' 계획 → 전월 1일~말일 ResolvedPlan(코드 환산, 장치 ④)."""
     plan = _plan(analyses=["sales_anomaly", "churn"], period_expr="지난달")
-    resolved = pipeline.resolve_plan(
-        plan, today=dt.date(2026, 7, 18), recent_default_days=7
-    )
+    resolved = pipeline.resolve_plan(plan, today=dt.date(2026, 7, 18), recent_default_days=7)
     assert resolved.analyses == ("sales_anomaly", "churn")
     assert resolved.date_from == dt.date(2026, 6, 1)
     assert resolved.date_to == dt.date(2026, 6, 30)
@@ -37,9 +35,7 @@ def test_resolve_plan_happy_path() -> None:
 
 def test_resolve_plan_default_period_uses_recent_default() -> None:
     """기간 미언급(period_expr 기본 '최근') → recent_default_days 일, 오늘 제외."""
-    resolved = pipeline.resolve_plan(
-        _plan(), today=dt.date(2026, 7, 18), recent_default_days=7
-    )
+    resolved = pipeline.resolve_plan(_plan(), today=dt.date(2026, 7, 18), recent_default_days=7)
     assert resolved.date_from == dt.date(2026, 7, 11)
     assert resolved.date_to == dt.date(2026, 7, 17)
 
@@ -54,9 +50,7 @@ def test_resolve_plan_clarification_raises_with_question() -> None:
 def test_resolve_plan_empty_analyses_raises() -> None:
     """clarification 없이 워커도 비면 planner 오류 — 되묻기 ValueError."""
     with pytest.raises(ValueError):
-        pipeline.resolve_plan(
-            _plan(analyses=[]), today=dt.date(2026, 7, 18), recent_default_days=7
-        )
+        pipeline.resolve_plan(_plan(analyses=[]), today=dt.date(2026, 7, 18), recent_default_days=7)
 
 
 def test_resolve_plan_unsupported_period_propagates() -> None:
@@ -104,7 +98,10 @@ def test_format_rewrite_and_judge_inputs() -> None:
     """재작성 입력은 이전 보고서+개선 지시를, judge 입력은 보고서를 포함한다(3-4 계약)."""
     findings = [
         AnalysisFinding(
-            analysis_type="churn", summary="이탈 증가", evidence=["이탈률 12.5%"], severity="warning"
+            analysis_type="churn",
+            summary="이탈 증가",
+            evidence=["이탈률 12.5%"],
+            severity="warning",
         )
     ]
     rewrite = pipeline.format_rewrite_input(findings, "이전 본문", "수치 근거를 인용할 것")
@@ -143,7 +140,7 @@ def test_compose_response_numbers_follow_list_order() -> None:
     assert "   기대 효과: 전환율 회복" in text
     assert "2번. 품절 상품 재입고" in text
     assert "가격·재고 중심 2건" in text  # summary 는 목록 앞에 포함(마감 리뷰 테스트 공백)
-    assert 'N번 적용해줘' in text
+    assert "N번 적용해줘" in text
 
 
 def test_compose_response_empty_recommendations() -> None:

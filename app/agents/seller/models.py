@@ -20,9 +20,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.core.config import get_settings
 
-SellerRole = Literal[
-    "supervisor", "planner", "worker", "judge", "product", "report", "recommend"
-]
+SellerRole = Literal["supervisor", "planner", "worker", "judge", "product", "report", "recommend"]
 SellerTier = Literal["haiku", "sonnet"]
 
 # SPEC §8 표의 코드화 — 라우팅·분류·정형 분석은 경량(Haiku), 서술·추천은 상위(Sonnet).

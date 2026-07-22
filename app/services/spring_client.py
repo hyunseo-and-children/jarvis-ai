@@ -103,7 +103,9 @@ def _client() -> httpx.AsyncClient:
     degrade 규칙 적용(조회 생략·담기 CART_ERROR·dedup 생략 등).
     """
     settings = get_settings()
-    headers = {"X-Internal-Token": settings.internal_api_token} if settings.internal_api_token else {}
+    headers = (
+        {"X-Internal-Token": settings.internal_api_token} if settings.internal_api_token else {}
+    )
     return httpx.AsyncClient(
         base_url=settings.spring_base_url,
         timeout=settings.spring_timeout_s,
@@ -153,7 +155,9 @@ def _parse_search_response(data: object) -> ProductSearchResult:
             items = data["items"]
         elif payload is not None:
             # data 키는 있으나 알려진 형태(list · {items})와 안 맞음 — silent 0 오인 방지 경고(§7).
-            _log.warning("검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__)
+            _log.warning(
+                "검색 응답 data 형태 미인식(silent 0 아님) — data 타입=%s", type(payload).__name__
+            )
         elif "data" not in data:
             # data 키 자체가 없음(= data:null 과 구분) — 더 의심스러운 drift.
             _log.warning("검색 응답에 data 키가 없음(silent 0 아님) — envelope drift 의심")
@@ -184,7 +188,12 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     if detail is not None and "options" in detail:
         raw = detail.get("options") or []
     else:
-        raw = (err or {}).get("options") or body.get("options") or (body.get("data") or {}).get("options") or []
+        raw = (
+            (err or {}).get("options")
+            or body.get("options")
+            or (body.get("data") or {}).get("options")
+            or []
+        )
     options: list[CartOption] = []
     for opt in raw if isinstance(raw, list) else []:
         if isinstance(opt, dict) and opt.get("optionId") is not None:
@@ -192,7 +201,11 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
             # 옵션 자체를 버리거나 스트림을 죽이지 않게 통째로 방어(실패 시 None 강등).
             raw_extra = opt.get("extraPrice")
             try:
-                if isinstance(raw_extra, bool) or not isinstance(raw_extra, (int, float)) or not math.isfinite(raw_extra):
+                if (
+                    isinstance(raw_extra, bool)
+                    or not isinstance(raw_extra, (int, float))
+                    or not math.isfinite(raw_extra)
+                ):
                     extra = None
                 else:
                     # BE(Java) BigDecimal/Double 직렬화가 1000.0·999.9999998 처럼 올 수 있어 반올림 수용.
@@ -214,7 +227,9 @@ def _parse_cart_error(resp: httpx.Response) -> tuple[str | None, list[CartOption
     if isinstance(raw, list) and raw:
         dropped = len(raw) - len(options)
         if not options:
-            _log.warning("cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw)
+            _log.warning(
+                "cart 옵션 응답(code=%r) options 전부 파싱 실패(계약 위반 가능): %r", code, raw
+            )
         elif dropped:
             _log.warning("cart 옵션 %d/%d개 파싱 실패(부분, code=%r)", dropped, len(raw), code)
     return code, options
@@ -358,8 +373,14 @@ async def fetch_product_changes(cursor: str | None, limit: int = 500) -> Product
             data = resp.json()
         # 200 이어도 success=false / data=null 은 실패 envelope — 빈 페이지로 오인해 배치가
         # 조기 종료(정합성 손상)되지 않게 명시 검증한다(리뷰 반영).
-        if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("data"), dict):
-            raise SpringUnavailableError(f"fetch_product_changes 비정상 envelope: {repr(data)[:200]}")
+        if (
+            not isinstance(data, dict)
+            or data.get("success") is not True
+            or not isinstance(data.get("data"), dict)
+        ):
+            raise SpringUnavailableError(
+                f"fetch_product_changes 비정상 envelope: {repr(data)[:200]}"
+            )
         return ProductChangesPage.model_validate(data["data"])
     except (httpx.HTTPError, ValueError, ValidationError) as exc:
         raise SpringUnavailableError(f"fetch_product_changes 실패: {exc}") from exc

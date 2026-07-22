@@ -35,7 +35,9 @@ class ChatRequest(CamelModel):
 
     session_id: str = Field(..., description="Spring 발급 불투명 스레드 키 (만료 없음, §2.6)")
     thread_id: str = Field(..., description="대화 스레드 식별자. 멀티턴 필터 누적 대상")
-    message: str = Field(..., description="현재 턴 사용자 원문 질의 (길이 상한은 config chat_message_max_chars)")
+    message: str = Field(
+        ..., description="현재 턴 사용자 원문 질의 (길이 상한은 config chat_message_max_chars)"
+    )
 
     @field_validator("message")
     @classmethod
@@ -108,7 +110,9 @@ class SuggestionChip(CamelModel):
     def _exactly_one_kind(self) -> "SuggestionChip":
         """§3.1 — 칩 1건은 relaxation 또는 revert 중 **정확히 하나**여야 한다."""
         if (self.revert is None) == (self.relaxation is None):
-            raise ValueError("SuggestionChip 은 revert 또는 relaxation 중 정확히 하나여야 한다(§3.1)")
+            raise ValueError(
+                "SuggestionChip 은 revert 또는 relaxation 중 정확히 하나여야 한다(§3.1)"
+            )
         return self
 
 
@@ -130,9 +134,7 @@ class ActionData(CamelModel):
     type: Literal["CART_ADDED", "CART_ADD_FAILED"]
     message: str
     cart_item_id: int | None = None  # 숫자(BIGINT, cart_item.id)
-    reason: (
-        Literal["OUT_OF_STOCK", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None
-    ) = None
+    reason: Literal["OUT_OF_STOCK", "PRODUCT_NOT_FOUND", "CART_ERROR"] | None = None
 
 
 class ProductsReadyData(CamelModel):

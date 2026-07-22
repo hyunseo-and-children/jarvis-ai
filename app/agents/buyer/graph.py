@@ -53,9 +53,7 @@ class ThreadFilterStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> ProductSearchFilters | None:
-        item = await run_with_query_timeout(
-            self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY)
-        )
+        item = await run_with_query_timeout(self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY))
         return ProductSearchFilters.model_validate(item.value) if item else None
 
     async def put(self, key: str, filters: ProductSearchFilters) -> None:

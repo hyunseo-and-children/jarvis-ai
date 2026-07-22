@@ -17,7 +17,7 @@
 안전장치 5종(§6.2) 구현 지점:
 ① draftId 바인딩 — thread_id=f"seller-draft:{draftId}", checkpoint 가 정제된 실행 정본 보유.
    SSE diff 는 같은 정본에서 만들되 시크릿 형태만 표시 계층에서 마스킹한다.
-② 명시 액션만 — confirm 판정은 pipeline.parse_confirm_message(입구 ①, 코드 선판정).
+② 명시 액션만 — confirm 판정은 요청 스키마 최상위 action/draftId 필드(입구 ①, A-2).
 ③ 멱등성 — 실행 완료 스레드(result 보유) 재confirm 은 재실행 없이 안내만.
 ④ Spring 소유권 하드게이트 — brandId 불일치 confirm 은 존재 비노출 거절(+Spring 최종 방어).
 ⑤ 대기 TTL — created_at 기준 seller_draft_ttl_minutes 경과 시 만료 안내(실행 금지).

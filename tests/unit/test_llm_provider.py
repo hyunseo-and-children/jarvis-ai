@@ -24,7 +24,11 @@ def _settings(**kw) -> Settings:
 
 def test_anthropic_resolves_tiers() -> None:
     c = AnthropicLLM(
-        "k", fast_model="claude-haiku-4-5", smart_model="claude-sonnet-5", timeout=1.0, max_retries=0
+        "k",
+        fast_model="claude-haiku-4-5",
+        smart_model="claude-sonnet-5",
+        timeout=1.0,
+        max_retries=0,
     )
     assert c._resolve("fast") == "claude-haiku-4-5"
     assert c._resolve("smart") == "claude-sonnet-5"
@@ -119,8 +123,12 @@ def test_get_llm_defaults_to_openai(monkeypatch) -> None:
 
 def _openai(**kw) -> OpenAILLM:
     base = dict(
-        fast_model="gpt-x", smart_model="gpt-x", timeout=5.0, max_retries=0,
-        fast_reasoning_effort="low", smart_reasoning_effort="medium",
+        fast_model="gpt-x",
+        smart_model="gpt-x",
+        timeout=5.0,
+        max_retries=0,
+        fast_reasoning_effort="low",
+        smart_reasoning_effort="medium",
     )
     base.update(kw)
     return OpenAILLM("sk-test", **base)
