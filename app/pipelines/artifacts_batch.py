@@ -13,6 +13,7 @@ fetch·llm·embed·store 는 주입형(테스트·오프라인 대체) — torch
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -69,6 +70,13 @@ async def _process_change(
             search_doc=doc,
             embedding=vec,
             extras=extras,
+            # 임베딩 프로비넌스(이슈 #65, embedding_meta_complete CHECK 대응).
+            # embed_dim 은 실제 반환 벡터 길이에서 도출 — embed 주입 교체 시에도 기록값이
+            # 실제 벡터와 어긋나지 않는다(PR 리뷰). model·task 는 벡터에 없어 settings 소관.
+            embed_model=settings.embedding_model_id,
+            embed_dim=len(vec),
+            embed_task=settings.embedding_task_document,
+            normalized=settings.embedding_normalized,
         )
     )
 
@@ -125,7 +133,10 @@ async def run_artifacts_batch(
     settings = settings or get_settings()
     fetch = fetch or spring_client.fetch_product_changes
     llm = llm or get_llm()
-    embed = embed or _embedding.embed_texts
+    # 미주입 기본값은 문서(document) 임베딩 — 비대칭 임베딩 바인딩(이슈 #65)
+    embed = embed or functools.partial(
+        _embedding.embed_texts, task_type=settings.embedding_task_document
+    )
     store = store or get_catalog_store()
     if llm is None:
         raise RuntimeError(

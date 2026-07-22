@@ -63,10 +63,11 @@ def _l2_normalize(vec: list[float]) -> list[float]:
     return [x / norm for x in vec]
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(texts: list[str], *, task_type: str | None = None) -> list[list[float]]:
     """텍스트 목록을 Google gemini-embedding-001 API 로 임베딩한다 (§4.8).
 
     config.embedding_dim 을 output_dimensionality 로 요청하고, 응답을 수동 L2 정규화한다.
+    task_type 지정 시 비대칭 검색용으로 전달한다(문서=RETRIEVAL_DOCUMENT / 질의=RETRIEVAL_QUERY).
     google_api_key 미구성 시 곧바로 EmbeddingError — 배치·테스트는 embed 콜러블을 주입한다.
     """
     settings = get_settings()
@@ -80,9 +81,15 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
         response = client.models.embed_content(
             model=settings.embedding_model_id,
             contents=list(texts),
-            config=types.EmbedContentConfig(output_dimensionality=settings.embedding_dim),
+            config=types.EmbedContentConfig(
+                output_dimensionality=settings.embedding_dim,
+                **({"task_type": task_type} if task_type else {}),
+            ),
         )
-        out = [_l2_normalize([float(x) for x in item.values]) for item in response.embeddings]
+        raw = [[float(x) for x in item.values] for item in response.embeddings]
+        # settings.embedding_normalized 를 실제 분기 조건으로 사용 — 기록되는 normalized
+        # 프로비넌스와 실제 정규화 동작이 어긋나지 않게 한다(이슈 #65 PR 리뷰).
+        out = [_l2_normalize(vec) for vec in raw] if settings.embedding_normalized else raw
     except EmbeddingError:
         raise
     except Exception as exc:  # noqa: BLE001 - SDK 호출·응답 파싱 예외를 EmbeddingError 로 통일 매핑

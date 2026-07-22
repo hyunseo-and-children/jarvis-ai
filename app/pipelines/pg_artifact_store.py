@@ -29,16 +29,22 @@ def _to_list(value: object) -> list[float]:
 
 
 def _row_to_artifact(row: tuple) -> CatalogArtifact:
-    product_id, search_doc, embedding, extras = row
+    product_id, search_doc, embedding, extras, embed_model, embed_dim, embed_task, normalized = row
     return CatalogArtifact(
         product_id=product_id,
         search_doc=search_doc,
         embedding=_to_list(embedding),
         extras=extras or {},
+        embed_model=embed_model,
+        embed_dim=embed_dim,
+        embed_task=embed_task,
+        normalized=normalized,
     )
 
 
-_SELECT_COLS = "product_id, search_doc, embedding, extras"
+_SELECT_COLS = (
+    "product_id, search_doc, embedding, extras, embed_model, embed_dim, embed_task, normalized"
+)
 
 
 class PgCatalogArtifactStore:
@@ -54,12 +60,18 @@ class PgCatalogArtifactStore:
         with self._pool.connection() as conn:
             conn.execute(
                 """
-                INSERT INTO products (product_id, search_doc, embedding, extras, updated_at)
-                VALUES (%s, %s, %s, %s, now())
+                INSERT INTO products
+                    (product_id, search_doc, embedding, extras,
+                     embed_model, embed_dim, embed_task, normalized, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                 ON CONFLICT (product_id) DO UPDATE SET
                     search_doc = EXCLUDED.search_doc,
                     embedding = EXCLUDED.embedding,
                     extras = EXCLUDED.extras,
+                    embed_model = EXCLUDED.embed_model,
+                    embed_dim = EXCLUDED.embed_dim,
+                    embed_task = EXCLUDED.embed_task,
+                    normalized = EXCLUDED.normalized,
                     updated_at = now()
                 """,  # noqa: S608 - 컬럼 상수만 사용, 사용자 입력 없음
                 (
@@ -67,6 +79,10 @@ class PgCatalogArtifactStore:
                     artifact.search_doc,
                     Vector(artifact.embedding),
                     Jsonb(artifact.extras),
+                    artifact.embed_model,
+                    artifact.embed_dim,
+                    artifact.embed_task,
+                    artifact.normalized,
                 ),
             )
 
@@ -84,14 +100,20 @@ class PgCatalogArtifactStore:
         for artifact in artifacts:
             conn.execute(
                 """
-                INSERT INTO products (product_id, search_doc, embedding, extras, updated_at)
-                VALUES (%s, %s, %s, %s, now())
+                INSERT INTO products
+                    (product_id, search_doc, embedding, extras,
+                     embed_model, embed_dim, embed_task, normalized, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                 """,
                 (
                     artifact.product_id,
                     artifact.search_doc,
                     Vector(artifact.embedding),
                     Jsonb(artifact.extras),
+                    artifact.embed_model,
+                    artifact.embed_dim,
+                    artifact.embed_task,
+                    artifact.normalized,
                 ),
             )
 

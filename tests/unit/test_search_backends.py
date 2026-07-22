@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import pytest
 
+from app.pipelines import embedding as _embedding
 from app.pipelines.artifact_store import CatalogArtifact, CatalogArtifactStore
 from app.pipelines.compare import GoldenCase, compare_backends, recall_at_k
 from app.schemas.spring import ProductSearchFilters, ProductSearchResult, SpringProduct
@@ -195,3 +196,32 @@ def test_compare_backends_reports_both_methods():
     assert report.method1.mean_recall_at_k == pytest.approx(1.0)
     assert report.method2.mean_recall_at_k == pytest.approx(1.0)
     assert 0.0 <= report.mean_overlap <= 1.0
+
+
+# ── 이슈 #65: 비대칭 임베딩 바인딩 — 미주입 기본값이 질의(QUERY) task_type 을 바인딩하는지 ──
+
+
+def test_rerank_backend_default_embed_binds_query_task(monkeypatch):
+    seen = {}
+
+    def spy(texts, *, task_type=None):
+        seen["task_type"] = task_type
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(_embedding, "embed_texts", spy)
+    backend = EmbeddingRerankBackend()
+    backend._embed(["질의"])
+    assert seen["task_type"] == "RETRIEVAL_QUERY"
+
+
+def test_vector_backend_default_embed_binds_query_task(monkeypatch):
+    seen = {}
+
+    def spy(texts, *, task_type=None):
+        seen["task_type"] = task_type
+        return [[1.0, 0.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(_embedding, "embed_texts", spy)
+    backend = VectorSearchBackend()
+    backend._embed(["질의"])
+    assert seen["task_type"] == "RETRIEVAL_QUERY"

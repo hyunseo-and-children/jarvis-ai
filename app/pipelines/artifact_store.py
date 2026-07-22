@@ -16,12 +16,20 @@ from typing import Protocol, runtime_checkable
 
 @dataclass
 class CatalogArtifact:
-    """상품 1건의 AI 생성물. 상품 원본 필드는 별도 컬럼으로 보관하지 않는다."""
+    """상품 1건의 AI 생성물. 상품 원본 필드는 별도 컬럼으로 보관하지 않는다.
+
+    임베딩 프로비넌스(embed_model·embed_dim·embed_task·normalized)는 벡터의 출처 메타로,
+    모델 교체 후 낡은 행을 판별하는 근거다. 인메모리 생성 호환 위해 기본 None.
+    """
 
     product_id: int
     search_doc: str
     embedding: list[float]
     extras: dict = field(default_factory=dict)
+    embed_model: str | None = None
+    embed_dim: int | None = None
+    embed_task: str | None = None
+    normalized: bool | None = None
 
 
 @runtime_checkable

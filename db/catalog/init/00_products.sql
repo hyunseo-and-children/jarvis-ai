@@ -15,9 +15,15 @@ CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS products (
     product_id  bigint PRIMARY KEY,             -- Spring 원본 productId(BIGINT, CLAUDE.md 정합)
     search_doc  text NOT NULL,                  -- enrichment 결과 조립 텍스트(임베딩 입력, §4.8)
-    embedding   vector(1536) NOT NULL,           -- Google gemini-embedding-001, 수동 L2 정규화됨
-    extras      jsonb NOT NULL DEFAULT '{}',     -- enrichment 산출물(tags·attributes)
-    updated_at  timestamptz NOT NULL DEFAULT now()
+    embedding   vector(1536) NOT NULL,          -- Google gemini-embedding-001, 수동 L2 정규화됨
+    extras      jsonb NOT NULL DEFAULT '{}',    -- enrichment 산출물(tags·attributes)
+    embed_model text,                           -- 임베딩 모델 id(프로비넌스 — 낡은 행 판별)
+    embed_dim   int,                            -- 임베딩 차원
+    embed_task  text,                           -- 저장 문서 task(항상 RETRIEVAL_DOCUMENT)
+    normalized  boolean,                        -- MRL 절단 후 L2 재정규화 여부
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT embedding_meta_complete          -- 벡터가 있으면 출처도 반드시 기록
+        CHECK (embed_model IS NOT NULL AND embed_dim IS NOT NULL)
 );
 
 -- 방식1(VectorSearchBackend) 코사인 유사도 벡터검색 인덱스.

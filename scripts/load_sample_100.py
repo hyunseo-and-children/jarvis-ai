@@ -69,12 +69,17 @@ def upsert_documents(documents: list[dict[str, Any]]) -> int:
                 conn.execute(
                     """
                     INSERT INTO products
-                        (product_id, search_doc, embedding, extras, updated_at)
-                    VALUES (%s, %s, %s, %s, now())
+                        (product_id, search_doc, embedding, extras,
+                         embed_model, embed_dim, embed_task, normalized, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now())
                     ON CONFLICT (product_id) DO UPDATE SET
                         search_doc = EXCLUDED.search_doc,
                         embedding = EXCLUDED.embedding,
                         extras = EXCLUDED.extras,
+                        embed_model = EXCLUDED.embed_model,
+                        embed_dim = EXCLUDED.embed_dim,
+                        embed_task = EXCLUDED.embed_task,
+                        normalized = EXCLUDED.normalized,
                         updated_at = now()
                     """,
                     (
@@ -82,6 +87,10 @@ def upsert_documents(documents: list[dict[str, Any]]) -> int:
                         row["search_doc"],
                         Vector(row["embedding"]),
                         Jsonb(row.get("extras") or {}),
+                        row["embed_model"],
+                        row["embed_dim"],
+                        row["embed_task"],
+                        row["normalized"],
                     ),
                 )
         ids = [int(row["product_id"]) for row in documents]

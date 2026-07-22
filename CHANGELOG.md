@@ -10,6 +10,8 @@
 ## [Unreleased]
 
 ### Added
+- pg-catalog `products` 임베딩 프로비넌스 컬럼(`embed_model·embed_dim·embed_task·normalized`) + `embedding_meta_complete` CHECK, 기존 볼륨용 마이그레이션(#65).
+- `embed_texts(task_type=...)` 및 비대칭 임베딩 바인딩(질의=RETRIEVAL_QUERY / 문서=RETRIEVAL_DOCUMENT)(#65).
 - **이슈 #79 — AI 내부 프로필 inactivity timeout** — 회원 발화 저장과 같은 pg-profile
   transaction에서 세션별 `last_activity_at`을 DB 시각으로 갱신하고, 10분 비활동 세션을 1분
   주기의 bounded `FOR UPDATE SKIP LOCKED` sweep으로 선점한다. Spring I-20(`logout`·
@@ -26,6 +28,7 @@
   SPEC-PROFILE-001 v0.4.0)
 
 ### Changed
+- 런타임 I-17 배치·sample_100 로더가 임베딩 프로비넌스를 함께 적재(#65).
 - **이슈 #63 — I-17 상품 상태 계약을 Spring과 정합화** — `ProductChange.status`를 `ON_SALE | HIDDEN`으로 제한하고, 배치가 `ON_SALE`은 생성·갱신, `HIDDEN`은 기존 AI artifact 삭제로 처리한다. 구 `ACTIVE | DELISTED` 등 미정의 값은 항목별로 skip하지 않고 페이지 전체를 fail-closed 처리해 artifact·커서를 유지하며, Spring 수정 후 같은 `since`부터 재처리한다. 단위·HTTP 경계·E2E 테스트와 관련 문서·로그 용어를 함께 갱신했다. (api-spec §4.8, v0.15.18)
 
 ### Security
