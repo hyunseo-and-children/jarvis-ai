@@ -89,7 +89,9 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     )
 
 
-async def _validation_exception_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+async def _validation_exception_handler(
+    request: Request, exc: RequestValidationError
+) -> JSONResponse:
     """요청 본문/파라미터 검증 실패 → 400 BAD_REQUEST 봉투 (상세 필드는 미노출)."""
     rid = get_request_id(request)
     return JSONResponse(

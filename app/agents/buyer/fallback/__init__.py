@@ -10,10 +10,11 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from app.agents.buyer._frames import sse
+from app.core.text import _strip_unsafe
 from app.schemas.chat import TokenData
 
 
 async def stream_fallback(decision, *, observer=None) -> AsyncIterator[str]:
     """일반 대화 답변을 token 으로 스트리밍한다(done 은 상위 buyer 그래프가 emit)."""
     text = decision.reply or "찾으시는 상품이 있으면 말씀해 주세요. 예: '5만원 이하 무선 이어폰'"
-    yield sse("token", TokenData(text=text).model_dump(by_alias=True))
+    yield sse("token", TokenData(text=_strip_unsafe(text)).model_dump(by_alias=True))

@@ -13,6 +13,25 @@
 
 ---
 
+## [2026-07-22] FE 오류 계약을 논할 때 "FastAPI 기본 422" 로 단정하지 말 것 — 이 앱은 검증 오류를 400 으로 매핑한다
+- 증상: 판매자 챗 FE 계약 1차 분석에서 "요청 본문 검증 실패(threadId 누락 등)는 FastAPI 기본 422 로 나온다, 노션의 400 은 틀렸다"고 적었는데 반대였다 — 앱은 `RequestValidationError` 를 **400 `BAD_REQUEST` 봉투**로 매핑한다(`app/core/errors.py::_validation_exception_handler`, `add_exception_handler(RequestValidationError, ...)`). 노션의 400 이 옳았고 내 진단이 틀렸다.
+- 원인: FastAPI의 프레임워크 기본값(422)을 앱의 실제 동작으로 착각했다. 이 리포는 모든 오류를 공통 봉투(§2.5)로 통일하려고 검증 오류까지 400 으로 재매핑하는 커스텀 핸들러를 둔다 — 기본값 지식이 아니라 코드를 봐야 알 수 있다.
+- 규칙:
+  - **HTTP 상태·오류 코드를 문서에 단정하기 전에 `app/core/errors.py`(예외 핸들러 등록부)를 먼저 확인한다.** "FastAPI/Starlette 기본은 X" 라는 일반 지식은 커스텀 핸들러가 있으면 무효다.
+  - 특히 **422 vs 400**: 이 앱에서 요청 스키마(Pydantic) 검증 실패는 항상 **400 BAD_REQUEST**다. FE 계약·명세에 422 라고 쓰면 틀린다.
+  - **"미구현" 도 마찬가지로 코드로 확인한다.** 같은 문서 작업에서 `429 RATE_LIMITED` 를 "미구현" 으로 단정했는데, 실제로는 `app/core/ratelimit.py` 가 `/seller/chat` 에 적용돼 있었다(`_LIMITED_PATHS`, config 상한). 미들웨어·핸들러는 라우터 코드에 안 보이므로 `app/main.py` 등록부와 `app/core/` 를 훑고 나서 "없다" 고 말한다.
+- 관련: `app/core/errors.py`, `app/core/ratelimit.py`, `app/main.py`, `app/schemas/seller.py::SellerChatRequest`, `docs/specs/FE-CONTRACT-SELLER-CHAT.md` §4.1
+
+## [2026-07-22] 샌드박스에서 `git rm` 을 쓰면 지우지 못하는 `.git/index.lock` 이 남아 이후 모든 git 작업이 막힌다
+- 증상: docs/specs 판매자 문서 정리 중 샌드박스 셸에서 `git rm` 실행 → `error: the following files have local modifications` 로 실패했는데, 동시에 `warning: unable to unlink '.git/index.lock': Operation not permitted` 가 떴다. 실패한 커맨드가 만든 0바이트 `index.lock` 이 남았고 `rm -f` 로도 지워지지 않아, 그대로 뒀으면 Windows 쪽 git 도 전부 `Unable to create index.lock: File exists` 로 막힐 뻔했다.
+- 원인: 두 겹이다. ① 샌드박스는 `.git/` 에 쓰기 권한이 없어 git 의 lock 해제가 실패한다. ② `local modifications` 자체가 허상 — 이 리포는 CRLF/LF 때문에 워킹트리 전 파일이 ` M` 으로 보이지만 `git diff --ignore-cr-at-eol --stat` 은 비어 있다(HANDOFF-GIT-SYNC-20260719 에서 이미 진단된 것과 동일한 현상). 즉 "수정됐으니 못 지운다"는 git 의 안전장치가 줄바꿈 노이즈 때문에 오작동한 것이다.
+- 규칙:
+  - **샌드박스에서 index 를 쓰는 git 명령(`git rm`·`add`·`commit`·`checkout`)을 실행하지 않는다** — 읽기 전용 조회(`log`·`diff`·`status`·`show`)만 쓴다. 스테이징·커밋은 Windows 터미널에서 사용자가 한다.
+  - 샌드박스에서 파일을 지워야 하면 **git 을 거치지 않고 파일시스템 `rm`** 을 쓴다(Cowork 에선 삭제 권한 승인 후 가능). git 은 나중에 ` D` 로 알아서 인식한다.
+  - 실수로 lock 을 만들었으면 **즉시** `rm -f .git/index.lock` 을 시도하고, 실패하면 사용자에게 Windows 에서 `del .git\index.lock` 을 요청한다 — 방치하면 사용자 쪽 git 이 전부 막힌다.
+  - 이 리포에서 "전 파일이 수정됨"으로 보이면 실제 변경이 아니라 CRLF 노이즈를 먼저 의심한다 — 판단 기준은 항상 `git diff --ignore-cr-at-eol`.
+- 관련: `docs/specs/` 판매자 문서 정리(2026-07-22), 구 `HANDOFF-GIT-SYNC-20260719`(삭제됨 — git 히스토리 참조)
+
 ## [2026-07-21] 통지 엔드포인트의 멱등키는 "그 이벤트가 몇 번 오는지"를 BE 실측으로 확인한 뒤 정한다 — 가정 금지
 - 증상: PR #64 — session-end 멱등키를 놓고 두 모델이 충돌했다. (a) `(userId, sessionId)` 고정키(세션당 1회 종료 전제) vs (b) 버퍼 내용 해시(세션이 살아남아 재체크포인트된다는 전제 — tabClose 저장 후 재활동 → inactivityTimeout 재저장). 어느 쪽이 맞는지는 **"session-end 가 한 sessionId 에 몇 번 오는가"** 라는 BE 사실에 달렸는데, 그걸 확인하지 않고 (b)로 갔다가 뒤집혔다.
 - 원인·확인: BE(`ChatSessionService`) 실측 — session-end 를 발화하는 `NEW_CONVERSATION`(issue 축출)·`LOGOUT`(endSession)은 **모두 세션을 Redis 에서 삭제**하며, `tabClose`·`inactivityTimeout`(IDLE_TIMEOUT)은 **아예 발화되지 않는다**. 즉 "한 sessionId = 한 번의 논리적 종료"가 참이라 (b)가 방어하려던 재체크포인트는 실재하지 않았다 → 고정키(a)가 정답이고 내용 해시는 과설계.

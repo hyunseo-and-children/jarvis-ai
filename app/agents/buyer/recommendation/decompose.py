@@ -65,7 +65,9 @@ async def decompose(
     prior_json = (
         "null"
         if prior_filters is None
-        else json.dumps(prior_filters.model_dump(by_alias=True, exclude_none=True), ensure_ascii=False)
+        else json.dumps(
+            prior_filters.model_dump(by_alias=True, exclude_none=True), ensure_ascii=False
+        )
     )
     reco_json = json.dumps(
         [{"productId": pid, "name": name} for pid, name in (last_recommendations or [])],
@@ -85,7 +87,11 @@ async def decompose(
     data = extract_json(raw)
 
     intent_raw = data.get("intent")
-    intent = intent_raw if intent_raw in ("recommend", "cart_add", "cart_view", "general") else "recommend"
+    intent = (
+        intent_raw
+        if intent_raw in ("recommend", "cart_add", "cart_view", "general")
+        else "recommend"
+    )
     # JSON 파싱은 됐지만 필드 값이 스키마와 안 맞을 수 있다 → extract_json 처럼 LLMError 로 통일해
     # 상위(graph.py)의 LLM_* error 이벤트로 흐르게 한다(첫 프레임 이전 raw 예외 → 500 방지).
     try:
@@ -93,7 +99,11 @@ async def decompose(
         case = int(data.get("case") or 2)
         cart = _parse_cart(data.get("cart"))
         raw_revert = data.get("revertCategories")
-        revert_categories = [str(c) for c in raw_revert if isinstance(c, str) and c] if isinstance(raw_revert, list) else []
+        revert_categories = (
+            [str(c) for c in raw_revert if isinstance(c, str) and c]
+            if isinstance(raw_revert, list)
+            else []
+        )
     except (ValidationError, ValueError, TypeError) as exc:
         raise LLMError("decompose 필터/케이스/장바구니 파싱 실패") from exc
     return RouteDecision(

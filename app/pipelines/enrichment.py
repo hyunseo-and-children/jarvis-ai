@@ -37,9 +37,7 @@ async def enrich_product(product: dict, *, llm: LLMClient, settings: Settings) -
         "attributes": product.get("attributes"),
     }
     user = json.dumps(payload, ensure_ascii=False)
-    raw = await llm.complete(
-        system=_ENRICH_SYSTEM, user=user, tier="fast", max_tokens=600
-    )
+    raw = await llm.complete(system=_ENRICH_SYSTEM, user=user, tier="fast", max_tokens=600)
     data = extract_json(raw)
     tags = data.get("tags")
     attrs = data.get("attributes")

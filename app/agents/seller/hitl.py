@@ -15,8 +15,9 @@
    변동하므로 제외한다. stock 변동은 실행 결과 안내에 현재값 표기로 보완.
 
 안전장치 5종(§6.2) 구현 지점:
-① draftId 바인딩 — thread_id=f"seller-draft:{draftId}", checkpoint 가 draft 원본 보유.
-② 명시 액션만 — confirm 판정은 pipeline.parse_confirm_message(입구 ①, 코드 선판정).
+① draftId 바인딩 — thread_id=f"seller-draft:{draftId}", checkpoint 가 정제된 실행 정본 보유.
+   SSE diff 는 같은 정본에서 만들되 시크릿 형태만 표시 계층에서 마스킹한다.
+② 명시 액션만 — confirm 판정은 요청 스키마 최상위 action/draftId 필드(입구 ①, A-2).
 ③ 멱등성 — 실행 완료 스레드(result 보유) 재confirm 은 재실행 없이 안내만.
 ④ Spring 소유권 하드게이트 — brandId 불일치 confirm 은 존재 비노출 거절(+Spring 최종 방어).
 ⑤ 대기 TTL — created_at 기준 seller_draft_ttl_minutes 경과 시 만료 안내(실행 금지).
@@ -40,6 +41,7 @@ from pydantic import BaseModel, Field
 from app.agents.seller.schemas import DraftChange, DraftProposal
 from app.core.config import get_settings
 from app.core.pg_resilience import hardened_pg_conninfo
+from app.core.text import _strip_unsafe, _strip_unsafe_multiline
 from app.schemas.spring import ProductCreate, ProductUpdate, SellerProductRow
 from app.services.spring_client import get_spring_client
 
@@ -109,7 +111,20 @@ def validate_draft(
     받은 뒤에야 실패하는 것보다, 스트림 1에서 되묻는 쪽이 계약(보여준 것==실행)에
     부합한다. 여기서 통과한 draft 는 confirm 시점에 캐스팅이 실패하지 않는다.
     """
-    changes = list(proposal.changes)
+    # after 는 승인 후 Spring 쓰기의 실행 정본이므로 위험 문자만 제거한다.
+    # 시크릿 마스킹은 표시 계층 전용이며 여기에 적용하면 정상 상품 데이터가 오염된다.
+    changes = [
+        change.model_copy(
+            update={
+                "after": (
+                    _strip_unsafe_multiline(change.after)
+                    if change.field == "description"
+                    else _strip_unsafe(change.after)
+                )
+            }
+        )
+        for change in proposal.changes
+    ]
     fields = {c.field for c in changes}
 
     if proposal.op in ("update", "delete") and proposal.product_id is None:
@@ -145,7 +160,7 @@ def validate_draft(
         op=proposal.op,
         product_id=None if proposal.op == "create" else proposal.product_id,
         changes=changes,
-        summary=proposal.summary,
+        summary=_strip_unsafe(proposal.summary),
         seller_id=seller_id,
         brand_id=brand_id,
         created_at=datetime.now(UTC).isoformat(),

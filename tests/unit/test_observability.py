@@ -143,9 +143,9 @@ async def test_stream_completes_when_finalize_assistant_fails(
         for r in caplog.records
         if r.name == "observability" and r.getMessage().startswith("{")
     ]
-    assert any(
-        rec.get("event") == "chat_request" for rec in records
-    ), "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
+    assert any(rec.get("event") == "chat_request" for rec in records), (
+        "finalize 실패 시 §6.3 b 구조화 로그가 유실됨"
+    )
 
 
 async def test_slot_released_when_commit_user_message_cancelled() -> None:

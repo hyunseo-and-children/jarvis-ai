@@ -118,11 +118,9 @@ def test_normalize_period_recent_n_excludes_today() -> None:
 
 
 def test_normalize_period_explicit_range() -> None:
-    """"YYYY-MM-DD~YYYY-MM-DD" 명시 범위는 그대로 반환한다(3-1 확장, 공백 허용)."""
+    """ "YYYY-MM-DD~YYYY-MM-DD" 명시 범위는 그대로 반환한다(3-1 확장, 공백 허용)."""
     today = dt.date(2026, 7, 18)
-    start, end = calc.normalize_period(
-        "2026-06-01~2026-06-15", today=today, recent_default_days=7
-    )
+    start, end = calc.normalize_period("2026-06-01~2026-06-15", today=today, recent_default_days=7)
     assert start == dt.date(2026, 6, 1)
     assert end == dt.date(2026, 6, 15)
 
@@ -142,7 +140,7 @@ def test_normalize_period_explicit_range_rejects_invalid() -> None:
 
 
 def test_normalize_period_recent_nonpositive_days_raises() -> None:
-    """"최근 0일" 등 N≤0 은 역전 범위(from>to)가 되므로 ValueError(마감 리뷰 M3)."""
+    """ "최근 0일" 등 N≤0 은 역전 범위(from>to)가 되므로 ValueError(마감 리뷰 M3)."""
     today = dt.date(2026, 7, 18)
     with pytest.raises(ValueError):
         calc.normalize_period("최근 0일", today=today, recent_default_days=7)

@@ -95,6 +95,10 @@ async def test_happy_path_pipeline() -> None:
     assert push.pushes[0].product_ids[:2] == [101, 102]
     assert set(push.pushes[0].product_ids) <= {101, 102, 103}
 
+    # reasons — rerank rationale 있는 상품만(101,102). expose_min 보충 103 은 근거 없어 제외(이슈 #61).
+    reasons = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    assert reasons == {101: "가성비가 좋아요", 102: "음질이 우수해요"}
+
     done = next(e for e in events if e["type"] == "done")["data"]
     assert done["finishReason"] == "stop"
 
@@ -154,6 +158,8 @@ async def test_rerank_failure_degrades_to_search_order() -> None:
     assert types[-1] == "done"
     # 검색 순서(101,102,103) 상위 노출 — rerank 없이도 하드 제약(검색 반영) 유지.
     assert push.pushes[0].product_ids == [101, 102, 103]
+    # degrade 경로엔 rerank rationale 이 없으므로 reasons 는 빈 배열(계약상 선택 필드, 이슈 #61).
+    assert push.pushes[0].reasons == []
 
 
 async def test_push_failure_skips_products_ready() -> None:
@@ -272,6 +278,139 @@ async def test_rerank_ids_subset_of_candidates() -> None:
     ids = push.pushes[0].product_ids
     assert 999 not in ids  # 후보 외 id 제거(REQ-REC-081)
     assert ids[0] == 101  # rerank 유효 산출이 선두, 나머지는 expose_min 보충
+
+
+def test_sanitize_reason_strips_control_and_format_chars() -> None:
+    """_sanitize_reason 은 비-whitespace 제어문자(NUL/ESC/DEL)·zero-width·bidi 포맷 문자를 제거한다.
+
+    `\\s` 로는 안 걸리는 표시 조작/주입 문자를 신뢰경계 전에 실제로 벗긴다(§4.2 이슈 #61 보안).
+    """
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    dirty = "방수\x1b[31m등급\x00이\x7f 높아요​‮"
+    clean = _sanitize_reason(dirty, 200)
+    for ch in ("\x1b", "\x00", "\x7f", "​", "‮"):
+        assert ch not in clean
+    # 제어/포맷 문자만 타깃 — 정상 한글·기호 텍스트는 보존.
+    assert "방수" in clean and "등급" in clean and "높아요" in clean
+
+
+def test_strip_unsafe_removes_controls_and_preserves_normal_text() -> None:
+    """공용 정제는 위험 문자·공백류만 정리하고 정상 한글·기호는 보존한다(이슈 #67)."""
+    from app.agents.buyer.recommendation.graph import _strip_unsafe
+
+    assert _strip_unsafe("  정상\n문장\t(1~2문장)\u200b\u202e  ") == "정상 문장 (1~2문장)"
+
+
+def test_strip_unsafe_multiline_preserves_structural_newlines() -> None:
+    """장문용 조합은 같은 위험 문자를 제거하면서 마크다운 구조 개행은 보존한다."""
+    from app.core.text import _strip_unsafe_multiline
+
+    dirty = "# 제목\x1b[31m\n\n- 첫째\t항목\u200b\u202e\r\n   기대 효과: 유지\n- 둘째"
+    assert _strip_unsafe_multiline(dirty) == (
+        "# 제목[31m\n\n- 첫째 항목\n   기대 효과: 유지\n- 둘째"
+    )
+
+
+def test_sanitize_reason_nonpositive_cap_blocks() -> None:
+    """max_len<=0(오설정)이면 방어캡이 원문을 차단한다 — 경계값에서 무력화되지 않음(PR #66 리뷰)."""
+    from app.agents.buyer.recommendation.graph import _sanitize_reason
+
+    text = "가나다라마바사"  # 7자
+    assert _sanitize_reason(text, 0) == ""  # 0 = 사실상 차단(빈 문자열 → reasons 에서 생략)
+    assert _sanitize_reason(text, -5) == ""  # 음수도 통과 안 함
+    assert len(_sanitize_reason(text, 3)) <= 3  # 작은 양수 상한은 지켜짐
+
+
+async def test_reason_sanitized_and_capped_before_push() -> None:
+    """reason 은 push 전 정제된다 — 개행/제어문자 제거 + 안전 상한 truncate (이슈 #61 보안).
+
+    rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트라 신뢰경계를 넘기 전에
+    방어한다. 정상 40자 reason 은 무영향, 비정상 초장문/개행만 차단.
+    """
+    settings = get_settings()
+    long_reason = "방수\n등급이\t높아요 " + ("가" * (settings.reason_max_len + 50))
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": long_reason}],
+            "overallComment": "c",
+        }
+    )
+    await _collect(
+        run_buyer_turn(
+            _req(), _member(), llm=llm, search=_make_search(DEFAULT_PRODUCTS), push_fn=push
+        )
+    )
+    reason_by_id = {r.product_id: r.reason for r in push.pushes[0].reasons}
+    sent = reason_by_id[101]
+    assert "\n" not in sent and "\t" not in sent  # 개행/제어문자 제거
+    assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
+
+
+async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
+    """overall_comment 는 SSE 직전 위험 문자만 제거하고 reason 전용 길이 캡은 적용하지 않는다."""
+    settings = get_settings()
+    comment = "추천\n총평\u200b\u202e " + ("가" * (settings.reason_max_len + 20))
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": "정상 근거"}],
+            "overallComment": comment,
+        }
+    )
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token.startswith("추천 총평 ")
+    assert "\n" not in token and "\u200b" not in token and "\u202e" not in token
+    assert len(token) > settings.reason_max_len  # overall_comment 에 reason 캡을 재사용하지 않음
+
+
+async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
+    """LLM 일반답변과 조건 칩의 노출 문자열은 SSE 경계에서 정제된다."""
+    general = FakeLLM(decompose={"intent": "general", "reply": "안녕\n하세요\u200b\u202e!"})
+    general_events = await _collect(
+        run_buyer_turn(
+            _req(message="인사"),
+            _member(),
+            llm=general,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    general_text = next(e for e in general_events if e["type"] == "token")["data"]["text"]
+    assert general_text == "안녕 하세요!"
+
+    recommend = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "filters": {"category": "여행\n용품\u200b\u202e", "brand": ["정상\t브랜드"]},
+            "case": 2,
+        }
+    )
+    recommend_events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-condition"),
+            _member(),
+            llm=recommend,
+            search=_make_search([]),
+            push_fn=_RecordingPush(),
+        )
+    )
+    chips = next(e for e in recommend_events if e["type"] == "conditions")["data"]["chips"]
+    assert chips[0]["label"] == "카테고리 · 여행 용품"
+    assert chips[0]["value"] == "여행 용품"
+    assert chips[1]["label"] == "정상 브랜드"
+    assert chips[1]["value"] == ["정상 브랜드"]
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
@@ -876,6 +1015,58 @@ async def test_recommendation_suppresses_consumable_category(
     assert sug["chips"][0]["revert"]["category"] == "조미료"
     assert sug["chips"][0]["estCount"] == 1
     assert "소금" in sug["chips"][0]["label"]
+
+
+async def test_recommendation_revert_chip_strips_seller_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """판매자 입력 영향 상품명·카테고리는 suggestions 칩 노출 전에 정제된다."""
+    _fix_now(monkeypatch)
+    dirty_category = "조미\n료\u200b\u202e"
+    dirty_name = "소\x1b[31m금\u200b\u202e"
+    monkeypatch.setattr(get_settings(), "consumable_categories", [dirty_category])
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((900, dirty_category, dirty_name)),
+    )
+    products = [_prod(201, dirty_category, "후추"), _prod(202, "무선이어폰", "이어폰")]
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-revert"),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    chip = next(e for e in events if e["type"] == "suggestions")["data"]["chips"][0]
+    assert chip["label"] == "소[31m금은 최근 구매 — 다시 추천받기"
+    assert chip["revert"]["category"] == "조미 료"
+
+    # FE가 정제된 machine value를 다음 턴에 돌려줘도 내부 원본 카테고리와 다시 매핑돼야 한다.
+    push = _RecordingPush()
+    revert = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "revertCategories": [chip["revert"]["category"]],
+            "filters": {},
+            "case": 2,
+        }
+    )
+    reverted_events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-revert"),
+            _member_num(),
+            llm=revert,
+            search=_make_search(products),
+            push_fn=push,
+        )
+    )
+    assert 201 in push.pushes[0].product_ids
+    assert "suggestions" not in _types(reverted_events)
 
 
 async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:

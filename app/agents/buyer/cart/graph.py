@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
+from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
 from app.schemas.spring import AddToCartRequest, CartOption
 from app.services import spring_client
@@ -56,7 +57,7 @@ def _options_text(options: list[CartOption]) -> str:
             parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
         else:
             parts.append(opt.name)
-    return " / ".join(parts) if parts else "옵션"
+    return _strip_unsafe(" / ".join(parts)) if parts else "옵션"
 
 
 def _done() -> str:
@@ -270,8 +271,10 @@ async def stream_cart_view(*, identity, get_cart_fn=None, observer=None) -> Asyn
 
     lines = []
     for item in cart_view.items:
-        opt = f" ({item.option_name})" if item.option_name else ""
-        lines.append(f"{item.product_name or '상품'}{opt} · {item.quantity}개")
+        product_name = _strip_unsafe(item.product_name or "상품")
+        option_name = _strip_unsafe(item.option_name) if item.option_name else ""
+        opt = f" ({option_name})" if option_name else ""
+        lines.append(f"{product_name}{opt} · {item.quantity}개")
     text = "장바구니에 담긴 상품이에요:\n" + "\n".join(lines)
     yield sse("token", TokenData(text=text).model_dump(by_alias=True))
     yield _done()

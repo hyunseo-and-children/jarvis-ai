@@ -149,6 +149,35 @@ async def test_cart_add_option_required_reasks_and_sets_pending() -> None:
     assert pending is not None and pending.product_id == 1
 
 
+async def test_cart_option_reask_strips_seller_text() -> None:
+    """Spring 옵션명(판매자 입력 영향)은 token 조립 후 위험 문자가 제거된다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired(
+            [
+                CartOption(option_id=3, name="블\x1b[31m루\u200b\u202e"),
+                CartOption(option_id=4, name="레\n드"),
+            ]
+        )
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="unsafe-option",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "블[31m루" in token and "레 드" in token
+    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e", "\n"))
+
+
 async def test_cart_add_reask_then_success_clears_pending() -> None:
     store = CartStateStore()
     await store.set_pending(
@@ -391,6 +420,34 @@ async def test_cart_view_lists_items() -> None:
     events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "방수 파우치" in token and "블루" in token and "2개" in token
+
+
+async def test_cart_view_strips_seller_text() -> None:
+    """장바구니 상품명·옵션명은 사용자 token 경계에서 정제된다."""
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[
+                CartViewItem(
+                    cart_item_id=1,
+                    product_id=1,
+                    product_name="방수\x1b[31m 파우치\u200b\u202e",
+                    option_name="블\n루",
+                    quantity=2,
+                ),
+                CartViewItem(
+                    cart_item_id=2,
+                    product_id=2,
+                    product_name="정상 상품",
+                    quantity=1,
+                ),
+            ]
+        )
+
+    events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == ("장바구니에 담긴 상품이에요:\n방수[31m 파우치 (블 루) · 2개\n정상 상품 · 1개")
+    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
 async def test_cart_view_empty() -> None:

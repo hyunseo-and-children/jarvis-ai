@@ -15,9 +15,7 @@ from __future__ import annotations
 
 def recent_purchases(user_id: str, limit: int = 50) -> list[dict]:
     """[폐기 예정] spring_client.get_recent_purchases(§4.7) 로 대체됨. 신규 참조 금지."""
-    raise NotImplementedError(
-        "order_seed is superseded by GET /orders/recent (api-spec §4.7, C-6)"
-    )
+    raise NotImplementedError("order_seed is superseded by GET /orders/recent (api-spec §4.7, C-6)")
 
 
 def seller_sales_stats(seller_id: str) -> dict:

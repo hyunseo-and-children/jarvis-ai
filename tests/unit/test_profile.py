@@ -250,6 +250,18 @@ async def test_profile_me_member_with_profile_camelcase() -> None:
     assert body["generatedAt"].startswith("2026")  # camelCase
 
 
+async def test_profile_me_strips_unsafe_llm_markdown() -> None:
+    """LLM 생성 프로필 markdown 은 HTTP 응답 신뢰경계를 넘기 전에 정제된다."""
+    store = await get_profile_store()
+    await store.set_summary(
+        "322", "# 취향\x1b[31m\n- 무선이어폰\u200b\u202e", "2026-07-20T09:00:00+00:00"
+    )
+
+    body = client.get("/profile/me", headers=_member_bearer("322")).json()
+
+    assert body["markdown"] == "# 취향[31m\n- 무선이어폰"
+
+
 # ─────────── POST /events/session-end ───────────
 
 

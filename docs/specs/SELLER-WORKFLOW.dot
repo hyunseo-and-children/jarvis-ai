@@ -1,0 +1,116 @@
+digraph seller_workflow {
+    graph [rankdir=TB, fontname="Noto Sans CJK KR", bgcolor="white",
+           splines=polyline, nodesep=0.35, ranksep=0.5, compound=true, pad=0.4];
+    node  [fontname="Noto Sans CJK KR", fontsize=11, shape=box, style="rounded,filled",
+           color="#33415522", penwidth=1.2, margin="0.14,0.09"];
+    edge  [fontname="Noto Sans CJK KR", fontsize=9, color="#64748b", arrowsize=0.7];
+
+    labelloc="t";
+    fontsize=22;
+    label=<<b>jarvis-ai · 판매자 챗 멀티에이전트 워크플로우</b><br/><font point-size="12" color="#64748b">POST /seller/chat — SPEC-SELLER-001 v1.0.0 · SSE 계약 2026-07-22 (meta/progress/token/draft/done/error)</font>>;
+
+    subgraph cluster_edge {
+        label=<<b>1. 시스템 배치 — Spring 패스스루 (F1)</b>>;
+        fontsize=13; style="rounded,filled"; fillcolor="#f1f5f9"; color="#cbd5e1";
+        FE   [label="FE (판매자 대시보드)\n좌: 채팅 / 우: 패널", fillcolor="#e0e7ff"];
+        SPR  [label="Spring\nJWT 검증 · CH-6 세션발급\nSSE 무가공 패스스루", fillcolor="#dbeafe"];
+        AI   [label="FastAPI AI 서버\n/seller/chat", fillcolor="#c7d2fe", style="rounded,filled,bold"];
+        SPRI [label="Spring internal API\n집계 I-6/7/13/14/15/16\nCRUD I-9~12", fillcolor="#dbeafe"];
+        FE   -> SPR  [label="JWT"];
+        SPR  -> AI   [label="S-4 · X-Internal-Token\n신원=주입헤더(본문 아님)"];
+        AI   -> FE   [label="SSE", constraint=false, style=dashed];
+        AI   -> SPRI [label="X-Internal-Token · 3s", constraint=false];
+    }
+
+    subgraph cluster_entry {
+        label=<<b>2. 입구 판정 (_seller_stream — 순서가 계약)</b>>;
+        fontsize=13; style="rounded,filled"; fillcolor="#fef9f3"; color="#fed7aa";
+        E1 [label="① confirm?\naction=='confirm'\n(LLM 0회)", shape=diamond, fillcolor="#ffedd5"];
+        E15[label="①.5 추천적용?\n'N번 적용해줘' 정규식\n(LLM 0회)", shape=diamond, fillcolor="#ffedd5"];
+        E2 [label="② scope 위반?\ncheck_scope 패턴\n(LLM 0회)", shape=diamond, fillcolor="#ffedd5"];
+        E3 [label="③ supervisor\n3분기 라우팅\n(Haiku t=0 + 코드후처리)", shape=diamond, fillcolor="#fde68a"];
+        E1 -> E15 [label="아니오"];
+        E15-> E2  [label="아니오"];
+        E2 -> E3  [label="아니오"];
+    }
+
+    AI -> E1 [lhead=cluster_entry, ltail=cluster_edge, label="요청 수신"];
+
+    LANE_C [label="confirm 레인\nmeta{confirm}", fillcolor="#fecaca", style="rounded,filled,bold"];
+    LANE_A [label="apply 레인\nmeta{apply}", fillcolor="#fbcfe8", style="rounded,filled,bold"];
+    LANE_R [label="refused 레인\nmeta{refused}\ntoken→done{keep}", fillcolor="#e2e8f0", style="rounded,filled,bold"];
+    LANE_AN[label="analysis 레인\nmeta{analysis}", fillcolor="#bbf7d0", style="rounded,filled,bold"];
+    LANE_P [label="product 레인\nmeta{product}", fillcolor="#bfdbfe", style="rounded,filled,bold"];
+    LANE_G [label="general 레인\nmeta{general}", fillcolor="#ddd6fe", style="rounded,filled,bold"];
+
+    E1  -> LANE_C  [label="action==confirm"];
+    E15 -> LANE_A  [label="N번 적용"];
+    E2  -> LANE_R  [label="위반"];
+    E3  -> LANE_AN [label="analysis"];
+    E3  -> LANE_P  [label="product"];
+    E3  -> LANE_G  [label="general"];
+
+    subgraph cluster_analysis {
+        label=<<b>3. analysis 파이프라인 — Send 팬아웃 → 팬인 · degrade 3층</b>>;
+        fontsize=13; style="rounded,filled"; fillcolor="#f0fdf4"; color="#86efac";
+        HIST [label="이력 주입\npg-profile 최근 5건", fillcolor="#dcfce7"];
+        PLN  [label="analysis_planner (Haiku)\n워커 선택 + 기간 정규화\nresolve_plan(코드)", fillcolor="#bbf7d0"];
+        WRK  [label="워커 5종 (Haiku t=0, 읽기전용)\nsales_anomaly · conversion\nbehavior · churn · abuse\nasyncio.gather 1~5종", fillcolor="#a7f3d0"];
+        RPT  [label="report_agent (Sonnet)\n보고서 작성", fillcolor="#6ee7b7"];
+        VER  [label="report_verifier / judge\n결정론 검사 + 채점 21/30\n(≤3회 루프)", shape=diamond, fillcolor="#fde68a"];
+        REC  [label="recommend_agent (Sonnet)\n구조화 추천 ≤5건\n(목록순서='N번' 계약)", fillcolor="#6ee7b7"];
+        COMP [label="compose_response\n(defer 팬인, 순수함수)", fillcolor="#a7f3d0"];
+        SAVE [label="save_history\n분석이력+추천 저장", fillcolor="#dcfce7"];
+        HIST -> PLN -> WRK -> RPT -> VER;
+        VER  -> RPT  [label="미달 재작성", constraint=false, color="#ef4444"];
+        VER  -> REC  [label="통과"];
+        REC  -> COMP -> SAVE;
+    }
+    LANE_AN -> HIST [lhead=cluster_analysis];
+    DONE_REP [label="token(보고서)\ndone{panel:replace}", fillcolor="#bbf7d0"];
+    SAVE -> DONE_REP [ltail=cluster_analysis];
+    PLN_ASK [label="되묻기 token\ndone{panel:keep}\n(기간 미지원·clarification)", fillcolor="#fef3c7"];
+    PLN -> PLN_ASK [label="미지원 기간", constraint=false, style=dashed, color="#f59e0b"];
+
+    subgraph cluster_product {
+        label=<<b>4. product 레인 — HITL 스트림 1 (draft 제안, A안)</b>>;
+        fontsize=13; style="rounded,filled"; fillcolor="#eff6ff"; color="#93c5fd";
+        PM   [label="product_agent (Haiku)\n조회 도구만 (쓰기도구 구조적 부재)\n→ DraftProposal", fillcolor="#bfdbfe"];
+        VAL  [label="validate_draft (코드 선검증)\n수치캐스팅·필수필드·create규칙", shape=diamond, fillcolor="#fde68a"];
+        START[label="start_draft\ncheckpoint 저장 + interrupt", fillcolor="#93c5fd"];
+        DRAFT[label="draft{draftId,op,productId,\nchanges[](camelCase),summary}\ndone{panel:replace}", fillcolor="#bfdbfe"];
+        PM -> VAL;
+        VAL -> START [label="성립"];
+        START -> DRAFT;
+    }
+    LANE_P -> PM [lhead=cluster_product];
+    LANE_A -> PM [label="추천[N-1]→draft 변환", lhead=cluster_product, style=dashed];
+    VAL_ASK [label="되묻기 token\ndone{panel:keep}", fillcolor="#fef3c7"];
+    VAL -> VAL_ASK [label="불성립", constraint=false, style=dashed, color="#f59e0b"];
+
+    subgraph cluster_confirm {
+        label=<<b>5. confirm 레인 — HITL 스트림 2 (실행, LLM 0회)</b>>;
+        fontsize=13; style="rounded,filled"; fillcolor="#fef2f2"; color="#fca5a5";
+        CHK  [label="코드 검사 5중\n존재→소유(brandId)→멱등\n→TTL(10분)→stale(I-9 재조회)", shape=diamond, fillcolor="#fecaca"];
+        EXEC [label="그래프 resume\nop별 매핑 실행\nupdate→I-11 · create→I-10 · delete→I-12(soft)", fillcolor="#fca5a5"];
+        RES  [label="token(결과)\ndone{panel:refresh}\n(executed시 목록 재조회)", fillcolor="#fecaca"];
+        CHK -> EXEC [label="통과"];
+        EXEC -> RES;
+    }
+    LANE_C -> CHK [lhead=cluster_confirm];
+    DRAFT -> CHK [label="FE:[적용] 클릭 = 새 스트림", constraint=false, style=dashed, color="#3b82f6"];
+    CHK_FAIL [label="안내 token\ndone{panel:keep}\n(만료·미존재·소유불일치·멱등)", fillcolor="#fecaca"];
+    CHK -> CHK_FAIL [label="실패=200안내(HTTP오류 아님)", constraint=false, style=dashed, color="#ef4444"];
+
+    GEN_OUT [label="token×N (astream)\ndone{panel:keep}", fillcolor="#ede9fe"];
+    LANE_G -> GEN_OUT [label="Haiku + 읽기도구\nmask_output"];
+
+    subgraph cluster_cross {
+        label=<<b>횡단 관심사</b>>;
+        fontsize=12; style="rounded,filled"; fillcolor="#faf5ff"; color="#d8b4fe";
+        CALC [label="계산 3층 분담\nSpring(단순수치) · AI코드(고도화·config임계값) · LLM(해석)", fillcolor="#f3e8ff"];
+        GUARD[label="가드레일\nscope · PII mask_output · ToolCallLimit\n신원=JWT sub/brandId (IDOR 방지)", fillcolor="#f3e8ff"];
+        DEG  [label="degrade 3층\n도구실패→워커degrade · 워커예외→부분보고서\n전워커실패→사과. error전파=2경우(planner·1차보고서)", fillcolor="#f3e8ff"];
+        CALC -> GUARD -> DEG [style=invis];
+    }
+}

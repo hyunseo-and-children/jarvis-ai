@@ -11,7 +11,14 @@ from tests.integration.conftest import auth_header, event_types, first_of, parse
 BUYER_MESSAGE = "유럽 여행 가는데 기내 반입 되는 파우치 추천해줘"
 
 
-def _chat(client, message: str = BUYER_MESSAGE, *, session: str = "sess-e2e", thread: str = "th-e2e", headers=None):
+def _chat(
+    client,
+    message: str = BUYER_MESSAGE,
+    *,
+    session: str = "sess-e2e",
+    thread: str = "th-e2e",
+    headers=None,
+):
     return client.post(
         "/chat",
         json={"sessionId": session, "threadId": thread, "message": message},
@@ -68,10 +75,13 @@ def test_path_b_list_id_resolves_to_cards_via_spring(client, spring, spring_http
     # Spring 이 표시 필드를 채워 돌려준다(AI 는 미보유)
     assert all("price" in c for c in cards)
 
-    # push 본문은 숫자 id 목록만 — 표시 필드 미포함(§4.2)
+    # push 본문은 id 목록 + 상품별 근거(reasons)만 — 표시 필드(price/image) 미포함(§4.2)
     pushed = spring.requests_to("/internal/recommendations")[0]["body"]
-    assert set(pushed) == {"sessionId", "listId", "productIds"}
+    assert set(pushed) == {"sessionId", "listId", "productIds", "reasons"}
     assert all(isinstance(pid, int) for pid in pushed["productIds"])
+    # reasons 는 {productId, reason} 항목 — productId 로 키잉(순서 권위는 productIds, §4.2)
+    assert all(set(r) == {"productId", "reason"} for r in pushed["reasons"])
+    assert all(isinstance(r["productId"], int) for r in pushed["reasons"])
 
 
 def test_rerank_order_is_preserved_into_push(client, spring, llm) -> None:
@@ -111,7 +121,9 @@ def test_recently_purchased_product_is_deduped(client, spring, llm) -> None:
             "orderId": 5001,
             "orderedAt": recent,
             "status": "DELIVERED",
-            "items": [{"orderItemId": 1, "productId": 102, "quantity": 1, "categoryName": "여행용품"}],
+            "items": [
+                {"orderItemId": 1, "productId": 102, "quantity": 1, "categoryName": "여행용품"}
+            ],
         }
     ]
 
@@ -138,7 +150,7 @@ def test_conditions_chips_emitted_before_products_ready(client, spring, llm) -> 
 
 
 def test_cart_add_flow_reaches_spring(client, spring, llm) -> None:
-    """"담아줘" — 직전 추천 상품이 I-2 로 담기고 SSE action 이 나간다 (§4.1).
+    """ "담아줘" — 직전 추천 상품이 I-2 로 담기고 SSE action 이 나간다 (§4.1).
 
     담기 대상은 직전 추천(last_reco)에서 해소되므로 추천 턴 → 담기 턴 순서로 돌린다.
     """
@@ -167,7 +179,7 @@ def test_cart_add_flow_reaches_spring(client, spring, llm) -> None:
 
 
 def test_cart_view_flow_reads_spring(client, spring, llm) -> None:
-    """"뭐 담겨 있어?" — I-18 조회 결과가 token 텍스트로 응답된다 (§4.9)."""
+    """ "뭐 담겨 있어?" — I-18 조회 결과가 token 텍스트로 응답된다 (§4.9)."""
     spring.cart_items = [
         {"cartItemId": 9001, "productId": 101, "productName": "여행용 방수 파우치 L", "quantity": 2}
     ]

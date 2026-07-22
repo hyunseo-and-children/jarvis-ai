@@ -1,6 +1,7 @@
 # SPEC-SELLER-001 — 판매자 멀티에이전트 그래프
 
-> **버전**: v0.1.0 (초안) · **상태**: Draft — 팀 리뷰 및 **정본 승격(기획 저장소 `.moai/specs/`) 필요**
+> **버전**: v1.0.0 (MVP 확정, 2026-07-22) · **상태**: MVP 구현 완료(1~4-3단계) — **정본 승격(기획 저장소 `.moai/specs/`) 은 미완**
+> **현재 상태 문서**: 워크플로우 [SELLER-FINAL-WORKFLOW](SELLER-FINAL-WORKFLOW.md) · 기술 [SELLER-FINAL-TECH](SELLER-FINAL-TECH.md) · 미결 [SELLER-FINAL-RISKS](SELLER-FINAL-RISKS.md) · 확장 [SELLER-FINAL-ROADMAP](SELLER-FINAL-ROADMAP.md)
 > **소유 코드**: `app/agents/seller/` · `app/api/seller.py` · `app/services/spring_client.py`(판매자 함수군)
 > **상위 계약**: [`../api-spec.md`](../api-spec.md) §3.2(SSE·HITL) · §4.4(집계 7종) · §4.5(상품 CRUD 4종) — 본 SPEC과 어긋나면 **api-spec 우선**.
 > **원 설계**: 『판매자 AI챗 멀티에이전트 설계서 v3』(2026-07-15, 01_LangGraph 수업자료 패턴 기반) — 본 SPEC은 이를 jarvis-ai 계약·규칙에 정합하도록 개정한 판이다. 변경분은 §1 정합 조정표 참조.

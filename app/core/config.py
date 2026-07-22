@@ -139,6 +139,7 @@ class Settings(BaseSettings):
     top_k: int = 30
     expose_min: int = 5
     expose_max: int = 8
+    reason_max_len: int = 200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 

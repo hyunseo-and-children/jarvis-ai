@@ -92,7 +92,9 @@ class OrderHistoryItem(CamelModel):
     quantity: int = 1
     price: int | None = None
     status: str | None = None
-    category: str | None = Field(default=None, alias="categoryName")  # I-19 v0.15.9 (소모품 억제 소스)
+    category: str | None = Field(
+        default=None, alias="categoryName"
+    )  # I-19 v0.15.9 (소모품 억제 소스)
 
 
 class OrderHistory(CamelModel):
@@ -100,7 +102,9 @@ class OrderHistory(CamelModel):
 
     order_id: int
     ordered_at: str  # ISO-8601
-    status: str | None = None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
+    status: str | None = (
+        None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
+    )
     items: list[OrderHistoryItem] = Field(default_factory=list)
     items_total: int | None = None
     shipping_fee: int = 0
@@ -132,7 +136,9 @@ class RecentPurchases(CamelModel):
 
     orders: list[OrderHistory] = Field(default_factory=list)
 
-    def recent_items(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> list["OrderHistoryItem"]:
+    def recent_items(
+        self, *, since: datetime | None = None, exclude_statuses=frozenset()
+    ) -> list["OrderHistoryItem"]:
         """윈도우·상태 필터를 통과한 구매 아이템 목록 — exact 제외·카테고리 억제(결정 14-F) 공용 소스.
 
         since 보다 오래된 주문(또는 ordered_at 불명)은 제외(영구 제외 방지). exclude_statuses
@@ -152,9 +158,14 @@ class RecentPurchases(CamelModel):
                 out.append(item)
         return out
 
-    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
+    def purchased_product_ids(
+        self, *, since: datetime | None = None, exclude_statuses=frozenset()
+    ) -> set[int]:
         """exact 제외 dedup(결정 14-F) 대상 productId 집합 — recent_items 위임."""
-        return {item.product_id for item in self.recent_items(since=since, exclude_statuses=exclude_statuses)}
+        return {
+            item.product_id
+            for item in self.recent_items(since=since, exclude_statuses=exclude_statuses)
+        }
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
@@ -224,13 +235,27 @@ class CartView(CamelModel):
 # ── 5. 추천 목록 push (I-21, §4.2, 경로 B) ──
 
 
+class RecoReason(CamelModel):
+    """I-21 추천 근거 항목 — Spring 이 Redis 저장 → CH-5 카드에 echo (§4.2 v0.15.15 확정, C-9).
+
+    productId 로 키잉한다(순서 권위는 RecommendationPush.product_ids). rerank 가 산출한
+    상품별 1문장 근거를 담으며, 근거를 생성하지 못한 상품은 생략(부분집합/순서무관 허용).
+    생성 목표는 한글 40자 이내 1문장(rerank 프롬프트) — reason 은 판매자 입력 영향 자유 텍스트라
+    push 전 그래프에서 개행 제거·안전 상한(config reason_max_len)으로 방어 정제한다. 표시 오버플로는 FE.
+    """
+
+    product_id: int  # 숫자(BIGINT, product.id) — internal 계약(§2.6)
+    reason: str
+
+
 class RecommendationPush(CamelModel):
     """I-21 POST /internal/recommendations 요청 (경로 B, api-spec §4.2, v0.15.0).
 
     최종 랭크 상품 id(Top-N)만 전달한다 — listId 는 FastAPI 가 생성해 넘기고(Spring 이 Redis 에
     이 키로 TTL 저장), FE 는 CH-5 GET /api/chat/lists/{listId} 로 카드를 조회한다.
-    [변경 v0.15.0] 구 groups/items 구조 폐기. [Q2 역제안 v0.15.2] reason 은 이 콜백에 포함
-    (reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo. BE 확정 시 reasons 필드 추가(§4.2).
+    [변경 v0.15.0] 구 groups/items 구조 폐기. [확정 v0.15.15, BE 구현 07-18] reason 은 이 콜백에
+    포함(reasons[{productId, reason}]) → Spring 이 CH-5 카드에 echo(§4.2). 선택 필드 — 근거 없는
+    상품은 생략, 비면 [] 로 직렬화.
     productId 는 internal 계약이라 숫자(BIGINT, §2.6). 순서 유지 = 렌더 순서.
     노출 개수(Top-N)는 config(expose_min~expose_max)로 recommendation 그래프가 결정 —
     이 스키마는 전송 컨테이너라 하드 개수 대신 방어적 상한(max_length)만 둔다.
@@ -240,6 +265,7 @@ class RecommendationPush(CamelModel):
     session_id: str
     list_id: str
     product_ids: list[int] = Field(default_factory=list, max_length=50)  # 방어적 상한(실제 개수는 config)
+    reasons: list[RecoReason] = Field(default_factory=list, max_length=50)  # productId로 키잉(§4.2)
 
 
 # ── 6. 상품 변경분 pull (I-17, §4.8, C-4) — AI 생성물 갱신 배치 ──
@@ -251,7 +277,9 @@ class ProductChange(CamelModel):
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
     """
 
-    product_id: int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
+    product_id: (
+        int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
+    )
     status: str  # ACTIVE | DELISTED
     updated_at: str  # ISO-8601
     name: str | None = None

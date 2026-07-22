@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends
 from app.agents.profile.reader import read_profile_summary
 from app.api.deps import get_identity
 from app.core.auth import Identity
+from app.core.text import _strip_unsafe_multiline
 from app.schemas.profile import ProfileView
 
 router = APIRouter(tags=["profile"])
@@ -29,6 +30,6 @@ async def get_profile_me(identity: Identity = Depends(get_identity)) -> ProfileV
     return ProfileView(
         user_id=identity.user_id,
         exists=True,
-        markdown=summary["markdown"],
+        markdown=_strip_unsafe_multiline(summary["markdown"]),
         generated_at=summary["generated_at"],
     )

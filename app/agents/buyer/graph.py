@@ -33,6 +33,7 @@ from app.core.config import get_settings
 from app.core.conversation import conversation_key
 from app.core.llm import LLMError, get_llm
 from app.core.pg_resilience import run_with_query_timeout
+from app.core.text import _strip_unsafe
 from app.agents.buyer.recommendation.state import CartIntent
 from app.schemas.chat import DoneData, ErrorData
 from app.schemas.spring import ProductSearchFilters
@@ -52,9 +53,7 @@ class ThreadFilterStore:
         self._store = store or InMemoryStore()
 
     async def get(self, key: str) -> ProductSearchFilters | None:
-        item = await run_with_query_timeout(
-            self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY)
-        )
+        item = await run_with_query_timeout(self._store.aget((_NAMESPACE_ROOT, key), _FILTERS_KEY))
         return ProductSearchFilters.model_validate(item.value) if item else None
 
     async def put(self, key: str, filters: ProductSearchFilters) -> None:
@@ -194,9 +193,18 @@ async def run_buyer_turn(
     # 소모품 억제 되돌리기(결정 14-F) — 이번 턴 revert + 스레드 누적을 합쳐 억제 제외.
     # LLM 이 뽑은 임의 문자열을 무한 누적하지 않게 소모품 화이트리스트(억제 대상)와 대조해 통과분만 저장.
     revert_store = await get_revert_store()
-    consumable_set = set(settings.consumable_categories)
+    # SSE에는 정제된 category를 싣지만 내부 억제 키는 Spring 원본과 같아야 한다.
+    # 정제값→원본 화이트리스트로 되매핑해 "보여준 revert 값"의 round-trip을 보존한다.
+    consumable_by_exposed = {
+        _strip_unsafe(category): category for category in settings.consumable_categories
+    }
     await revert_store.add(
-        thread_key, [c for c in decision.revert_categories if c in consumable_set]
+        thread_key,
+        [
+            consumable_by_exposed[exposed]
+            for category in decision.revert_categories
+            if (exposed := _strip_unsafe(category)) in consumable_by_exposed
+        ],
     )
     reverted = await revert_store.get(thread_key)
     async for frame in stream_recommendation(

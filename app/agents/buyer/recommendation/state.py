@@ -19,6 +19,7 @@ from langgraph.store.memory import InMemoryStore
 from app.core import pg_store
 from app.core.llm import LLMError
 from app.core.pg_resilience import mutation_lock, run_with_query_timeout
+from app.core.text import _strip_unsafe
 from app.schemas.chat import ConditionChip
 from app.schemas.spring import ProductSearchFilters
 
@@ -98,10 +99,9 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
     """
     chips: list[ConditionChip] = []
     if filters.category:
+        category = _strip_unsafe(filters.category)
         chips.append(
-            ConditionChip(
-                field="category", label=f"카테고리 · {filters.category}", value=filters.category
-            )
+            ConditionChip(field="category", label=f"카테고리 · {category}", value=category)
         )
     if filters.price_max is not None:
         chips.append(
@@ -116,9 +116,8 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
             )
         )
     if filters.brand:
-        chips.append(
-            ConditionChip(field="brand", label=" · ".join(filters.brand), value=filters.brand)
-        )
+        brands = [_strip_unsafe(brand) for brand in filters.brand]
+        chips.append(ConditionChip(field="brand", label=" · ".join(brands), value=brands))
     if filters.rating_min is not None:
         chips.append(
             ConditionChip(
@@ -126,7 +125,8 @@ def build_condition_chips(filters: ProductSearchFilters) -> list[ConditionChip]:
             )
         )
     if filters.keyword:
-        chips.append(ConditionChip(field="keyword", label=filters.keyword, value=filters.keyword))
+        keyword = _strip_unsafe(filters.keyword)
+        chips.append(ConditionChip(field="keyword", label=keyword, value=keyword))
     return chips
 
 

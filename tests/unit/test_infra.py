@@ -239,9 +239,7 @@ def test_bad_token_401_envelope() -> None:
 
 def test_seller_scope_403_envelope() -> None:
     """판매자 스코프 없는 토큰 → 403 FORBIDDEN 봉투."""
-    r = client.post(
-        "/seller/chat", json={"sessionId": "s", "threadId": "t", "message": "m"}
-    )
+    r = client.post("/seller/chat", json={"sessionId": "s", "threadId": "t", "message": "m"})
     assert r.status_code == 403
     env = r.json()["error"]
     assert env["code"] == "FORBIDDEN"

@@ -26,9 +26,7 @@ from app.schemas.spring import FunnelResult, SalesSeriesPoint
 _RECENT_N_PATTERN = re.compile(r"최근\s*(\d+)\s*일")
 
 # 명시 날짜 범위 "YYYY-MM-DD~YYYY-MM-DD" 패턴 (normalize_period, 3-1 확장).
-_EXPLICIT_RANGE_PATTERN = re.compile(
-    r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$"
-)
+_EXPLICIT_RANGE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})\s*~\s*(\d{4}-\d{2}-\d{2})$")
 
 # safe_eval 화이트리스트 — 사칙연산·거듭제곱·round() 만 허용한다(§3.3, `calculate` 도구용).
 _ALLOWED_BINOPS = (ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod, ast.Pow)

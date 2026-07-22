@@ -32,9 +32,7 @@ def test_analysis_plan_defaults_and_construction() -> None:
 
 def test_analysis_plan_dedupes_preserving_order() -> None:
     """중복 워커는 거부하지 않고 첫 등장만 남긴다(ToolStrategy 재시도 루프 방지)."""
-    plan = AnalysisPlan(
-        analyses=["churn", "sales_anomaly", "churn"], reason="이탈+매출"
-    )
+    plan = AnalysisPlan(analyses=["churn", "sales_anomaly", "churn"], reason="이탈+매출")
     assert plan.analyses == ["churn", "sales_anomaly"]
 
 
@@ -152,9 +150,7 @@ def test_recommendation_set_preserves_order() -> None:
 def test_action_recommendation_rejects_unknown_action_type_and_field() -> None:
     """action_type(5종)·ProposedChange.field(8종) Literal 위반은 거부된다."""
     with pytest.raises(ValidationError):
-        ActionRecommendation(
-            action_type="discount_event", product_id=101, title="t", rationale="r"
-        )
+        ActionRecommendation(action_type="discount_event", product_id=101, title="t", rationale="r")
     with pytest.raises(ValidationError):
         ProposedChange(field="seller_id", after="x")  # 신원 필드는 애초에 8종에 없다
 
@@ -168,9 +164,7 @@ def test_action_recommendation_requires_product_id() -> None:
 def test_recommendation_set_degrade_and_max_length() -> None:
     """빈 목록 degrade 는 허용, 5건 초과는 거부된다(max_length)."""
     assert RecommendationSet().recommendations == []
-    one = ActionRecommendation(
-        action_type="promotion", product_id=101, title="t", rationale="r"
-    )
+    one = ActionRecommendation(action_type="promotion", product_id=101, title="t", rationale="r")
     assert one.changes == []  # promotion — 필드 변경 없는 유형은 changes 빈 목록
     with pytest.raises(ValidationError):
         RecommendationSet(recommendations=[one] * 6)

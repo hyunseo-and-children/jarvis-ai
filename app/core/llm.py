@@ -33,7 +33,9 @@ class LLMClient(Protocol):
         """단발 완성 텍스트를 반환한다. json_output=False 는 마크다운/평문 태스크(예: 프로필 요약)."""
         ...
 
-    def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> AsyncIterator[str]:
+    def stream(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024
+    ) -> AsyncIterator[str]:
         """토큰 증분을 비동기로 산출한다."""
         ...
 
@@ -102,7 +104,9 @@ class AnthropicLLM:
             raise LLMError(str(exc)) from exc
         return _as_text(resp.content)
 
-    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> AsyncIterator[str]:
+    async def stream(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024
+    ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         try:
@@ -154,7 +158,11 @@ class OpenAILLM:
         from langchain_openai import ChatOpenAI
 
         model, effort = self._resolve(tier)
-        key = (tier, max_tokens, json_mode)  # tier→(model,effort) 결정적 — effort 구분 위해 tier 로 키
+        key = (
+            tier,
+            max_tokens,
+            json_mode,
+        )  # tier→(model,effort) 결정적 — effort 구분 위해 tier 로 키
         if key not in self._cache:
             kwargs: dict[str, Any] = {
                 "model": model,
@@ -185,7 +193,9 @@ class OpenAILLM:
             raise LLMError(str(exc)) from exc
         return _as_text(resp.content)
 
-    async def stream(self, *, system: str, user: str, tier: str, max_tokens: int = 1024) -> AsyncIterator[str]:
+    async def stream(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024
+    ) -> AsyncIterator[str]:
         from langchain_core.messages import HumanMessage, SystemMessage
 
         try:

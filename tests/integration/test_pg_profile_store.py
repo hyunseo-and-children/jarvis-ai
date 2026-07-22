@@ -198,11 +198,14 @@ async def test_profile_rmw_is_safe_across_postgres_pools() -> None:
     conninfo = hardened_pg_conninfo(get_settings().profile_db_url)
     pool_config = state_store_pool_config()
     index_config = {"dims": _DIM, "embed": _fake_embed, "fields": ["fact"]}
-    async with AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config, index=index_config
-    ) as store_a, AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config, index=index_config
-    ) as store_b:
+    async with (
+        AsyncPostgresStore.from_conn_string(
+            conninfo, pool_config=pool_config, index=index_config
+        ) as store_a,
+        AsyncPostgresStore.from_conn_string(
+            conninfo, pool_config=pool_config, index=index_config
+        ) as store_b,
+    ):
         await store_a.setup()
         await store_b.setup()
         profile_a, profile_b = ProfileStore(store_a), ProfileStore(store_b)
@@ -219,7 +222,11 @@ async def test_profile_rmw_is_safe_across_postgres_pools() -> None:
 
         user_id = _user()
         await asyncio.gather(
-            *(profile.add_fact(user_id, "same-fact") for profile in (profile_a, profile_b) for _ in range(5))
+            *(
+                profile.add_fact(user_id, "same-fact")
+                for profile in (profile_a, profile_b)
+                for _ in range(5)
+            )
         )
         assert (await profile_a.get_facts(user_id)).count("same-fact") == 1
 

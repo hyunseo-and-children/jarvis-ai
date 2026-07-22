@@ -33,7 +33,7 @@ class CompareReport:
     k: int
     method1: MethodScore  # 방식1(vector)
     method2: MethodScore  # 방식2(rerank)
-    mean_overlap: float   # 두 방식 상위-k 겹침 비율
+    mean_overlap: float  # 두 방식 상위-k 겹침 비율
 
 
 def recall_at_k(ranked_ids: Sequence[int], relevant: Iterable[int], k: int) -> float:

@@ -33,6 +33,7 @@ def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
         seller_recent_days_default=7,
     )
 
+
 _CTX = SellerContext(seller_id="7", brand_id="3")  # 계약 타입 = str (context.py)
 
 
@@ -74,7 +75,9 @@ class _StubAgent:
         return {"structured_response": self._finding}
 
 
-def _patch(monkeypatch: pytest.MonkeyPatch, stubs: dict[str, _StubAgent], timeout_s: float = 5.0) -> None:
+def _patch(
+    monkeypatch: pytest.MonkeyPatch, stubs: dict[str, _StubAgent], timeout_s: float = 5.0
+) -> None:
     """WORKER_BUILDERS 와 Settings 타임아웃을 스텁으로 교체한다."""
     for analysis_type, stub in stubs.items():
         monkeypatch.setitem(orchestrator.WORKER_BUILDERS, analysis_type, lambda s=stub: s)
@@ -97,10 +100,13 @@ def test_worker_builders_cover_all_analysis_types() -> None:
 
 def test_run_workers_happy_path_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
     """정상 2종 — finding 은 계획 순서, 진행 token 은 실행 전에 유형별로 방출된다."""
-    _patch(monkeypatch, {
-        "sales_anomaly": _StubAgent(finding=_finding("sales_anomaly")),
-        "churn": _StubAgent(finding=_finding("churn")),
-    })
+    _patch(
+        monkeypatch,
+        {
+            "sales_anomaly": _StubAgent(finding=_finding("sales_anomaly")),
+            "churn": _StubAgent(finding=_finding("churn")),
+        },
+    )
     tokens, emit = _collect_emit()
 
     findings = asyncio.run(
@@ -113,10 +119,13 @@ def test_run_workers_happy_path_preserves_order(monkeypatch: pytest.MonkeyPatch)
 
 def test_run_workers_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyPatch) -> None:
     """1종 예외 → degrade finding(확보 실패·info·빈 evidence)으로 수렴, 파이프라인 계속."""
-    _patch(monkeypatch, {
-        "sales_anomaly": _StubAgent(finding=_finding("sales_anomaly")),
-        "abuse": _StubAgent(exc=RuntimeError("boom")),
-    })
+    _patch(
+        monkeypatch,
+        {
+            "sales_anomaly": _StubAgent(finding=_finding("sales_anomaly")),
+            "abuse": _StubAgent(exc=RuntimeError("boom")),
+        },
+    )
     _, emit = _collect_emit()
 
     findings = asyncio.run(
@@ -133,10 +142,13 @@ def test_run_workers_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyP
 
 def test_run_workers_all_failed_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     """전부 예외 → AllWorkersFailedError(호출부가 사과 token 후 done, §7)."""
-    _patch(monkeypatch, {
-        "conversion": _StubAgent(exc=RuntimeError("a")),
-        "behavior": _StubAgent(exc=RuntimeError("b")),
-    })
+    _patch(
+        monkeypatch,
+        {
+            "conversion": _StubAgent(exc=RuntimeError("a")),
+            "behavior": _StubAgent(exc=RuntimeError("b")),
+        },
+    )
     _, emit = _collect_emit()
 
     with pytest.raises(orchestrator.AllWorkersFailedError):
@@ -167,10 +179,13 @@ def test_run_workers_timeout_becomes_degrade(monkeypatch: pytest.MonkeyPatch) ->
 
 def test_run_workers_missing_structured_response_degrades(monkeypatch: pytest.MonkeyPatch) -> None:
     """structured_response 누락(None)도 내부 오류 degrade 로 수렴한다."""
-    _patch(monkeypatch, {
-        "sales_anomaly": _StubAgent(finding=None),
-        "churn": _StubAgent(finding=_finding("churn")),
-    })
+    _patch(
+        monkeypatch,
+        {
+            "sales_anomaly": _StubAgent(finding=None),
+            "churn": _StubAgent(finding=_finding("churn")),
+        },
+    )
     _, emit = _collect_emit()
 
     findings = asyncio.run(
@@ -206,7 +221,9 @@ def _report_response(text: str) -> dict:
 def _score(total_each: int, feedback: str = "") -> dict:
     return {
         "structured_response": ReportScore(
-            accuracy=total_each, completeness=total_each, clarity=total_each,
+            accuracy=total_each,
+            completeness=total_each,
+            clarity=total_each,
             feedback=feedback,
         )
     }
@@ -239,9 +256,7 @@ def test_verified_report_passes_first_attempt(monkeypatch: pytest.MonkeyPatch) -
     _patch_loop(monkeypatch, report_agent, judge_agent)
     tokens, emit = _collect_emit()
 
-    verified = asyncio.run(
-        orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit)
-    )
+    verified = asyncio.run(orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit))
 
     assert verified.passed is True
     assert verified.attempts == 1
@@ -258,9 +273,7 @@ def test_verified_report_rewrites_with_combined_feedback(monkeypatch: pytest.Mon
     _patch_loop(monkeypatch, report_agent, judge_agent)
     _, emit = _collect_emit()
 
-    verified = asyncio.run(
-        orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit)
-    )
+    verified = asyncio.run(orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit))
 
     assert verified.passed is True
     assert verified.attempts == 2
@@ -277,9 +290,7 @@ def test_verified_report_adopts_last_after_exhaustion(monkeypatch: pytest.Monkey
     _patch_loop(monkeypatch, report_agent, judge_agent)
     _, emit = _collect_emit()
 
-    verified = asyncio.run(
-        orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit)
-    )
+    verified = asyncio.run(orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit))
 
     assert verified.passed is False
     assert verified.attempts == 3
@@ -294,9 +305,7 @@ def test_verified_report_rewrite_crash_adopts_previous(monkeypatch: pytest.Monke
     _patch_loop(monkeypatch, report_agent, judge_agent)
     _, emit = _collect_emit()
 
-    verified = asyncio.run(
-        orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit)
-    )
+    verified = asyncio.run(orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit))
 
     assert verified.passed is False
     assert verified.report == _GROUNDED
@@ -320,9 +329,7 @@ def test_verified_report_judge_crash_adopts_current(monkeypatch: pytest.MonkeyPa
     _patch_loop(monkeypatch, report_agent, judge_agent)
     _, emit = _collect_emit()
 
-    verified = asyncio.run(
-        orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit)
-    )
+    verified = asyncio.run(orchestrator.write_verified_report(_FINDINGS, _CTX, emit=emit))
 
     assert verified.passed is False
     assert verified.report == _GROUNDED
@@ -352,9 +359,7 @@ def test_run_recommend_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
     tokens, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit)
-    )
+    result = asyncio.run(orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit))
 
     assert result is _REC_SET
     assert tokens == ["개선 방안을 정리하고 있습니다…"]
@@ -368,9 +373,7 @@ def test_run_recommend_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
     _, emit = _collect_emit()
 
-    result = asyncio.run(
-        orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit)
-    )
+    result = asyncio.run(orchestrator.run_recommend(_FINDINGS, _GROUNDED, _CTX, emit=emit))
 
     assert result.recommendations == []
 
@@ -378,22 +381,24 @@ def test_run_recommend_failure_degrades_to_empty(monkeypatch: pytest.MonkeyPatch
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, plan: AnalysisPlan) -> None:
     """planner·워커·report·judge·recommend 전부 스텁 — 정상 경로 구성."""
     monkeypatch.setattr(
-        orchestrator, "build_analysis_planner",
+        orchestrator,
+        "build_analysis_planner",
         lambda: _SeqAgent([{"structured_response": plan}]),
     )
     monkeypatch.setitem(
-        orchestrator.WORKER_BUILDERS, "sales_anomaly",
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
         lambda: _StubAgent(finding=_FINDINGS[0]),
     )
     monkeypatch.setattr(
-        orchestrator, "build_report_agent",
+        orchestrator,
+        "build_report_agent",
         lambda: _SeqAgent([_report_response(_GROUNDED)]),
     )
+    monkeypatch.setattr(orchestrator, "build_report_judge", lambda: _SeqAgent([_score(8)]))
     monkeypatch.setattr(
-        orchestrator, "build_report_judge", lambda: _SeqAgent([_score(8)])
-    )
-    monkeypatch.setattr(
-        orchestrator, "build_recommend_agent",
+        orchestrator,
+        "build_recommend_agent",
         lambda: _SeqAgent([{"structured_response": _REC_SET}]),
     )
     monkeypatch.setattr(orchestrator, "get_settings", lambda: _settings())
@@ -484,7 +489,8 @@ def test_pipeline_all_workers_failed_returns_apology(monkeypatch: pytest.MonkeyP
     plan = AnalysisPlan(analyses=["sales_anomaly"], period_expr="지난달", reason="r")
     _patch_pipeline(monkeypatch, plan)
     monkeypatch.setitem(
-        orchestrator.WORKER_BUILDERS, "sales_anomaly",
+        orchestrator.WORKER_BUILDERS,
+        "sales_anomaly",
         lambda: _StubAgent(exc=RuntimeError("down")),
     )
     _, emit = _collect_emit()
