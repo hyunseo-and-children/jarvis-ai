@@ -30,6 +30,7 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartQuantityExceeded,
     CartStockInsufficient,
     SpringUnavailableError,
 )
@@ -334,6 +335,52 @@ async def test_cart_add_stock_insufficient_without_count_falls_back() -> None:
     )
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+
+
+async def test_cart_add_stock_zero_says_soldout() -> None:
+    """재고 0(품절, BE ON_SALE+stock 0) → "품절된 상품이에요"(reason 은 STOCK_INSUFFICIENT 유지)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(0)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+    assert action["message"] == "품절된 상품이에요."
+
+
+async def test_cart_add_quantity_exceeded_uses_be_message() -> None:
+    """수량 상한 초과(합산 > 99, BE VALIDATION_ERROR) → CART_ERROR + BE 동일 문구."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartQuantityExceeded("합산 초과")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
+    assert action["message"] == "수량은 최대 99개까지 담을 수 있습니다."
 
 
 async def test_cart_add_error_maps_to_cart_error() -> None:
@@ -711,6 +758,22 @@ async def test_add_to_cart_stock_insufficient_missing_available(
     with pytest.raises(sc.CartStockInsufficient) as ei:
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
     assert ei.value.available_stock is None
+
+
+async def test_add_to_cart_validation_error_raises_quantity_exceeded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 VALIDATION_ERROR(합산 > 99) → CartQuantityExceeded(CartError 하위)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "VALIDATION_ERROR", "message": "수량은 최대 99개까지 담을 수 있습니다."}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartQuantityExceeded):
+        # 각 요청 수량은 <=99(클라 검증), 합산 초과는 BE가 VALIDATION_ERROR 로 낸다
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    # CartError 하위라 일반 캐치로도 낙성(전용 핸들러 누락 시 CART_ERROR degrade)
+    assert issubclass(sc.CartQuantityExceeded, sc.CartError)
 
 
 async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:

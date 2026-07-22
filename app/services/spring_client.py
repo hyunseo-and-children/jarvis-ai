@@ -108,6 +108,14 @@ class CartStockInsufficient(Exception):
         super().__init__(f"CART_STOCK_INSUFFICIENT (available={available_stock})")
 
 
+class CartQuantityExceeded(CartError):
+    """I-2 담기 수량 상한 초과(400 VALIDATION_ERROR, 합산 > 99) → action reason CART_ERROR.
+
+    BE는 합산 수량 > CartItem.MAX_QUANTITY(99)일 때 VALIDATION_ERROR로 차단(CartService.addItem,
+    재고검사보다 먼저). CartError 하위라 전용 핸들러가 없어도 CART_ERROR로 낙성한다.
+    """
+
+
 def _client() -> httpx.AsyncClient:
     """공용 httpx.AsyncClient 팩토리. base_url·서비스 토큰은 설정에서 주입한다.
 
@@ -309,7 +317,8 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
     AI-검증 JWT sub 유래(요청 본문 불신, §2.3). 담기 시 BE 재고검증 있음(합산 수량 > 재고 →
     CART_STOCK_INSUFFICIENT + availableStock, 2026-07-22). 실패 코드는 typed 예외로 전파:
     CART_OPTION_REQUIRED→CartOptionRequired(options), CART_OPTION_INVALID→CartOptionInvalid(options),
-    CART_STOCK_INSUFFICIENT→CartStockInsufficient(availableStock), 404→CartProductNotFound, 그 외→CartError.
+    CART_STOCK_INSUFFICIENT→CartStockInsufficient(availableStock), VALIDATION_ERROR(합산>99)→
+    CartQuantityExceeded, 404→CartProductNotFound, 그 외→CartError.
     """
     try:
         async with _client() as client:
@@ -333,6 +342,8 @@ async def add_to_cart(request: AddToCartRequest) -> AddToCartResult:
         raise CartOptionInvalid(options)
     if resp.status_code == 400 and code == "CART_STOCK_INSUFFICIENT":
         raise CartStockInsufficient(available_stock)
+    if resp.status_code == 400 and code == "VALIDATION_ERROR":
+        raise CartQuantityExceeded(f"add_to_cart 수량 상한 초과: {code}")
     if resp.status_code == 404:
         raise CartProductNotFound()
     # 401 INTERNAL_TOKEN_INVALID·미상 코드 → 운영 오류
