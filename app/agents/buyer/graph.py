@@ -195,15 +195,18 @@ async def run_buyer_turn(
     # 보정(never-null). 매핑 자체가 죽어도 추천 스트림은 계속(최후 방어 — raw 그대로).
     mapper = map_categories or _map_categories
     try:
-        decision.categories = await mapper(
+        decision.category_legs = await mapper(
             category_queries=decision.category_queries,
             utterance=request.message,
             settings=settings,
         )
     except Exception:  # noqa: BLE001 - 매핑 최후 방어(내부 하드실패 처리와 별개의 안전망)
-        decision.categories = [q.raw_category for q in decision.category_queries if q.raw_category]
-    if decision.categories:
-        decision.filters.category = decision.categories[0]  # 대표값(단일 필드·칩·멀티턴 승계 호환)
+        decision.category_legs = [
+            (q.raw_category, q.query) for q in decision.category_queries if q.raw_category
+        ]
+    if decision.category_legs:
+        # 대표 canonical — 단일 filters.category 필드·조건 칩·멀티턴 승계 호환(§7).
+        decision.filters.category = decision.category_legs[0][0]
 
     # 멀티턴 병합 필터는 추천 intent 에서만 저장(담기/조회가 덮어쓰지 않게).
     await thread_store.put(thread_key, decision.filters)

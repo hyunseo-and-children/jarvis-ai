@@ -2,6 +2,7 @@
 
 decompose 추측(raw)을 임베딩으로 실제 DB 카테고리에 보정한다. embed·search·exact 를 주입형
 fake 로 대체해 다섯 never-null 분기와 멀티 dedup·상한 절단을 검증한다.
+결과는 fan-out leg 용 (canonical, query) 페어 — query 는 그 카테고리의 검색 키워드(§6·§9).
 """
 
 from __future__ import annotations
@@ -53,42 +54,42 @@ class _FakeMapper:
 
 
 async def test_exact_match_uses_raw() -> None:
-    """raw 가 DB에 exact match → raw 그대로 canonical."""
+    """raw 가 DB에 exact match → raw 그대로 canonical, query 보존."""
     m = _FakeMapper(exact={"PC부품 > CPU"}, nearest={})
     out = await m.run([CategoryQuery("PC부품 > CPU", "cpu")])
-    assert out == ["PC부품 > CPU"]
+    assert out == [("PC부품 > CPU", "cpu")]
 
 
 async def test_offlist_uses_nearest() -> None:
-    """raw 가 exact 아님 → embed(raw) → 최근접 채택(거리 무관 항상)."""
+    """raw 가 exact 아님 → embed(raw) → 최근접 채택(거리 무관 항상), query 보존."""
     m = _FakeMapper(exact=set(), nearest={"무선 이어폰": "가전 > 이어폰/헤드폰"})
     out = await m.run([CategoryQuery("무선 이어폰", "이어폰")])
-    assert out == ["가전 > 이어폰/헤드폰"]
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰")]
 
 
 async def test_null_raw_falls_back_to_utterance() -> None:
-    """raw==null → embed(발화) → top-1."""
+    """raw==null → embed(발화) → top-1, query(있으면) 보존."""
     m = _FakeMapper(exact=set(), nearest={"집들이 선물 추천": "생활/건강 > 생활용품"})
     out = await m.run([CategoryQuery(None, "집들이 선물")], utterance="집들이 선물 추천")
-    assert out == ["생활/건강 > 생활용품"]
+    assert out == [("생활/건강 > 생활용품", "집들이 선물")]
 
 
 async def test_empty_queries_normalizes_to_utterance_fallback() -> None:
-    """categoryQueries 빈 리스트 → 발화 폴백 1건으로 정규화."""
+    """categoryQueries 빈 리스트 → 발화 폴백 1건(query 없음)으로 정규화."""
     m = _FakeMapper(exact=set(), nearest={"유럽여행 준비물": "여행/캠핑 > 여행용품"})
     out = await m.run([], utterance="유럽여행 준비물")
-    assert out == ["여행/캠핑 > 여행용품"]
+    assert out == [("여행/캠핑 > 여행용품", None)]
 
 
 async def test_hard_failure_keeps_raw_skips_null() -> None:
-    """embed/DB 다운 → raw 있으면 그대로(never-null degrade), null 은 스킵."""
+    """embed/DB 다운 → raw 있으면 그대로(never-null degrade), null 은 스킵, query 보존."""
     m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
     out = await m.run([CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "뭐")])
-    assert out == ["PC부품 > CPU"]
+    assert out == [("PC부품 > CPU", "cpu")]
 
 
 async def test_multi_dedup_and_truncate() -> None:
-    """서로 다른 raw 가 같은 canonical 로 모이면 dedup, fanout_max 로 절단."""
+    """서로 다른 raw 가 같은 canonical 로 모이면 dedup(첫 query 유지), fanout_max 로 절단."""
     m = _FakeMapper(
         exact=set(),
         nearest={
@@ -99,10 +100,11 @@ async def test_multi_dedup_and_truncate() -> None:
     )
     out = await m.run(
         [
-            CategoryQuery("이어폰", None),
-            CategoryQuery("무선이어폰", None),
-            CategoryQuery("TV", None),
+            CategoryQuery("이어폰", "이어폰검색"),
+            CategoryQuery("무선이어폰", "무선검색"),
+            CategoryQuery("TV", "티비검색"),
         ],
         settings=_settings(fanout_max=5),
     )
-    assert out == ["가전 > 이어폰/헤드폰", "가전 > TV"]  # 중복 canonical 합침
+    # 중복 canonical 합침 — 첫 leg 의 query 유지
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰검색"), ("가전 > TV", "티비검색")]

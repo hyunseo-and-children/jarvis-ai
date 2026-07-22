@@ -29,7 +29,12 @@ from app.schemas.chat import (
     SuggestionsData,
     TokenData,
 )
-from app.schemas.spring import ProductSearchResult, RecoReason, RecommendationPush
+from app.schemas.spring import (
+    ProductSearchResult,
+    RecoReason,
+    RecommendationPush,
+    SpringProduct,
+)
 from app.services.spring_client import SpringUnavailableError
 
 _INACTIVE_STATUSES = frozenset(
@@ -59,6 +64,30 @@ def _sanitize_reason(text: str, max_len: int) -> str:
     return collapsed
 
 
+def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> ProductSearchResult:
+    """fan-out leg 결과를 round-robin 인터리브 + productId dedup + cap 절단으로 병합한다(§6).
+
+    leg 순서대로 한 상품씩 번갈아 뽑아(한 카테고리가 rerank 입력을 독점하지 않게) 최초 등장
+    productId 만 남기고, cap 으로 절단해 rerank 입력 상한을 지킨다. 빈 leg 는 건너뛴다.
+    """
+    lists = [r.products for r in results]
+    depth = max((len(pl) for pl in lists), default=0)
+    seen: set[int] = set()
+    merged: list[SpringProduct] = []
+    for i in range(depth):
+        for pl in lists:
+            if i >= len(pl):
+                continue
+            product = pl[i]
+            if product.product_id in seen:
+                continue
+            seen.add(product.product_id)
+            merged.append(product)
+            if len(merged) >= cap:
+                return ProductSearchResult(products=merged, total_count=len(merged))
+    return ProductSearchResult(products=merged, total_count=len(merged))
+
+
 async def stream_recommendation(
     *,
     request,
@@ -83,10 +112,34 @@ async def stream_recommendation(
     # dedup 소스(I-19)와 검색(§4.6)을 **병렬 실행** — §4.7 지연 가드(순차 시 최악 6s, first-token 예산 잠식).
     # dedup 은 검색 응답 뒤 사후필터라 두 호출은 독립적이다. 각 호출이 자체 실패를 삼켜 gather 는 안 깨진다.
     async def _run_search() -> ProductSearchResult | None:
-        try:
-            return await search(decision.filters, exclude_product_ids=None)
-        except SpringUnavailableError:
+        legs = decision.category_legs
+        if not legs:
+            # 카테고리 매핑 결과 없음(매핑 degrade·비-매핑 경로) → 단일 filters 검색(기존 경로).
+            try:
+                return await search(decision.filters, exclude_product_ids=None)
+            except SpringUnavailableError:
+                return None
+
+        # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
+        # keyword(그 카테고리 query, 없으면 base)·size(per_cat_limit)만 교체한다.
+        async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
+            leg_filters = decision.filters.model_copy(
+                update={
+                    "category": canonical,
+                    "keyword": query or decision.filters.keyword,
+                    "limit": settings.category_fanout_per_cat_limit,
+                }
+            )
+            try:
+                return await search(leg_filters, exclude_product_ids=None)
+            except SpringUnavailableError:
+                return None  # leg 별 실패는 삼켜 다른 leg 는 계속(§6)
+
+        leg_results = await asyncio.gather(*(_leg(c, q) for c, q in legs))
+        survived = [r for r in leg_results if r is not None]
+        if not survived:  # 전량 leg 실패 → SEARCH_FAILED(§6)
             return None
+        return _merge_fanout_results(survived, settings.category_fanout_merge_cap)
 
     async def _fetch_purchases():
         # 게스트/비회원/판매자/비숫자 sub 는 스킵, I-19 실패는 degrade(dedup 없이 진행, §4.7).

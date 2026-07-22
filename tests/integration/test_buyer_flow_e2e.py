@@ -182,8 +182,8 @@ def test_mapped_category_overrides_decompose_into_search(client, spring, llm, mo
     }
 
     async def _fake_map(*, category_queries, utterance, settings):
-        # 추측을 canonical 로 보정했다고 가정(never-null) — 배선만 검증
-        return ["캠핑용품"]
+        # 추측을 canonical 로 보정했다고 가정(never-null) — (canonical, query) leg 반환, 배선만 검증
+        return [("캠핑용품", "캠핑 파우치")]
 
     monkeypatch.setattr(buyer_graph, "_map_categories", _fake_map)
 

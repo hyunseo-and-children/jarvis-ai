@@ -78,9 +78,9 @@ class RouteDecision:
     revert_categories: list[str] = field(default_factory=list)  # 소모품 억제 되돌리기(결정 14-F)
     # 카테고리 하이브리드 매핑(이슈 #59, 방식 A):
     category_queries: list[CategoryQuery] = field(default_factory=list)  # decompose 추측(매핑 전)
-    categories: list[str] = field(
-        default_factory=list
-    )  # 매핑 후 canonical(그래프가 채움, never-null)
+    # 매핑 후 (canonical, query) leg 리스트(그래프가 채움, never-null) — fan-out 검색 leg 단위(§6).
+    # query 는 그 카테고리 전용 검색 키워드. 대표 카테고리 = category_legs[0][0](칩·멀티턴 승계).
+    category_legs: list[tuple[str, str | None]] = field(default_factory=list)
 
 
 @dataclass

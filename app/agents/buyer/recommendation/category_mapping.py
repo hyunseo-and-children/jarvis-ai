@@ -26,14 +26,16 @@ SearchFn = Callable[..., list[str]]
 ExactFn = Callable[[Sequence[str], str], set[str]]
 
 
-def _dedup_truncate(values: list[str], fanout_max: int) -> list[str]:
-    """순서 보존 dedup 후 fanout_max 로 절단(같은 canonical 로 모인 추측 합침)."""
+def _dedup_truncate(
+    legs: list[tuple[str, str | None]], fanout_max: int
+) -> list[tuple[str, str | None]]:
+    """canonical 기준 순서보존 dedup(첫 query 유지) 후 fanout_max 로 절단."""
     seen: set[str] = set()
-    out: list[str] = []
-    for v in values:
-        if v not in seen:
-            seen.add(v)
-            out.append(v)
+    out: list[tuple[str, str | None]] = []
+    for cat, query in legs:
+        if cat not in seen:
+            seen.add(cat)
+            out.append((cat, query))
     return out[:fanout_max]
 
 
@@ -45,9 +47,11 @@ async def map_categories(
     embed: EmbedFn = _embed_texts,
     search_top_k: SearchFn = _search_top_k,
     exact_lookup: ExactFn = _exact_lookup,
-) -> list[str]:
-    """decompose 추측들을 canonical 카테고리 리스트로 보정한다(never-null).
+) -> list[tuple[str, str | None]]:
+    """decompose 추측들을 canonical (category, query) leg 리스트로 보정한다(never-null).
 
+    각 leg 의 query 는 그 카테고리 전용 검색 키워드(fan-out leg keyword, §6·§9) — 매핑 전
+    추측(raw)이 어디로 보정되든 원 추측의 query 를 그대로 이어 붙인다.
     per-category 규칙(우선순위): (1) raw 가 exact match → raw. (2) raw 있으나 exact 아님 →
     embed(raw) 최근접. (3) raw==null → embed(발화) top-1 폴백. (4) 빈 리스트 → 발화 폴백 1건.
     (5) 하드 실패(embed/DB 예외) → raw 그대로(있으면)·null 스킵.
@@ -57,6 +61,7 @@ async def map_categories(
     fanout_max = settings.category_fanout_max
     queries = list(category_queries) or [CategoryQuery(None, None)]  # 빈 리스트 → 발화 폴백
     raws = [q.raw_category for q in queries]
+    qtexts = [q.query for q in queries]  # leg keyword 로 이어 붙일 원 추측 query
 
     try:
         non_null = [r for r in raws if r]
@@ -71,17 +76,17 @@ async def map_categories(
             nearest[i] = hits[0] if hits else None
     except Exception as exc:  # noqa: BLE001 - 하드 실패는 사유 무관 degrade(never-null 유지)
         logger.warning("category_hard_fail", extra={"reason": str(exc)})
-        return _dedup_truncate([r for r in raws if r], fanout_max)
+        return _dedup_truncate([(r, qtexts[i]) for i, r in enumerate(raws) if r], fanout_max)
 
-    result: list[str] = []
+    result: list[tuple[str, str | None]] = []
     for i, r in enumerate(raws):
         if r and r in exact:
             logger.info("category_mapped", extra={"raw": r, "canonical": r})
-            result.append(r)
+            result.append((r, qtexts[i]))
             continue
         canonical = nearest.get(i)
         if canonical:
             event = "category_repaired" if r else "category_fallback_top1"
             logger.info(event, extra={"raw": r, "canonical": canonical})
-            result.append(canonical)
+            result.append((canonical, qtexts[i]))
     return _dedup_truncate(result, fanout_max)
