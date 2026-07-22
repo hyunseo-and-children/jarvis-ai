@@ -25,10 +25,18 @@ def _settings(*, top_k: int = 5, fanout_max: int = 5) -> SimpleNamespace:
 class _FakeMapper:
     """embed↔search 를 인덱스 인코딩으로 연결해, anchor 텍스트별 최근접을 제어한다."""
 
-    def __init__(self, *, exact: set[str], nearest: dict[str, str], embed_raises: bool = False):
+    def __init__(
+        self,
+        *,
+        exact: set[str],
+        nearest: dict[str, str],
+        embed_raises: bool = False,
+        search_raises_for: set[str] | None = None,
+    ):
         self._exact = exact
         self._nearest = nearest
         self._embed_raises = embed_raises
+        self._search_raises_for = search_raises_for or set()  # 이 앵커 텍스트의 search 만 예외
         self._embedded: list[str] = []
 
     def embed(self, texts: list[str]) -> list[list[float]]:
@@ -39,6 +47,8 @@ class _FakeMapper:
 
     def search(self, vec: list[float], dsn: str, *, k: int) -> list[str]:
         text = self._embedded[int(vec[0])]
+        if text in self._search_raises_for:
+            raise RuntimeError(f"search down for {text}")
         hit = self._nearest.get(text)
         return [hit] if hit else []
 
@@ -140,6 +150,22 @@ async def test_hard_failure_degrades_to_empty_not_raw() -> None:
     m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
     out = await m.run([CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "뭐")])
     assert out == []
+
+
+async def test_one_leg_search_failure_does_not_drop_other_legs() -> None:
+    """leg 하나의 search_top_k 실패는 그 leg 만 unmapped 로 드롭하고 나머지는 유지한다(PR #73 리뷰).
+
+    fan-out gather 를 return_exceptions 로 돌려 부분 실패를 격리한다 — recommendation/graph 의
+    leg 별 SpringUnavailable 격리(§6)와 일관. return_exceptions 없이 던지면 gather 가 즉시 예외 →
+    전체 빈 legs 로 degrade 돼, 정상 매핑된 leg 까지 무필터로 새는 걸 이 테스트가 막는다.
+    """
+    m = _FakeMapper(
+        exact=set(),
+        nearest={"이어폰": "가전 > 이어폰/헤드폰", "노트북": "컴퓨터 > 노트북"},
+        search_raises_for={"노트북"},  # 노트북 leg 의 search 만 예외
+    )
+    out = await m.run([CategoryQuery(None, "이어폰"), CategoryQuery(None, "노트북")])
+    assert out == [("가전 > 이어폰/헤드폰", "이어폰")]  # 실패한 노트북 leg 만 드롭, 이어폰 leg 유지
 
 
 async def test_multi_dedup_and_truncate() -> None:

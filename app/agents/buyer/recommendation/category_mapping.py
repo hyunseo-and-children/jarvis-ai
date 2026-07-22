@@ -86,12 +86,21 @@ async def map_categories(
         vecs = await asyncio.to_thread(embed, anchors) if anchors else []
         # 앵커별 최근접 조회를 병렬 실행 — 카테고리 여러 개(상황형 질의)일수록 직렬 지연이
         # leg 수만큼 쌓이므로 gather 로 동시 실행한다(순서 보존 → need_idx 매핑 유지, §6).
+        # return_exceptions=True — leg 하나의 순간 실패(pg 경합·타임아웃)가 gather 전체를 던져
+        # 정상 leg 까지 무필터로 날리지 않게 격리한다(그 leg 만 unmapped 로 드롭). recommendation/
+        # graph 의 leg 별 SpringUnavailable 격리(§6)와 일관 — 부분 성공 보존(PR #73 리뷰).
         hit_lists = await asyncio.gather(
-            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(need_idx)))
+            *(asyncio.to_thread(search_top_k, vecs[j], dsn, k=k) for j in range(len(need_idx))),
+            return_exceptions=True,
         )
-        nearest: dict[int, str | None] = {
-            need_idx[j]: (hits[0] if hits else None) for j, hits in enumerate(hit_lists)
-        }
+        nearest: dict[int, str | None] = {}
+        for j, hits in enumerate(hit_lists):
+            if isinstance(hits, Exception):
+                # 이 앵커 조회만 실패 — 사유를 남기고 그 leg 만 canonical 없이 드롭(무필터 아님).
+                logger.warning("category_leg_search_failed", extra={"reason": str(hits)})
+                nearest[need_idx[j]] = None
+            else:
+                nearest[need_idx[j]] = hits[0] if hits else None
     except Exception as exc:  # noqa: BLE001 - 하드 실패(embed/DB 다운)는 사유 무관 degrade
         # 미검증 raw 를 canonical 처럼 내보내지 않는다(canonical-or-null 불변식, PR #73 #20). raw 는
         # 검증이 필요할 만큼 자주 틀리므로(이 PR 전제) 가짜 categoryName 으로 0건이 날 위험이 크다 —

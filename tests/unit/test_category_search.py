@@ -70,6 +70,30 @@ def test_get_pool_caches_single_pool(monkeypatch: pytest.MonkeyPatch) -> None:
     assert created["kw"][0].get("configure") is not None  # vector 쿼리용 register_vector configure
 
 
+def test_get_pool_sets_max_size_from_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    """_get_pool 은 config 의 category_search_pool_max_size 로 풀 max_size 를 명시한다(PR #73 리뷰).
+
+    psycopg_pool 기본 max_size(4) < fan-out 동시성(category_fanout_max)이면 gather 병렬 조회가
+    커넥션 대기로 부분 직렬화된다 — 암묵 하드코딩을 config 로 빼 fan-out 동시성을 받쳐준다.
+    """
+    import psycopg_pool
+
+    from app.core.config import get_settings
+    from app.pipelines import category_search as cs
+
+    monkeypatch.setattr(cs, "_pools", {})
+    captured: dict = {}
+
+    class _FakePool:
+        def __init__(self, dsn: str, **kw) -> None:
+            captured.update(kw)
+
+    monkeypatch.setattr(psycopg_pool, "ConnectionPool", _FakePool)
+
+    cs._get_pool("postgresql://sizecheck")
+    assert captured.get("max_size") == get_settings().category_search_pool_max_size
+
+
 def test_get_pool_distinct_per_dsn(monkeypatch: pytest.MonkeyPatch) -> None:
     """서로 다른 dsn 은 서로 다른 풀을 받는다 — _get_pool 이 받은 dsn 을 존중한다(PR #73 리뷰 #8).
 
