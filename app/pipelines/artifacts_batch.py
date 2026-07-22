@@ -151,10 +151,12 @@ async def run_artifacts_batch(
                 fetch, start, store, llm=llm, embed=embed, settings=settings, persist_cursor=True
             )
         except spring_client.InvalidCursorError:
-            if start == "0":
+            checkpoint = store.get_cursor()
+            if start == "0" and checkpoint in (None, "0"):
                 raise
             # 앞서 성공한 페이지가 있으면 그 artifact·cursor 체크포인트는 유지한다. rebuild는 별도
             # 임시 스토어에서 수행하므로 실패해도 이 마지막 성공 체크포인트를 덮어쓰지 않는다.
+            # 최초 실행도 실제 커서가 0에서 전진했다면 이후 INVALID_CURSOR를 즉시 복구한다.
             _log.warning("I-17 커서 무효 — since=0 원자적 전체 재구축으로 복구")
             result = await rebuild()
             did_rebuild = True

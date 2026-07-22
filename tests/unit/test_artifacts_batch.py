@@ -319,6 +319,50 @@ async def test_batch_invalid_cursor_after_committed_page_keeps_that_checkpoint_o
     assert store.get_cursor() == "page-1"
 
 
+async def test_batch_invalid_cursor_after_initial_page_rebuilds_from_zero():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        if seen == ["0"]:
+            return ProductChangesPage(items=[_change(1)], next_cursor="page-1", has_more=True)
+        if seen == ["0", "page-1"]:
+            raise sc.InvalidCursorError("expired cursor")
+        return ProductChangesPage(items=[_change(2)], next_cursor="fresh", has_more=False)
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert seen == ["0", "page-1", "0"]
+    assert store.get(1) is None
+    assert store.get(2) is not None
+    assert store.get_cursor() == "fresh"
+    assert result.cursor == "fresh"
+
+
+async def test_batch_invalid_cursor_at_zero_raises_without_repeating_same_request():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        raise sc.InvalidCursorError("zero cursor rejected")
+
+    with pytest.raises(sc.InvalidCursorError, match="zero cursor rejected"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert seen == ["0"]
+    assert store.get_cursor() is None
+
+
 async def test_batch_invalid_cursor_commit_failure_preserves_rebuild_start_checkpoint():
     import app.services.spring_client as sc
 
