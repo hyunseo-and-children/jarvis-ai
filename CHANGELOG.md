@@ -21,6 +21,7 @@
   처리 동시성 상한, 전체 batch wave를 포괄하는 claim TTL 검증, claim lease/crash 복구,
   claim별 오류 격리, activity 완료 실패의 retryable 집계, LLM 실패 시 버퍼 보존을 포함한다.
   conversation/activity 양쪽 schema 초기화는 동일 advisory lock을 사용해 콜드스타트 DDL 경합을 막는다.
+  I-20 입력 파생 단계의 내부 예외도 `retryable`/202로 강등해 best-effort 응답 계약을 유지한다.
   `tabClose` 신호나 추가 HTTP API는 도입하지 않았다. (api-spec §3.5, v0.15.19;
   SPEC-PROFILE-001 v0.4.0)
 

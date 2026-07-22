@@ -134,17 +134,18 @@ async def finalize_profile_session(
     CancelledError만 호출자에게 재전파한다.
     """
     target_log = log or logger
-    resolved_settings = settings or get_settings()
-    numeric_user_id = int(user_id)
-    user_key = str(numeric_user_id)
-    key = conversation_key(user_key, session_id)
-    dedup_key = processed_events.session_end_event_id(numeric_user_id, session_id)
+    dedup_key: str | None = None
     processed_token: str | None = None
     processed_completed = False
     activity_completed = False
     terminal_activity: SessionActivity | None = None
 
     try:
+        resolved_settings = settings or get_settings()
+        numeric_user_id = int(user_id)
+        user_key = str(numeric_user_id)
+        key = conversation_key(user_key, session_id)
+        dedup_key = processed_events.session_end_event_id(numeric_user_id, session_id)
         processed_token = await processed_events.claim_event(
             dedup_key,
             lease_s=resolved_settings.session_end_claim_ttl_s,
@@ -209,7 +210,7 @@ async def finalize_profile_session(
         target_log.warning("session-end 내부 처리 실패 — 202 degrade", exc_info=True)
         return FinalizationResult(FinalizationStatus.RETRYABLE)
     finally:
-        if processed_token is not None and not processed_completed:
+        if dedup_key is not None and processed_token is not None and not processed_completed:
             await release_processed_claim_best_effort(dedup_key, processed_token, log=target_log)
         if activity_claim is not None and not activity_completed:
             await _release_activity_claim_best_effort(activity_claim, log=target_log)

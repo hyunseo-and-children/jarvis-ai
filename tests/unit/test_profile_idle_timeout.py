@@ -38,6 +38,12 @@ class _LLM:
         yield "x"
 
 
+async def test_finalizer_invalid_identity_degrades_to_retryable() -> None:
+    result = await finalizer.finalize_profile_session("not-a-member-id", "session")
+
+    assert result.status is finalizer.FinalizationStatus.RETRYABLE
+
+
 async def _expired_claim(monkeypatch: pytest.MonkeyPatch, user_id: int, session_id: str):
     now = 0.0
     monkeypatch.setattr(session_activity, "_monotonic", lambda: now)
