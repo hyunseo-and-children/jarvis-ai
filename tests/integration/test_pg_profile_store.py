@@ -198,11 +198,14 @@ async def test_profile_rmw_is_safe_across_postgres_pools() -> None:
     conninfo = hardened_pg_conninfo(get_settings().profile_db_url)
     pool_config = state_store_pool_config()
     index_config = {"dims": _DIM, "embed": _fake_embed, "fields": ["fact"]}
-    async with AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config, index=index_config
-    ) as store_a, AsyncPostgresStore.from_conn_string(
-        conninfo, pool_config=pool_config, index=index_config
-    ) as store_b:
+    async with (
+        AsyncPostgresStore.from_conn_string(
+            conninfo, pool_config=pool_config, index=index_config
+        ) as store_a,
+        AsyncPostgresStore.from_conn_string(
+            conninfo, pool_config=pool_config, index=index_config
+        ) as store_b,
+    ):
         await store_a.setup()
         await store_b.setup()
         profile_a, profile_b = ProfileStore(store_a), ProfileStore(store_b)
@@ -219,7 +222,11 @@ async def test_profile_rmw_is_safe_across_postgres_pools() -> None:
 
         user_id = _user()
         await asyncio.gather(
-            *(profile.add_fact(user_id, "same-fact") for profile in (profile_a, profile_b) for _ in range(5))
+            *(
+                profile.add_fact(user_id, "same-fact")
+                for profile in (profile_a, profile_b)
+                for _ in range(5)
+            )
         )
         assert (await profile_a.get_facts(user_id)).count("same-fact") == 1
 
@@ -258,6 +265,25 @@ async def test_processed_events_unmark_allows_reprocessing() -> None:
         await processed_events.unmark_event(event_id)
         assert await processed_events.seen_event(event_id) is False
         assert await processed_events.mark_if_new(event_id) is True
+    finally:
+        await processed_events.unmark_event(event_id)
+        processed_events.set_pool(None)
+
+
+async def test_processed_events_stale_claim_recovery_and_completion() -> None:
+    """PROCESSING lease는 crash 후 재선점되고 COMPLETED row는 다시 선점되지 않는다."""
+    processed_events.set_pool(None)
+    event_id = f"it-claim-{uuid.uuid4().hex}"
+    try:
+        first = await processed_events.claim_event(event_id, lease_s=0.01)
+        assert first is not None
+        await asyncio.sleep(0.02)
+
+        second = await processed_events.claim_event(event_id, lease_s=1)
+        assert second is not None and second != first
+        assert not await processed_events.release_claim(event_id, first)
+        assert await processed_events.complete_claim(event_id, second)
+        assert await processed_events.claim_event(event_id, lease_s=0.01) is None
     finally:
         await processed_events.unmark_event(event_id)
         processed_events.set_pool(None)

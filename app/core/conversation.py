@@ -144,9 +144,7 @@ class PgConversationStore:
     async def setup(self) -> None:
         """기존 볼륨은 이전 논리 순서로 백필하고 신규 turn은 DB sequence로 정렬한다."""
         settings = get_settings()
-        migration_timeout_ms = max(
-            1, math.ceil(settings.state_store_migration_timeout_s * 1000)
-        )
+        migration_timeout_ms = max(1, math.ceil(settings.state_store_migration_timeout_s * 1000))
 
         async def _run() -> None:
             async with self._pool.connection() as conn:

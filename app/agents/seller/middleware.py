@@ -36,15 +36,30 @@ from app.core.config import get_settings
 
 SCOPE_BLOCK_RULES: dict[str, tuple[str, ...]] = {
     "타 판매자·경쟁사 데이터": (
-        "다른 판매자", "타 판매자", "다른 브랜드", "타 브랜드", "경쟁사", "타사 매출",
+        "다른 판매자",
+        "타 판매자",
+        "다른 브랜드",
+        "타 브랜드",
+        "경쟁사",
+        "타사 매출",
     ),
     "고객 개인정보": (
-        "고객 전화번호", "고객 연락처", "고객 주소", "고객 이메일", "주민등록번호",
-        "고객 명단", "고객 개인정보",
+        "고객 전화번호",
+        "고객 연락처",
+        "고객 주소",
+        "고객 이메일",
+        "주민등록번호",
+        "고객 명단",
+        "고객 개인정보",
     ),
     "시스템 내부 정보": (
-        "시스템 프롬프트", "system prompt", "프롬프트 원문", "프롬프트를 보여",
-        "내부 토큰", "api 키", "api key",
+        "시스템 프롬프트",
+        "system prompt",
+        "프롬프트 원문",
+        "프롬프트를 보여",
+        "내부 토큰",
+        "api 키",
+        "api key",
     ),
 }
 
@@ -54,9 +69,7 @@ SCOPE_REFUSAL = (
 )
 
 
-def check_scope(
-    text: str, rules: dict[str, tuple[str, ...]] | None = None
-) -> str | None:
+def check_scope(text: str, rules: dict[str, tuple[str, ...]] | None = None) -> str | None:
     """도메인 밖 요청이면 거절 문안을, 정상이면 None 을 반환한다 (순수 함수).
 
     구조화 출력 레인(orchestrator)·미들웨어(ScopeGuardMiddleware)가 공유하는
@@ -111,9 +124,7 @@ def seller_pii_middlewares() -> list[PIIMiddleware]:
         PIIMiddleware(
             "kr_phone", detector=KR_PHONE_PATTERN, strategy="redact", apply_to_input=True
         ),
-        PIIMiddleware(
-            "kr_rrn", detector=KR_RRN_PATTERN, strategy="redact", apply_to_input=True
-        ),
+        PIIMiddleware("kr_rrn", detector=KR_RRN_PATTERN, strategy="redact", apply_to_input=True),
     ]
 
 

@@ -12,7 +12,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import date
@@ -192,30 +191,10 @@ def _assert_worker_tokens_cover_all_types() -> None:
 _assert_worker_tokens_cover_all_types()
 
 
-# ── confirm 코드 선판정 (4-1a 자리 확보 — 실행 배선은 4-2) ─────────────────────
-
-
-def parse_confirm_message(message: str) -> str | None:
-    """메시지가 HITL confirm 전송(`{"action": "confirm", "draftId": "..."}`)이면
-    draftId 를 반환하고, 아니면 None (07/17 질문3 ✅ 확정 형식 — REALIGN F3).
-
-    코드 선판정 이유: 승인은 계약된 구조화 신호여야 한다(발화 ≠ 동의 [HARD]).
-    LLM 라우팅에 태우지 않고 supervisor 이전에 코드가 판정한다 — 자연어에 우연히
-    섞인 "confirm" 은 JSON 객체 형식이 아니므로 여기 걸리지 않는다.
-    """
-    stripped = message.strip()
-    if not (stripped.startswith("{") and stripped.endswith("}")):
-        return None
-    try:
-        payload = json.loads(stripped)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(payload, dict) or payload.get("action") != "confirm":
-        return None
-    draft_id = payload.get("draftId")
-    if not isinstance(draft_id, str) or not draft_id.strip():
-        return None
-    return draft_id
+# confirm 판정은 요청 스키마로 이관됐다 (2026-07-22, FE 계약 A-2): 승인은 message 가
+# 아니라 최상위 `action`/`draftId` 구조화 필드로 받는다(app/schemas/seller.py
+# SellerChatRequest). 입구 판정은 app/api/seller.py `_seller_stream` 이 request.action
+# 으로 직접 수행한다 — 구 parse_confirm_message(message JSON 파싱)는 제거됐다.
 
 
 # ── "N번 적용해줘" 코드 선판정 (4-3 §6.3 — 입구 ①.5, 2026-07-20 사용자 확정) ─────

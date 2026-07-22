@@ -113,6 +113,21 @@ def test_validate_draft_accepts_comma_and_suffix_numbers() -> None:
     assert record is not None
 
 
+def test_validate_draft_sanitizes_without_masking_executable_value() -> None:
+    """실행 정본은 위험 문자만 제거하고 노출 전용 시크릿 마스킹으로 오염하지 않는다."""
+    record = _record(
+        changes=[
+            DraftChange(
+                field="description",
+                before="기존 설명",
+                after="키 sk-abcdefghijklmnop1234\u200b",
+            )
+        ]
+    )
+
+    assert record.changes[0].after == "키 sk-abcdefghijklmnop1234"
+
+
 def test_validate_draft_rejects_uncastable_int() -> None:
     """정수 불가 수치는 되묻기 — confirm 시점 캐스팅 실패를 선차단한다."""
     record, problem = hitl.validate_draft(

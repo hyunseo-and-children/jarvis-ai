@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from app.agents.buyer._frames import sse
 from app.agents.buyer.cart.state import CartStateStore, PendingAdd
 from app.agents.buyer.recommendation.state import CartIntent
+from app.core.text import _strip_unsafe
 from app.schemas.chat import ActionData, DoneData, TokenData
 from app.schemas.spring import AddToCartRequest, CartOption
 from app.services import spring_client
@@ -25,6 +26,8 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartQuantityExceeded,
+    CartStockInsufficient,
     SpringUnavailableError,
 )
 
@@ -56,7 +59,7 @@ def _options_text(options: list[CartOption]) -> str:
             parts.append(f"{opt.name}(+{opt.extra_price:,}원)")
         else:
             parts.append(opt.name)
-    return " / ".join(parts) if parts else "옵션"
+    return _strip_unsafe(" / ".join(parts)) if parts else "옵션"
 
 
 def _done() -> str:
@@ -211,6 +214,40 @@ async def stream_cart_add(
         )
         yield _done()
         return
+    except CartStockInsufficient as exc:
+        # I-2 재고 부족 — 남은 재고 노출("재고가 N개뿐이에요"). 재고 0(품절, BE ON_SALE+stock 0)은
+        # "품절된 상품이에요", availableStock 미상 시 일반 안내(§4.1, 2026-07-22).
+        await cart_store.clear_pending(thread_key)
+        if exc.available_stock is None:
+            message = "재고가 부족해 담지 못했어요."
+        elif exc.available_stock == 0:
+            message = "품절된 상품이에요."
+        else:
+            message = f"재고가 {exc.available_stock}개뿐이에요."
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message=message,
+                reason="STOCK_INSUFFICIENT",
+            ).model_dump(by_alias=True),
+        )
+        yield _done()
+        return
+    except CartQuantityExceeded:
+        # I-2 수량 상한 초과(합산 > 99, BE VALIDATION_ERROR) — BE와 동일 문구, reason 은 CART_ERROR 유지.
+        # 문구의 99 는 BE CartItem.MAX_QUANTITY 와 결합(변경 시 동기화 필요).
+        await cart_store.clear_pending(thread_key)
+        yield sse(
+            "action",
+            ActionData(
+                type="CART_ADD_FAILED",
+                message="수량은 최대 99개까지 담을 수 있습니다.",
+                reason="CART_ERROR",
+            ).model_dump(by_alias=True),
+        )
+        yield _done()
+        return
     except (CartError, SpringUnavailableError, ValidationError):
         await cart_store.clear_pending(thread_key)
         yield sse(
@@ -270,8 +307,10 @@ async def stream_cart_view(*, identity, get_cart_fn=None, observer=None) -> Asyn
 
     lines = []
     for item in cart_view.items:
-        opt = f" ({item.option_name})" if item.option_name else ""
-        lines.append(f"{item.product_name or '상품'}{opt} · {item.quantity}개")
+        product_name = _strip_unsafe(item.product_name or "상품")
+        option_name = _strip_unsafe(item.option_name) if item.option_name else ""
+        opt = f" ({option_name})" if option_name else ""
+        lines.append(f"{product_name}{opt} · {item.quantity}개")
     text = "장바구니에 담긴 상품이에요:\n" + "\n".join(lines)
     yield sse("token", TokenData(text=text).model_dump(by_alias=True))
     yield _done()

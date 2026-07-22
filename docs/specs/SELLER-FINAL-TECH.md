@@ -1,7 +1,8 @@
-# SELLER-FINAL — 핵심 기술 명세서 (2026-07-20)
+# SELLER-FINAL — 핵심 기술 명세서
 
-> 판매자 멀티에이전트 MVP 의 기술 선택과 그 **이유** 정본. 워크플로우는 SELLER-FINAL-WORKFLOW,
-> 미결·리스크는 SELLER-FINAL-RISKS, 확장은 SELLER-FINAL-ROADMAP 참조.
+> **버전**: v1.0.0 · **기준일**: 2026-07-20 · **상태**: MVP 확정
+> 판매자 멀티에이전트 MVP 의 기술 선택과 그 **이유** 정본. 워크플로우는 [SELLER-FINAL-WORKFLOW](SELLER-FINAL-WORKFLOW.md),
+> 미결·리스크는 [SELLER-FINAL-RISKS](SELLER-FINAL-RISKS.md), 확장은 [SELLER-FINAL-ROADMAP](SELLER-FINAL-ROADMAP.md) 참조.
 
 ## 1. 스택
 

@@ -1,0 +1,9 @@
+# 줄바꿈 정규화 — 저장소 표준은 LF (CRLF 오염 재발 방지)
+* text=auto eol=lf
+
+# 바이너리 (줄바꿈 변환 금지)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.gz  binary

@@ -77,7 +77,6 @@ Spring I-1 검색은 필터·리랭킹용 최소 필드만 반환할 수 있고 
 검증 항목:
 
 - 문서 100건, product ID 중복 없음
-- `products/*.json`과 ID 집합 일치
 - `gemini-embedding-001`
 - 1536차원
 - `RETRIEVAL_DOCUMENT`
@@ -85,11 +84,20 @@ Spring I-1 검색은 필터·리랭킹용 최소 필드만 반환할 수 있고 
 
 이미 임베딩된 벡터를 넣으므로 이 작업 자체는 Google API를 다시 호출하지 않는다.
 
-> ⚠️ **`sample_100` 번들은 이 repo에 포함되지 않는다.** 로더 기본 경로는 워크스페이스 형제 경로 `../sample_100`(`ai/documents.jsonl`·`products/*.json`)다. 번들을 그 위치에 두거나 `--documents`/`--products-dir` 로 명시 경로를 넘겨야 하며, 없으면 로더가 명확한 에러로 종료한다.
+> ⚠️ **`sample_100` 번들은 이 repo에 포함되지 않는다.** 로더 기본 경로는 워크스페이스 형제 경로 `../sample_100/ai/documents.jsonl`이다. 번들을 그 위치에 두거나 `--documents`로 명시 경로를 넘겨야 하며, 없으면 로더가 명확한 에러로 종료한다. 상품 원본 `products/*.json`은 읽거나 저장하지 않는다.
 
 ```bash
 uv run python scripts/load_sample_100.py --dry-run
 uv run python scripts/load_sample_100.py
+```
+
+기존 pg-catalog 볼륨에 `name`·`category` 원본 컬럼이 남아 있으면 기존 AI 프로세스를 중지한 뒤
+다음 idempotent migration을 적용하고 새 버전을 기동한다. 신규 빈 볼륨은 `00_products.sql`에
+이미 반영되어 있다.
+
+```bash
+docker compose exec -T pg-catalog psql -U jarvis -d catalog \
+  < db/catalog/migrations/20260722_drop_raw_product_columns.sql
 ```
 
 ### 2.6 테스트가 로컬 실키를 사용하지 않도록 격리
@@ -159,7 +167,7 @@ cd jarvis-ai
 uv sync
 docker compose up -d pg-catalog pg-profile
 cp .env.example .env   # 최초 1회, 이후 위 값 수정
-# sample_100 번들을 ../sample_100 에 배치(또는 아래 명령에 --documents/--products-dir 지정) — repo 미포함
+# sample_100/ai/documents.jsonl을 ../sample_100 에 배치(또는 --documents 지정) — repo 미포함
 uv run python scripts/load_sample_100.py --dry-run
 uv run python scripts/load_sample_100.py
 uv run uvicorn app.main:app --reload --port 8000

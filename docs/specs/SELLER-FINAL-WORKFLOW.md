@@ -1,7 +1,10 @@
-# SELLER-FINAL — 워크플로우 명세서 (2026-07-20)
+# SELLER-FINAL — 워크플로우 명세서
 
+> **버전**: v1.0.0 · **기준일**: 2026-07-20 · **상태**: MVP 확정
 > 판매자 멀티에이전트 MVP(1~4-3단계) 완료 시점의 **요청 수명주기 정본**.
-> 계약 근거: api-spec 사본 v0.14.0 §3.2·§4.4·§4.5, SPEC-SELLER-001, REALIGN-SELLER-20260719.
+> 계약 근거: api-spec 사본 v0.14.0 §3.2·§4.4·§4.5, [SPEC-SELLER-001](SPEC-SELLER-001.md), BE·FE 확정(2026-07-17).
+>
+> 본문의 `F1`·`F6` 은 그 BE·FE 확정 항목 번호다 — **F1**: FE→AI 직접 호출 폐기, 판매자 챗은 Spring 패스스루(S-4). **F6**: 교환 제거(상태 11→9)·배송비 0원·`stock_quantity` 도입(시드 100, CHECK ≥0)·전량 취소 시 `orders.status=CANCELLED` 승격.
 > 캐시·RAG(구 4-4)는 post-MVP 확장으로 이동(2026-07-20 사용자 결정) — SELLER-FINAL-ROADMAP 참조.
 
 ## 1. 시스템 배치 (F1 — Spring 패스스루)

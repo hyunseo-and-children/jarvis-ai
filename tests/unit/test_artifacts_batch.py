@@ -130,6 +130,26 @@ async def test_batch_processes_and_upserts():
     assert store.get_cursor() == "c1"
 
 
+async def test_batch_uses_raw_product_fields_without_retaining_separate_copies():
+    store = CatalogArtifactStore()
+
+    async def fetch(cursor, limit):
+        return ProductChangesPage(
+            items=[_change(1, name="저장하면 안 되는 원본명")],
+            next_cursor="c1",
+            has_more=False,
+        )
+
+    await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+    )
+
+    artifact = store.get(1)
+    assert artifact is not None
+    assert "저장하면 안 되는 원본명" in artifact.search_doc
+    assert set(vars(artifact)) == {"product_id", "search_doc", "embedding", "extras"}
+
+
 async def test_batch_hidden_removes_artifact():
     store = CatalogArtifactStore()
     store.upsert(CatalogArtifact(product_id=1, search_doc="x", embedding=[1.0, 0.0]))
@@ -235,12 +255,215 @@ async def test_fetch_product_changes_rejects_legacy_status(monkeypatch, status):
         await sc.fetch_product_changes("0", 500)
 
 
+async def test_batch_invalid_status_preserves_entire_page_and_cursor(monkeypatch):
+    import app.services.spring_client as sc
+
+    body = {
+        "success": True,
+        "data": {
+            "items": [
+                {"productId": 1, "status": "ON_SALE", "updatedAt": "t", "name": "valid"},
+                {"productId": 2, "status": "SOLD_OUT", "updatedAt": "t"},
+            ],
+            "nextCursor": "c1",
+            "hasMore": False,
+        },
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(200, body)))
+    store = CatalogArtifactStore()
+    existing = CatalogArtifact(product_id=99, search_doc="existing", embedding=[1.0, 0.0])
+    store.upsert(existing)
+    store.set_cursor("checkpoint")
+
+    with pytest.raises(sc.SpringUnavailableError, match="fetch_product_changes 실패"):
+        await run_artifacts_batch(
+            fetch=sc.fetch_product_changes,
+            llm=_EnrichLLM(),
+            embed=_embed,
+            store=store,
+            settings=get_settings(),
+        )
+
+    assert store.get(1) is None
+    assert store.get(99) == existing
+    assert store.get_cursor() == "checkpoint"
+
+
 async def test_fetch_product_changes_error_raises(monkeypatch):
     import app.services.spring_client as sc
 
     monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(500, {})))
     with pytest.raises(sc.SpringUnavailableError):
         await sc.fetch_product_changes("0", 500)
+
+
+async def test_fetch_product_changes_classifies_invalid_cursor(monkeypatch):
+    import app.services.spring_client as sc
+
+    body = {
+        "success": False,
+        "error": {"code": "INVALID_CURSOR", "message": "expired cursor"},
+    }
+    monkeypatch.setattr(sc, "_client", lambda: _Client(_Resp(400, body)))
+
+    with pytest.raises(sc.InvalidCursorError):
+        await sc.fetch_product_changes("expired", 500)
+
+
+async def test_batch_invalid_cursor_rebuilds_from_zero_atomically():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    store.upsert(CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0]))
+    store.set_cursor("expired")
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        if cursor == "expired":
+            raise sc.InvalidCursorError("expired cursor")
+        return ProductChangesPage(items=[_change(1)], next_cursor="fresh", has_more=False)
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert seen == ["expired", "0"]
+    assert store.get(99) is None
+    assert store.get(1) is not None
+    assert store.get_cursor() == "fresh"
+    assert result.cursor == "fresh"
+
+
+async def test_batch_invalid_cursor_rebuild_failure_preserves_rebuild_start_checkpoint():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
+    store.upsert(stale)
+    store.set_cursor("expired")
+
+    async def fetch(cursor, limit):
+        if cursor == "expired":
+            raise sc.InvalidCursorError("expired cursor")
+        raise RuntimeError("rebuild failed")
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get(99) == stale
+    assert store.get_cursor() == "expired"
+
+
+async def test_batch_invalid_cursor_after_committed_page_keeps_that_checkpoint_on_rebuild_failure():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
+    store.upsert(stale)
+    store.set_cursor("old")
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        if cursor == "old":
+            return ProductChangesPage(items=[_change(1)], next_cursor="page-1", has_more=True)
+        if cursor == "page-1":
+            raise sc.InvalidCursorError("expired cursor")
+        raise RuntimeError("rebuild failed")
+
+    with pytest.raises(RuntimeError, match="rebuild failed"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert seen == ["old", "page-1", "0"]
+    assert store.get(99) == stale
+    assert store.get(1) is not None
+    assert store.get_cursor() == "page-1"
+
+
+async def test_batch_invalid_cursor_after_initial_page_rebuilds_from_zero():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        if seen == ["0"]:
+            return ProductChangesPage(items=[_change(1)], next_cursor="page-1", has_more=True)
+        if seen == ["0", "page-1"]:
+            raise sc.InvalidCursorError("expired cursor")
+        return ProductChangesPage(items=[_change(2)], next_cursor="fresh", has_more=False)
+
+    result = await run_artifacts_batch(
+        fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+    )
+
+    assert seen == ["0", "page-1", "0"]
+    assert store.get(1) is None
+    assert store.get(2) is not None
+    assert store.get_cursor() == "fresh"
+    assert result.cursor == "fresh"
+
+
+async def test_batch_invalid_cursor_at_zero_raises_without_repeating_same_request():
+    import app.services.spring_client as sc
+
+    store = CatalogArtifactStore()
+    seen = []
+
+    async def fetch(cursor, limit):
+        seen.append(cursor)
+        raise sc.InvalidCursorError("zero cursor rejected")
+
+    with pytest.raises(sc.InvalidCursorError, match="zero cursor rejected"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert seen == ["0"]
+    assert store.get_cursor() is None
+
+
+async def test_batch_invalid_cursor_commit_failure_preserves_rebuild_start_checkpoint():
+    import app.services.spring_client as sc
+
+    class FailingCommitStore(CatalogArtifactStore):
+        fail_commit = False
+
+        def set_cursor(self, cursor):
+            if self.fail_commit:
+                raise RuntimeError("cursor commit failed")
+            super().set_cursor(cursor)
+
+        def replace_all_and_set_cursor(self, artifacts, cursor):
+            if self.fail_commit:
+                raise RuntimeError("atomic commit failed")
+            super().replace_all_and_set_cursor(artifacts, cursor)
+
+    store = FailingCommitStore()
+    stale = CatalogArtifact(product_id=99, search_doc="stale", embedding=[0.0, 1.0])
+    store.upsert(stale)
+    store.set_cursor("expired")
+    store.fail_commit = True
+
+    async def fetch(cursor, limit):
+        if cursor == "expired":
+            raise sc.InvalidCursorError("expired cursor")
+        return ProductChangesPage(items=[_change(1)], next_cursor="fresh", has_more=False)
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await run_artifacts_batch(
+            fetch=fetch, llm=_EnrichLLM(), embed=_embed, store=store, settings=get_settings()
+        )
+
+    assert store.get(99) == stale
+    assert store.get(1) is None
+    assert store.get_cursor() == "expired"
 
 
 async def test_batch_full_rebuild_replaces_stale():

@@ -25,7 +25,9 @@ from psycopg.types.json import Jsonb  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 
 
-def load_documents(path: Path, expected_count: int, expected_dim: int, expected_model: str) -> list[dict[str, Any]]:
+def load_documents(
+    path: Path, expected_count: int, expected_dim: int, expected_model: str
+) -> list[dict[str, Any]]:
     documents = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
     ids = {int(row["product_id"]) for row in documents}
     if len(documents) != expected_count or len(ids) != expected_count:
@@ -40,7 +42,9 @@ def load_documents(path: Path, expected_count: int, expected_dim: int, expected_
         if len(embedding) != expected_dim or row.get("embed_dim") != expected_dim:
             raise ValueError(f"product_id={product_id}: embedding 차원이 {expected_dim}이 아닙니다")
         if row.get("embed_model") != expected_model:
-            raise ValueError(f"product_id={product_id}: embedding 모델이 {expected_model}이 아닙니다")
+            raise ValueError(
+                f"product_id={product_id}: embedding 모델이 {expected_model}이 아닙니다"
+            )
         if row.get("embed_task") != "RETRIEVAL_DOCUMENT":
             raise ValueError(f"product_id={product_id}: embed_task가 RETRIEVAL_DOCUMENT가 아닙니다")
         if row.get("normalized") is not True:
@@ -51,36 +55,26 @@ def load_documents(path: Path, expected_count: int, expected_dim: int, expected_
     return documents
 
 
-def load_names(products_dir: Path, expected_ids: set[int]) -> dict[int, str]:
-    names: dict[int, str] = {}
-    for path in products_dir.glob("*.json"):
-        row = json.loads(path.read_text())
-        names[int(row["product_id"])] = row["title"]
-    if set(names) != expected_ids:
-        raise ValueError("products/*.json과 documents.jsonl의 product_id 집합이 다릅니다")
-    return names
-
-
-def upsert_documents(documents: list[dict[str, Any]], names: dict[int, str]) -> int:
+def upsert_documents(documents: list[dict[str, Any]]) -> int:
     settings = get_settings()
     with connect(settings.catalog_db_url) as conn:
         register_vector(conn)
         if conn.execute("SELECT to_regclass('public.products')").fetchone()[0] is None:
-            raise RuntimeError("pg-catalog products 테이블이 없습니다. docker compose up -d pg-catalog를 먼저 실행하세요")
+            raise RuntimeError(
+                "pg-catalog products 테이블이 없습니다. docker compose up -d pg-catalog를 먼저 실행하세요"
+            )
         with conn.transaction():
             for row in documents:
                 product_id = int(row["product_id"])
                 conn.execute(
                     """
                     INSERT INTO products
-                        (product_id, search_doc, embedding, extras, name, category, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, now())
+                        (product_id, search_doc, embedding, extras, updated_at)
+                    VALUES (%s, %s, %s, %s, now())
                     ON CONFLICT (product_id) DO UPDATE SET
                         search_doc = EXCLUDED.search_doc,
                         embedding = EXCLUDED.embedding,
                         extras = EXCLUDED.extras,
-                        name = EXCLUDED.name,
-                        category = EXCLUDED.category,
                         updated_at = now()
                     """,
                     (
@@ -88,8 +82,6 @@ def upsert_documents(documents: list[dict[str, Any]], names: dict[int, str]) -> 
                         row["search_doc"],
                         Vector(row["embedding"]),
                         Jsonb(row.get("extras") or {}),
-                        names[product_id],
-                        row.get("category"),
                     ),
                 )
         ids = [int(row["product_id"]) for row in documents]
@@ -104,7 +96,6 @@ def main() -> None:
     default_bundle = workspace / "sample_100"
     parser = argparse.ArgumentParser()
     parser.add_argument("--documents", type=Path, default=default_bundle / "ai/documents.jsonl")
-    parser.add_argument("--products-dir", type=Path, default=default_bundle / "products")
     parser.add_argument("--expected-count", type=int, default=100)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
@@ -113,13 +104,12 @@ def main() -> None:
     # 우회한다(§4 — 사전 임베딩 적재는 키 없이 가능).
     os.environ["AUTH_MODE"] = "dev"
 
-    for label, path in (("--documents", args.documents), ("--products-dir", args.products_dir)):
-        if not path.exists():
-            raise SystemExit(
-                f"{label} 경로가 없습니다: {path}\n"
-                "sample_100 번들(ai/documents.jsonl·products/*.json)은 이 repo에 포함되지 않습니다. "
-                f"워크스페이스 형제 경로 ../sample_100 에 배치하거나 {label} 로 명시 경로를 넘기세요."
-            )
+    if not args.documents.exists():
+        raise SystemExit(
+            f"--documents 경로가 없습니다: {args.documents}\n"
+            "sample_100 번들(ai/documents.jsonl)은 이 repo에 포함되지 않습니다. "
+            "워크스페이스 형제 경로 ../sample_100 에 배치하거나 --documents 로 명시하세요."
+        )
 
     settings = get_settings()
     documents = load_documents(
@@ -128,7 +118,6 @@ def main() -> None:
         expected_dim=settings.embedding_dim,
         expected_model=settings.embedding_model_id,
     )
-    names = load_names(args.products_dir.resolve(), {int(row["product_id"]) for row in documents})
     if args.dry_run:
         print(
             f"validated {len(documents)} documents: model={settings.embedding_model_id}, "
@@ -136,7 +125,7 @@ def main() -> None:
         )
         return
 
-    loaded = upsert_documents(documents, names)
+    loaded = upsert_documents(documents)
     if loaded != len(documents):
         raise RuntimeError(f"적재 후 행 수 불일치: expected={len(documents)}, actual={loaded}")
     print(f"loaded {loaded} embedded documents into pg-catalog.products")

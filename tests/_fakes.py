@@ -28,9 +28,30 @@ DEFAULT_RERANK = {
 }
 
 DEFAULT_PRODUCTS = [
-    SpringProduct(product_id=101, name="이어폰A", price=39000, rating=4.5, category="무선이어폰", brand="BrandX"),
-    SpringProduct(product_id=102, name="이어폰B", price=48000, rating=4.2, category="무선이어폰", brand="BrandY"),
-    SpringProduct(product_id=103, name="이어폰C", price=29000, rating=3.9, category="무선이어폰", brand="BrandZ"),
+    SpringProduct(
+        product_id=101,
+        name="이어폰A",
+        price=39000,
+        rating=4.5,
+        category="무선이어폰",
+        brand="BrandX",
+    ),
+    SpringProduct(
+        product_id=102,
+        name="이어폰B",
+        price=48000,
+        rating=4.2,
+        category="무선이어폰",
+        brand="BrandY",
+    ),
+    SpringProduct(
+        product_id=103,
+        name="이어폰C",
+        price=29000,
+        rating=3.9,
+        category="무선이어폰",
+        brand="BrandZ",
+    ),
 ]
 
 
@@ -53,7 +74,9 @@ class FakeLLM:
         self._timeout = timeout
         self.calls: list[tuple[str, str]] = []  # (tier, user) 기록
 
-    async def complete(self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True) -> str:
+    async def complete(
+        self, *, system: str, user: str, tier: str, max_tokens: int = 1024, json_output: bool = True
+    ) -> str:
         self.calls.append((tier, user))
         if tier == "fast":
             if self._decompose_error:

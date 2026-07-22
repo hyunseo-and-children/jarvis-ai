@@ -295,6 +295,23 @@ def test_sanitize_reason_strips_control_and_format_chars() -> None:
     assert "방수" in clean and "등급" in clean and "높아요" in clean
 
 
+def test_strip_unsafe_removes_controls_and_preserves_normal_text() -> None:
+    """공용 정제는 위험 문자·공백류만 정리하고 정상 한글·기호는 보존한다(이슈 #67)."""
+    from app.agents.buyer.recommendation.graph import _strip_unsafe
+
+    assert _strip_unsafe("  정상\n문장\t(1~2문장)\u200b\u202e  ") == "정상 문장 (1~2문장)"
+
+
+def test_strip_unsafe_multiline_preserves_structural_newlines() -> None:
+    """장문용 조합은 같은 위험 문자를 제거하면서 마크다운 구조 개행은 보존한다."""
+    from app.core.text import _strip_unsafe_multiline
+
+    dirty = "# 제목\x1b[31m\n\n- 첫째\t항목\u200b\u202e\r\n   기대 효과: 유지\n- 둘째"
+    assert _strip_unsafe_multiline(dirty) == (
+        "# 제목[31m\n\n- 첫째 항목\n   기대 효과: 유지\n- 둘째"
+    )
+
+
 def test_sanitize_reason_nonpositive_cap_blocks() -> None:
     """max_len<=0(오설정)이면 방어캡이 원문을 차단한다 — 경계값에서 무력화되지 않음(PR #66 리뷰)."""
     from app.agents.buyer.recommendation.graph import _sanitize_reason
@@ -329,6 +346,71 @@ async def test_reason_sanitized_and_capped_before_push() -> None:
     sent = reason_by_id[101]
     assert "\n" not in sent and "\t" not in sent  # 개행/제어문자 제거
     assert len(sent) <= settings.reason_max_len  # 안전 상한 이내
+
+
+async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
+    """overall_comment 는 SSE 직전 위험 문자만 제거하고 reason 전용 길이 캡은 적용하지 않는다."""
+    settings = get_settings()
+    comment = "추천\n총평\u200b\u202e " + ("가" * (settings.reason_max_len + 20))
+    llm = FakeLLM(
+        rerank={
+            "ranked": [{"productId": 101, "rationale": "정상 근거"}],
+            "overallComment": comment,
+        }
+    )
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token.startswith("추천 총평 ")
+    assert "\n" not in token and "\u200b" not in token and "\u202e" not in token
+    assert len(token) > settings.reason_max_len  # overall_comment 에 reason 캡을 재사용하지 않음
+
+
+async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
+    """LLM 일반답변과 조건 칩의 노출 문자열은 SSE 경계에서 정제된다."""
+    general = FakeLLM(decompose={"intent": "general", "reply": "안녕\n하세요\u200b\u202e!"})
+    general_events = await _collect(
+        run_buyer_turn(
+            _req(message="인사"),
+            _member(),
+            llm=general,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=_RecordingPush(),
+        )
+    )
+    general_text = next(e for e in general_events if e["type"] == "token")["data"]["text"]
+    assert general_text == "안녕 하세요!"
+
+    recommend = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "filters": {"category": "여행\n용품\u200b\u202e", "brand": ["정상\t브랜드"]},
+            "case": 2,
+        }
+    )
+    recommend_events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-condition"),
+            _member(),
+            llm=recommend,
+            search=_make_search([]),
+            push_fn=_RecordingPush(),
+        )
+    )
+    chips = next(e for e in recommend_events if e["type"] == "conditions")["data"]["chips"]
+    assert chips[0]["label"] == "카테고리 · 여행 용품"
+    assert chips[0]["value"] == "여행 용품"
+    assert chips[1]["label"] == "정상 브랜드"
+    assert chips[1]["value"] == ["정상 브랜드"]
 
 
 async def test_multiturn_filters_persisted_and_fed_back() -> None:
@@ -933,6 +1015,58 @@ async def test_recommendation_suppresses_consumable_category(
     assert sug["chips"][0]["revert"]["category"] == "조미료"
     assert sug["chips"][0]["estCount"] == 1
     assert "소금" in sug["chips"][0]["label"]
+
+
+async def test_recommendation_revert_chip_strips_seller_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """판매자 입력 영향 상품명·카테고리는 suggestions 칩 노출 전에 정제된다."""
+    _fix_now(monkeypatch)
+    dirty_category = "조미\n료\u200b\u202e"
+    dirty_name = "소\x1b[31m금\u200b\u202e"
+    monkeypatch.setattr(get_settings(), "consumable_categories", [dirty_category])
+    monkeypatch.setattr(
+        _sc_mod,
+        "get_recent_purchases",
+        _purchases_cat((900, dirty_category, dirty_name)),
+    )
+    products = [_prod(201, dirty_category, "후추"), _prod(202, "무선이어폰", "이어폰")]
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-revert"),
+            _member_num(),
+            llm=FakeLLM(),
+            search=_make_search(products),
+            push_fn=_RecordingPush(),
+        )
+    )
+
+    chip = next(e for e in events if e["type"] == "suggestions")["data"]["chips"][0]
+    assert chip["label"] == "소[31m금은 최근 구매 — 다시 추천받기"
+    assert chip["revert"]["category"] == "조미 료"
+
+    # FE가 정제된 machine value를 다음 턴에 돌려줘도 내부 원본 카테고리와 다시 매핑돼야 한다.
+    push = _RecordingPush()
+    revert = FakeLLM(
+        decompose={
+            "intent": "recommend",
+            "revertCategories": [chip["revert"]["category"]],
+            "filters": {},
+            "case": 2,
+        }
+    )
+    reverted_events = await _collect(
+        run_buyer_turn(
+            _req(thread_id="unsafe-revert"),
+            _member_num(),
+            llm=revert,
+            search=_make_search(products),
+            push_fn=push,
+        )
+    )
+    assert 201 in push.pushes[0].product_ids
+    assert "suggestions" not in _types(reverted_events)
 
 
 async def test_recommendation_nonconsumable_not_suppressed(monkeypatch: pytest.MonkeyPatch) -> None:

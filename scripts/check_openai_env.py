@@ -110,12 +110,8 @@ async def _run() -> int:
         return 2
 
     api_key = env["OPENAI_API_KEY"]
-    fast_reasoning_effort = os.environ.get(
-        "OPENAI_FAST_REASONING_EFFORT", "minimal"
-    ).strip()
-    smart_reasoning_effort = os.environ.get(
-        "OPENAI_SMART_REASONING_EFFORT", "medium"
-    ).strip()
+    fast_reasoning_effort = os.environ.get("OPENAI_FAST_REASONING_EFFORT", "minimal").strip()
+    smart_reasoning_effort = os.environ.get("OPENAI_SMART_REASONING_EFFORT", "medium").strip()
     # 모델 목록 권한이 제한된 키도 추론 권한은 있을 수 있으므로 모델 호출은 항상 시도한다.
     results = [
         await _check_api_key(api_key),

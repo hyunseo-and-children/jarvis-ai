@@ -30,6 +30,8 @@ from app.services.spring_client import (
     CartOptionInvalid,
     CartOptionRequired,
     CartProductNotFound,
+    CartQuantityExceeded,
+    CartStockInsufficient,
     SpringUnavailableError,
 )
 
@@ -149,6 +151,35 @@ async def test_cart_add_option_required_reasks_and_sets_pending() -> None:
     assert pending is not None and pending.product_id == 1
 
 
+async def test_cart_option_reask_strips_seller_text() -> None:
+    """Spring 옵션명(판매자 입력 영향)은 token 조립 후 위험 문자가 제거된다."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartOptionRequired(
+            [
+                CartOption(option_id=3, name="블\x1b[31m루\u200b\u202e"),
+                CartOption(option_id=4, name="레\n드"),
+            ]
+        )
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="unsafe-option",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert "블[31m루" in token and "레 드" in token
+    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e", "\n"))
+
+
 async def test_cart_add_reask_then_success_clears_pending() -> None:
     store = CartStateStore()
     await store.set_pending(
@@ -259,6 +290,97 @@ async def test_cart_add_product_not_found() -> None:
     )
     action = next(e for e in events if e["type"] == "action")["data"]
     assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "PRODUCT_NOT_FOUND"
+
+
+async def test_cart_add_stock_insufficient_exposes_remaining() -> None:
+    """재고 부족 → reason STOCK_INSUFFICIENT + 남은 재고 수 노출(2026-07-22)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(3)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+    assert "3" in action["message"]
+
+
+async def test_cart_add_stock_insufficient_without_count_falls_back() -> None:
+    """남은 재고 수 미상(None) → 일반 재고부족 안내(reason 은 여전히 STOCK_INSUFFICIENT)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(None)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+
+
+async def test_cart_add_stock_zero_says_soldout() -> None:
+    """재고 0(품절, BE ON_SALE+stock 0) → "품절된 상품이에요"(reason 은 STOCK_INSUFFICIENT 유지)."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartStockInsufficient(0)
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=1),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "STOCK_INSUFFICIENT"
+    assert action["message"] == "품절된 상품이에요."
+
+
+async def test_cart_add_quantity_exceeded_uses_be_message() -> None:
+    """수량 상한 초과(합산 > 99, BE VALIDATION_ERROR) → CART_ERROR + BE 동일 문구."""
+    store = CartStateStore()
+
+    async def add_fn(req):
+        raise CartQuantityExceeded("합산 초과")
+
+    events = await _collect(
+        stream_cart_add(
+            identity=_member(),
+            cart=CartIntent(product_id=1, quantity=5),
+            cart_store=store,
+            thread_key="m:t",
+            settings=get_settings(),
+            add_fn=add_fn,
+            get_cart_fn=_empty_cart(),
+        )
+    )
+    action = next(e for e in events if e["type"] == "action")["data"]
+    assert action["type"] == "CART_ADD_FAILED" and action["reason"] == "CART_ERROR"
+    assert action["message"] == "수량은 최대 99개까지 담을 수 있습니다."
 
 
 async def test_cart_add_error_maps_to_cart_error() -> None:
@@ -391,6 +513,34 @@ async def test_cart_view_lists_items() -> None:
     events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
     token = next(e for e in events if e["type"] == "token")["data"]["text"]
     assert "방수 파우치" in token and "블루" in token and "2개" in token
+
+
+async def test_cart_view_strips_seller_text() -> None:
+    """장바구니 상품명·옵션명은 사용자 token 경계에서 정제된다."""
+
+    async def get_cart_fn(*, user_id=None, guest_id=None):
+        return CartView(
+            items=[
+                CartViewItem(
+                    cart_item_id=1,
+                    product_id=1,
+                    product_name="방수\x1b[31m 파우치\u200b\u202e",
+                    option_name="블\n루",
+                    quantity=2,
+                ),
+                CartViewItem(
+                    cart_item_id=2,
+                    product_id=2,
+                    product_name="정상 상품",
+                    quantity=1,
+                ),
+            ]
+        )
+
+    events = await _collect(stream_cart_view(identity=_member(), get_cart_fn=get_cart_fn))
+    token = next(e for e in events if e["type"] == "token")["data"]["text"]
+    assert token == ("장바구니에 담긴 상품이에요:\n방수[31m 파우치 (블 루) · 2개\n정상 상품 · 1개")
+    assert all(ch not in token for ch in ("\x1b", "\u200b", "\u202e"))
 
 
 async def test_cart_view_empty() -> None:
@@ -580,6 +730,67 @@ async def test_add_to_cart_product_not_found_raises(monkeypatch: pytest.MonkeyPa
     )
     with pytest.raises(sc.CartProductNotFound):
         await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=999, quantity=1))
+
+
+async def test_add_to_cart_stock_insufficient_parses_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """400 CART_STOCK_INSUFFICIENT + error.detail.availableStock → CartStockInsufficient(3)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT", "detail": {"availableStock": 3}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock == 3
+
+
+async def test_add_to_cart_stock_available_float_rounds(monkeypatch: pytest.MonkeyPatch) -> None:
+    """availableStock 이 BE Double 직렬화로 4.9999998 처럼 오면 round → 5(절삭 아님, 리뷰 #75)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT", "detail": {"availableStock": 4.9999998}}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock == 5
+
+
+async def test_add_to_cart_stock_insufficient_missing_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """availableStock 누락 시에도 CartStockInsufficient(None) 로 전파(방어)."""
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "CART_STOCK_INSUFFICIENT"}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with pytest.raises(sc.CartStockInsufficient) as ei:
+        await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    assert ei.value.available_stock is None
+
+
+async def test_add_to_cart_validation_error_raises_quantity_exceeded(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """400 VALIDATION_ERROR(합산 > 99) → CartQuantityExceeded(CartError 하위) + 드리프트 관측 로그."""
+    import logging
+
+    import app.services.spring_client as sc
+    from app.schemas.spring import AddToCartRequest
+
+    body = {"error": {"code": "VALIDATION_ERROR", "message": "수량은 최대 99개까지 담을 수 있습니다."}}
+    monkeypatch.setattr(sc, "_client", lambda: _CartClient(_CartResp(400, body)))
+    with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
+        with pytest.raises(sc.CartQuantityExceeded):
+            # 각 요청 수량은 <=99(클라 검증), 합산 초과는 BE가 VALIDATION_ERROR 로 낸다
+            await sc.add_to_cart(AddToCartRequest(user_id=1, product_id=1, quantity=5))
+    # CartError 하위라 일반 캐치로도 낙성(전용 핸들러 누락 시 CART_ERROR degrade)
+    assert issubclass(sc.CartQuantityExceeded, sc.CartError)
+    # 드리프트 관측: BE message 를 WARN 으로 남긴다(코드가 다른 사유로 재사용될 때 감지용)
+    assert "VALIDATION_ERROR" in caplog.text and "수량은 최대 99개까지" in caplog.text
 
 
 async def test_get_cart_parses_items(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1052,7 +1263,7 @@ def test_parse_cart_error_logs_when_all_options_dropped(caplog: pytest.LogCaptur
             }
 
     with caplog.at_level(logging.WARNING, logger="app.services.spring_client"):
-        code, options = sc._parse_cart_error(_R())
+        code, options, _stock = sc._parse_cart_error(_R())
     assert options == [] and code == "CART_OPTION_REQUIRED"
     assert any("전부 파싱 실패" in r.getMessage() for r in caplog.records)
 

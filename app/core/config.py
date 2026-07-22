@@ -139,7 +139,9 @@ class Settings(BaseSettings):
     top_k: int = 30
     expose_min: int = 5
     expose_max: int = 8
-    reason_max_len: int = 200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
+    reason_max_len: int = (
+        200  # I-21 reason 안전 상한(§4.2) — 표시 목표는 프롬프트 40자, 이건 방어캡
+    )
     llm_call_limit: int = 2
     relaxation_max_rounds: int = 3
 
@@ -164,6 +166,9 @@ class Settings(BaseSettings):
     # 그대로 쓰면 경계에서 최신 fact 가 잘릴 수 있다(PR #47 후속 리뷰).
     profile_facts_query_margin: int = 50
     profile_session_buffer_cap: int = 100  # 세션 transient 버퍼 발화 개수 상한(무제한 누적 방어)
+    # I-20 처리 중 claim lease. delta+consolidation LLM 2단계의 기본 최악시간(약 120s)보다
+    # 길게 두되, 프로세스 crash 잔재가 영구 duplicate가 되지 않도록 유한하게 유지한다.
+    session_end_claim_ttl_s: float = 180.0
 
     profile_summary_max_chars: int = 1000  # §5.1 요약 상한(생성 측 압축 재작성)
     # AsyncPostgresStore(pg-profile) 초기 연결 대기 상한(이슈 #33) — 초과 시 dev 는 InMemory 폴백.
@@ -238,6 +243,9 @@ class Settings(BaseSettings):
             raise ValueError("STATE_STORE_POOL_MAX_SIZE must be at least 1")
         if self.state_store_migration_timeout_s <= 0:
             raise ValueError("STATE_STORE_MIGRATION_TIMEOUT_S must be positive")
+        min_claim_ttl = self.llm_timeout_s * (self.llm_max_retries + 1) * 2
+        if self.session_end_claim_ttl_s <= min_claim_ttl:
+            raise ValueError("SESSION_END_CLAIM_TTL_S must exceed the two-stage LLM timeout budget")
         if self.state_store_pool_min_size < 0:
             raise ValueError("STATE_STORE_POOL_MIN_SIZE must be non-negative")
         if self.state_store_pool_min_size > self.state_store_pool_max_size:

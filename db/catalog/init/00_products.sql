@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS products (
     search_doc  text NOT NULL,                  -- enrichment 결과 조립 텍스트(임베딩 입력, §4.8)
     embedding   vector(1536) NOT NULL,           -- Google gemini-embedding-001, 수동 L2 정규화됨
     extras      jsonb NOT NULL DEFAULT '{}',     -- enrichment 산출물(tags·attributes)
-    name        text,                            -- 후보 표시/디버깅용 최소 보조(원본 사본 아님)
-    category    text,
     updated_at  timestamptz NOT NULL DEFAULT now()
 );
 

@@ -93,7 +93,9 @@ class OrderHistoryItem(CamelModel):
     quantity: int = 1
     price: int | None = None
     status: str | None = None
-    category: str | None = Field(default=None, alias="categoryName")  # I-19 v0.15.9 (소모품 억제 소스)
+    category: str | None = Field(
+        default=None, alias="categoryName"
+    )  # I-19 v0.15.9 (소모품 억제 소스)
 
 
 class OrderHistory(CamelModel):
@@ -101,7 +103,9 @@ class OrderHistory(CamelModel):
 
     order_id: int
     ordered_at: str  # ISO-8601
-    status: str | None = None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
+    status: str | None = (
+        None  # [v0.15.5 정정] 주문 상태 6종(PAID/PREPARING/SHIPPING/DELIVERED/CANCELED/RETURNED)
+    )
     items: list[OrderHistoryItem] = Field(default_factory=list)
     items_total: int | None = None
     shipping_fee: int = 0
@@ -133,7 +137,9 @@ class RecentPurchases(CamelModel):
 
     orders: list[OrderHistory] = Field(default_factory=list)
 
-    def recent_items(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> list["OrderHistoryItem"]:
+    def recent_items(
+        self, *, since: datetime | None = None, exclude_statuses=frozenset()
+    ) -> list["OrderHistoryItem"]:
         """윈도우·상태 필터를 통과한 구매 아이템 목록 — exact 제외·카테고리 억제(결정 14-F) 공용 소스.
 
         since 보다 오래된 주문(또는 ordered_at 불명)은 제외(영구 제외 방지). exclude_statuses
@@ -153,9 +159,14 @@ class RecentPurchases(CamelModel):
                 out.append(item)
         return out
 
-    def purchased_product_ids(self, *, since: datetime | None = None, exclude_statuses=frozenset()) -> set[int]:
+    def purchased_product_ids(
+        self, *, since: datetime | None = None, exclude_statuses=frozenset()
+    ) -> set[int]:
         """exact 제외 dedup(결정 14-F) 대상 productId 집합 — recent_items 위임."""
-        return {item.product_id for item in self.recent_items(since=since, exclude_statuses=exclude_statuses)}
+        return {
+            item.product_id
+            for item in self.recent_items(since=since, exclude_statuses=exclude_statuses)
+        }
 
 
 # ── 3. 장바구니 담기 (I-2, §4.1) — BE 문서 채택, 단건 ──
@@ -181,7 +192,8 @@ class AddToCartResult(CamelModel):
 
     실패는 HTTP 오류로 옴: 400 CART_OPTION_REQUIRED(options 목록 → 되물음 멀티턴) /
     400 CART_OPTION_INVALID / 404 PRODUCT_NOT_FOUND / 401 INTERNAL_TOKEN_INVALID.
-    SSE action.reason 매핑: PRODUCT_NOT_FOUND | CART_ERROR | OUT_OF_STOCK(🔴 협의).
+    SSE action.reason 매핑: PRODUCT_NOT_FOUND | STOCK_INSUFFICIENT | CART_ERROR (STOCK_INSUFFICIENT는
+    BE CART_STOCK_INSUFFICIENT+availableStock 유래, 2026-07-22).
     """
 
     success: bool
@@ -265,9 +277,12 @@ class ProductChange(CamelModel):
     """I-17 변경분 항목. status=HIDDEN 은 AI 생성물 삭제/비활성 트리거 (§4.8).
 
     콘텐츠 필드는 enrichment·search_doc 조립 입력 — AI 는 저장하지 않고 산출물 생성에만 사용.
+    미정의 status 는 페이지 전체 계약 위반으로 거부해 해당 페이지 artifact·커서를 보존한다.
     """
 
-    product_id: int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
+    product_id: (
+        int  # 숫자(BIGINT, product.id) — BE I-17 예시 문자열은 DDL과 불일치, 스키마 기준 int
+    )
     status: Literal["ON_SALE", "HIDDEN"]
     updated_at: str  # ISO-8601
     name: str | None = None
