@@ -199,12 +199,14 @@ async def run_buyer_turn(
     if (
         prior is not None
         and prior.category
-        and not any(q.raw_category for q in decision.category_queries)
+        and not any(q.raw_category or q.query for q in decision.category_queries)
     ):
-        # 리파인 턴(예: "더 저렴한 걸로") — 실제 카테고리 신호 없음(빈 리스트 또는 category=null 만).
-        # prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로 승계한다. 매핑에 태우면 raw=null
-        # 발화 임베딩 폴백이 무관한 발화를 최근접 canonical 로 바꿔 이전 카테고리를 덮어쓴다
-        # (never-null, PR #73 #12). 실제 카테고리가 하나라도 있으면(상황형 null 혼합) 아래 매핑을 탄다.
+        # 리파인 턴(예: "더 저렴한 걸로") — 이번 턴에 카테고리 신호가 전혀 없음(빈 리스트, 또는
+        # raw·query 가 모두 없는 leg 만). prior 는 이미 canonical(§7)이라 재매핑(pg 왕복) 없이 그대로
+        # 승계한다. 매핑에 태우면 raw=null 발화 임베딩 폴백이 무관한 발화를 최근접 canonical 로 바꿔
+        # 이전 카테고리를 덮어쓴다(never-null, PR #73 #12).
+        # 단, raw 는 null 이라도 유의미한 query 가 있으면(신규 상황형 질의) 검색 의도가 있는 것이라
+        # 아래 매핑을 태워야 한다 — prior 로 하이재킹하면 fan-out 이 죽고 #59 문제가 재발(PR #73 #19).
         decision.category_legs = [(prior.category, None)]
     else:
         mapper = map_categories or _map_categories

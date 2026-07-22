@@ -429,21 +429,67 @@ async def test_multiturn_empty_queries_carries_prior_not_utterance() -> None:
     assert calls[-1] == "여행 > 여행용품"  # 턴 2 도 prior 승계(발화 garbage 아님)
 
 
-async def test_multiturn_null_category_queries_carries_prior() -> None:
-    """LLM 이 category=null 항목만 낸 경우도(빈 리스트와 동일한 발화폴백 위험) prior 를 승계한다(#12).
+async def test_multiturn_new_situational_query_not_hijacked_by_prior() -> None:
+    """이전 카테고리가 있어도 새 상황형 질의(raw=null 이지만 유의미한 query)는 prior 로 덮지 않고
+    매핑한다 — query 가 있으면 검색 의도가 있는 것이라 fan-out 이 동작해야 한다(PR #73 리뷰 #19).
 
-    실제 카테고리가 하나도 없으면(빈 리스트든 null 만이든) 발화 오염 대상이라 prior 를 승계한다.
+    가드가 raw 만 보면(query 무시) 신규 상황형 질의를 "신호 없음"으로 오판해 prior 로 하이재킹 —
+    이슈 #59 가 풀려던 문제(엉뚱한 카테고리로 검색)가 멀티턴에서 재발한다.
     """
-    calls = await _run_two_turns(
-        {
-            "intent": "recommend",
-            "reply": "",
-            "case": 2,
-            "filters": {},
-            "categoryQueries": [{"category": None, "query": "저렴한"}],
-        }
+    calls: list = []
+
+    async def _search(filters, exclude_product_ids=None):
+        calls.append(filters.category)
+        return _res(101)
+
+    async def _map(*, category_queries, utterance, settings):
+        # raw 있으면 그대로, null-raw+query 는 그 query 로 canonical 매핑(테스트용 lookup)
+        qmap = {"여행 파우치": "여행 > 여행용품"}
+        legs = []
+        for q in category_queries:
+            if q.raw_category:
+                legs.append((q.raw_category, q.query))
+            elif q.query:
+                legs.append((qmap.get(q.query, "미상"), q.query))
+        return legs
+
+    d1 = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": "가전 > 이어폰", "query": "이어폰"}],
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="tx"),
+            _member(),
+            llm=FakeLLM(decompose=d1),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+        )
     )
-    assert calls[-1] == "여행 > 여행용품"  # null 만 왔어도 prior 승계
+    # 턴 2 — 새 상황형: raw 는 null 이지만 유의미한 query
+    d2 = {
+        "intent": "recommend",
+        "reply": "",
+        "case": 2,
+        "filters": {},
+        "categoryQueries": [{"category": None, "query": "여행 파우치"}],
+    }
+    await _collect(
+        run_buyer_turn(
+            _req(thread_id="tx", message="유럽여행 준비물 뭐 사야해?"),
+            _member(),
+            llm=FakeLLM(decompose=d2),
+            search=_search,
+            push_fn=_RecordingPush(),
+            map_categories=_map,
+        )
+    )
+    assert calls[0] == "가전 > 이어폰"  # 턴 1
+    assert calls[-1] == "여행 > 여행용품"  # 턴 2: 새 query 로 매핑됨(prior "이어폰" 하이재킹 아님)
 
 
 # ─────────── 미검증 category 유출 차단 (PR #73 리뷰 #13/#15/#16) ───────────
