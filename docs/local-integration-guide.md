@@ -100,6 +100,18 @@ docker compose exec -T pg-catalog psql -U jarvis -d catalog \
   < db/catalog/migrations/20260722_drop_raw_product_columns.sql
 ```
 
+### 스키마 진화(임베딩 프로비넌스, 이슈 #65)
+
+`products`에 `embed_model·embed_dim·embed_task·normalized` 컬럼이 추가됐다.
+- **새 볼륨**: `docker compose up -d pg-catalog`로 `00_products.sql`이 새 스키마를 생성 → 마이그레이션 불필요.
+- **기존 볼륨/배포 인스턴스**: `down -v` 없이 in-place 적용
+  ```bash
+  psql "$catalog_db_url" -f db/catalog/migrations/20260723_add_embedding_provenance.sql
+  ```
+  (멱등, 반복 적용 안전).
+
+오프라인 eval(`compare_backends`)에서 질의 임베딩은 `functools.partial(embed_texts, task_type=settings.embedding_task_query)`를 주입해 문서(RETRIEVAL_DOCUMENT)와 짝을 맞춘다.
+
 ### 2.6 테스트가 로컬 실키를 사용하지 않도록 격리
 
 로컬 `.env`에 API key가 있어도 기본 unit/integration 테스트가 과금 API를 호출하지 않도록 `tests/conftest.py`에서 provider key를 비우고 `AUTH_MODE=dev`를 강제한다. 실제 외부 API smoke는 marker로 분리한다.
