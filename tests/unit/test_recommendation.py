@@ -375,6 +375,37 @@ async def test_overall_comment_sanitized_without_reason_length_cap() -> None:
     assert len(token) > settings.reason_max_len  # overall_comment 에 reason 캡을 재사용하지 않음
 
 
+async def test_recommendation_boundaries_apply_unicode_sequence_policy() -> None:
+    """Spring reason과 SSE 총평이 같은 등록 보존·비정상 제거 정책을 따른다."""
+    push = _RecordingPush()
+    llm = FakeLLM(
+        rerank={
+            "ranked": [
+                {
+                    "productId": 101,
+                    "rationale": "추천 ❤️ A\ufe0fB\U000e0061",
+                }
+            ],
+            "overallComment": "총평 ❤️ X\ufe0fY\U000e0061 㐂\U000e0100",
+        }
+    )
+
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=llm,
+            search=_make_search(DEFAULT_PRODUCTS),
+            push_fn=push,
+        )
+    )
+
+    reason_by_id = {reason.product_id: reason.reason for reason in push.pushes[0].reasons}
+    assert reason_by_id[101] == "추천 ❤️ AB"
+    token = next(event for event in events if event["type"] == "token")["data"]["text"]
+    assert token == "총평 ❤️ XY 㐂\U000e0100"
+
+
 async def test_general_reply_and_condition_chips_strip_unsafe_text() -> None:
     """LLM 일반답변과 조건 칩의 노출 문자열은 SSE 경계에서 정제된다."""
     general = FakeLLM(decompose={"intent": "general", "reply": "안녕\n하세요\u200b\u202e!"})

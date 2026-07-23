@@ -31,6 +31,8 @@ from langchain.agents.middleware import (
 )
 
 from app.core.config import get_settings
+from app.core.text import _security_skeleton, _strip_unsafe_multiline_controls
+from app.core.unicode_security import UnicodeSequenceStreamSanitizer
 
 # ── 1. scope — 차단 규칙 (사유 → 트리거 부분 문자열, 소문자 비교) ────────────────
 
@@ -140,10 +142,204 @@ _OUTPUT_SECRET_RES: tuple[re.Pattern[str], ...] = (
 
 
 def mask_output(text: str) -> str:
-    """최종 출력에서 시크릿·주민번호 패턴을 마스킹한다 (SSE 계층이 호출)."""
-    for pattern in _OUTPUT_SECRET_RES:
-        text = pattern.sub(MASK_REPLACEMENT, text)
+    """은닉 문자를 무시해 탐지한 시크릿·주민번호의 원문 범위를 마스킹한다."""
+    skeleton = _security_skeleton(text)
+    spans = sorted(
+        skeleton.source_span(*match.span())
+        for pattern in _OUTPUT_SECRET_RES
+        for match in pattern.finditer(skeleton.text)
+    )
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    for start, end in reversed(merged):
+        text = text[:start] + MASK_REPLACEMENT + text[end:]
     return text
+
+
+_API_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_")
+_BEARER_TOKEN_CHARS = _API_TOKEN_CHARS | {"."}
+_MIN_SECRET_TOKEN_LENGTH = 16
+_MAX_SENSITIVE_PREFIX = max(
+    len("sk-") + _MIN_SECRET_TOKEN_LENGTH - 1,
+    len("Bearer ") + _MIN_SECRET_TOKEN_LENGTH - 1,
+    len("000000-1000000") - 1,
+)
+
+
+def _is_api_key_prefix(text: str) -> bool:
+    if "sk-".startswith(text):
+        return True
+    token = text[3:] if text.startswith("sk-") else ""
+    return (
+        bool(token)
+        and len(token) < _MIN_SECRET_TOKEN_LENGTH
+        and all(char in _API_TOKEN_CHARS for char in token)
+    )
+
+
+def _is_bearer_prefix(text: str) -> bool:
+    if "Bearer".startswith(text):
+        return True
+    if not text.startswith("Bearer"):
+        return False
+    rest = text[len("Bearer") :]
+    whitespace_length = len(rest) - len(rest.lstrip())
+    if whitespace_length == 0:
+        return False
+    token = rest[whitespace_length:]
+    return len(token) < _MIN_SECRET_TOKEN_LENGTH and all(
+        char in _BEARER_TOKEN_CHARS for char in token
+    )
+
+
+def _is_rrn_prefix(text: str) -> bool:
+    if len(text) > 14:
+        return False
+    for index, char in enumerate(text):
+        if index < 6 or 8 <= index:
+            if not char.isascii() or not char.isdigit():
+                return False
+        elif index == 6:
+            if char != "-":
+                return False
+        elif char not in "1234":
+            return False
+    return True
+
+
+def _sensitive_suffix_start(text: str) -> int | None:
+    minimum_start = max(0, len(text) - _MAX_SENSITIVE_PREFIX)
+    for start in range(minimum_start, len(text)):
+        suffix = text[start:]
+        if _is_api_key_prefix(suffix) or _is_bearer_prefix(suffix) or _is_rrn_prefix(suffix):
+            return start
+    return None
+
+
+def _overlong_bearer_prefix_start(text: str) -> int | None:
+    """whitespace가 보류 상한을 소진한 Bearer 후보를 fail-closed로 찾는다."""
+    start = text.rfind("Bearer")
+    if start < 0 or len(text) - start <= _MAX_SENSITIVE_PREFIX:
+        return None
+    rest = text[start + len("Bearer") :]
+    whitespace_length = len(rest) - len(rest.lstrip())
+    if whitespace_length == 0:
+        return None
+    token = rest[whitespace_length:]
+    if len(token) >= _MIN_SECRET_TOKEN_LENGTH:
+        return None
+    return start if all(char in _BEARER_TOKEN_CHARS for char in token) else None
+
+
+def _earliest_secret_match(text: str) -> tuple[int, re.Match[str]] | None:
+    matches = (
+        (index, match)
+        for index, pattern in enumerate(_OUTPUT_SECRET_RES)
+        if (match := pattern.search(text)) is not None
+    )
+    return min(matches, key=lambda item: item[1].start(), default=None)
+
+
+class StreamingOutputGuard:
+    """seller general 출력의 Unicode 문맥과 청크 경계 시크릿을 함께 보호한다."""
+
+    def __init__(self) -> None:
+        self._unicode = UnicodeSequenceStreamSanitizer()
+        self._pending = ""
+        self._previous_ended_space = False
+        self._consume_rule: int | None = None
+
+    def feed(self, text: str) -> list[str]:
+        """새 청크를 정제하고 확정된 안전 출력 조각을 반환한다."""
+        self._append_cleaned(self._unicode.feed(text))
+        return self._drain(final=False)
+
+    def flush(self) -> list[str]:
+        """스트림 종료 시 보류한 정상 문자를 확정하고 반환한다."""
+        self._append_cleaned(self._unicode.flush())
+        return self._drain(final=True)
+
+    def _append_cleaned(self, text: str) -> None:
+        if not text:
+            return
+        framed = _strip_unsafe_multiline_controls(f"\ue000{text}\ue001")
+        cleaned = framed[1:-1]
+        if self._previous_ended_space and cleaned.startswith(" "):
+            cleaned = cleaned[1:]
+        if not cleaned:
+            return
+        self._previous_ended_space = cleaned.endswith(" ")
+        self._pending += cleaned
+
+    def _drain(self, *, final: bool) -> list[str]:
+        fragments: list[str] = []
+        while self._pending:
+            if self._consume_rule is not None:
+                if self._consume_token_continuation():
+                    break
+
+            skeleton = _security_skeleton(self._pending)
+            secret_match = _earliest_secret_match(skeleton.text)
+            if secret_match is not None:
+                rule_index, match = secret_match
+                start, end = skeleton.source_span(*match.span())
+                fragments.extend((self._pending[:start], MASK_REPLACEMENT))
+                self._pending = self._pending[end:]
+                if match.end() == len(skeleton.text):
+                    self._consume_rule = rule_index
+                continue
+
+            overlong_start = _overlong_bearer_prefix_start(skeleton.text)
+            if overlong_start is not None:
+                source_start = skeleton.source_starts[overlong_start]
+                fragments.extend((self._pending[:source_start], MASK_REPLACEMENT))
+                self._pending = ""
+                self._consume_rule = 1
+                break
+
+            if final:
+                fragments.append(self._pending)
+                self._pending = ""
+                break
+
+            suffix_start = _sensitive_suffix_start(skeleton.text)
+            if suffix_start is None:
+                fragments.append(self._pending)
+                self._pending = ""
+            else:
+                source_start = skeleton.source_starts[suffix_start]
+                fragments.append(self._pending[:source_start])
+                self._pending = self._pending[source_start:]
+            break
+
+        visible = mask_output("".join(fragments))
+        return [visible] if visible else []
+
+    def _consume_token_continuation(self) -> bool:
+        skeleton = _security_skeleton(self._pending)
+        allowed = (
+            _API_TOKEN_CHARS
+            if self._consume_rule == 0
+            else _BEARER_TOKEN_CHARS
+            if self._consume_rule == 1
+            else frozenset()
+        )
+        delimiter_index = next(
+            (index for index, char in enumerate(skeleton.text) if char not in allowed),
+            None,
+        )
+        if delimiter_index is None:
+            self._pending = ""
+            return True
+        source_start = skeleton.source_starts[delimiter_index]
+        self._pending = self._pending[source_start:]
+        self._consume_rule = None
+        return False
 
 
 # ── ToolCallLimit (prebuilt) — 도구 보유 에이전트 공통 상한 ─────────────────────

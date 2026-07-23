@@ -41,7 +41,7 @@ from pydantic.alias_generators import to_camel
 from app.agents.seller.context import SellerContext
 from app.agents.seller.history import apply_recommendation
 from app.agents.seller.hitl import DraftRecord, confirm_draft, start_draft, validate_draft
-from app.agents.seller.middleware import check_scope, mask_output
+from app.agents.seller.middleware import StreamingOutputGuard, check_scope, mask_output
 from app.agents.seller.orchestrator import route_question, run_analysis_pipeline
 from app.agents.seller.pipeline import parse_apply_message
 from app.agents.seller.schemas import DraftProposal
@@ -83,9 +83,14 @@ def _sse(event_type: str, data: dict) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+def _visible_token(text: str) -> str:
+    """이미 신뢰경계 정제를 마친 텍스트를 token SSE로 감싼다."""
+    return _sse("token", TokenData(text=text).model_dump(by_alias=True))
+
+
 def _token(text: str) -> str:
     visible = mask_output(_strip_unsafe_multiline(text))
-    return _sse("token", TokenData(text=visible).model_dump(by_alias=True))
+    return _visible_token(visible)
 
 
 def _llm_unavailable() -> str:
@@ -96,23 +101,6 @@ def _llm_unavailable() -> str:
             by_alias=True
         ),
     )
-
-
-def _token_chunk(text: str, *, previous_ended_space: bool) -> tuple[str | None, bool]:
-    """스트리밍 청크를 정제하되 청크 경계의 정상 공백을 잃지 않는다.
-
-    `_strip_unsafe`의 양끝 strip이 토큰 사이 공백까지 없애지 않도록 센티널로 감싸
-    청크 내부 공백을 접고, 직전 청크와 맞닿은 중복 공백만 제거한다.
-    """
-    framed = _strip_unsafe_multiline(f"\ue000{text}\ue001")
-    cleaned = framed[1:-1]
-    if previous_ended_space and cleaned.startswith(" "):
-        cleaned = cleaned[1:]
-    if not cleaned:
-        return None, previous_ended_space
-    visible = mask_output(cleaned)
-    frame = _sse("token", TokenData(text=visible).model_dump(by_alias=True))
-    return frame, visible.endswith(" ")
 
 
 # ── 화면 전환 신호 (FE 계약 B, 2026-07-22 — 판매자 스트림 전용, 구매자 무관) ──────────
@@ -176,8 +164,8 @@ async def _general_stream(request: SellerChatRequest, identity: Identity) -> Asy
     - scope 선차단: 미들웨어(end 점프)가 주입하는 거절 메시지는 astream
       messages 모드에서 모델 청크로 흐르지 않으므로, 코드에서 같은 판정점
       (check_scope)으로 거절 문안을 직접 token emit 한다.
-    - 출력 검사(§10-⑥): mask_output 을 청크 단위 적용 — 패턴이 청크 경계에
-      걸치면 놓칠 수 있는 한계가 있다(HANDOFF 기록, 4단계 개선 후보).
+    - 출력 검사(§10-⑥): 요청 단위 StreamingOutputGuard가 Unicode 문맥과
+      청크 경계 시크릿 prefix를 보류해 확정된 안전 조각만 내보낸다.
     - 오류: 스트림 내부 실패는 error 이벤트(LLM_TIMEOUT/INTERNAL) 후 종료(§2.7).
     """
     # general 은 항상 대화(우측 패널 유지) — 첫 프레임에 레인을 알린다.
@@ -194,7 +182,7 @@ async def _general_stream(request: SellerChatRequest, identity: Identity) -> Asy
         context = SellerContext(
             seller_id=identity.seller_id or "", brand_id=identity.brand_id or ""
         )
-        previous_ended_space = False
+        output_guard = StreamingOutputGuard()
         async for item in agent.astream(
             {"messages": [HumanMessage(content=request.message)]},
             context=context,
@@ -204,12 +192,10 @@ async def _general_stream(request: SellerChatRequest, identity: Identity) -> Asy
             if not isinstance(message_chunk, AIMessageChunk):
                 continue
             text = _chunk_text(message_chunk.content)
-            if text:
-                frame, previous_ended_space = _token_chunk(
-                    text, previous_ended_space=previous_ended_space
-                )
-                if frame is not None:
-                    yield frame
+            for visible in output_guard.feed(text):
+                yield _visible_token(visible)
+        for visible in output_guard.flush():
+            yield _visible_token(visible)
         yield _done("keep")
     except LLMNotConfigured:
         yield _llm_unavailable()

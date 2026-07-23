@@ -148,6 +148,58 @@ def test_stream_masks_secret_obfuscated_with_unsafe_character(
     assert "[민감 정보 차단]" in text
 
 
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (
+            ["키는 Bearer abcdefgh", "\ufe0fijklmnop", "1234 입니다"],
+            "키는 [민감 정보 차단] 입니다",
+        ),
+        (["값은 sk-abcdef", "ghijklmnop1234 끝"], "값은 [민감 정보 차단] 끝"),
+        (["번호는 990101-", "1234567 입니다"], "번호는 [민감 정보 차단] 입니다"),
+    ],
+)
+def test_stream_masks_secrets_split_across_chunks(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[str], expected: str
+) -> None:
+    """최소 길이 전에서 분할된 시크릿도 조각을 노출하지 않고 한 번 마스킹한다."""
+    agent = _StubStreamAgent([AIMessageChunk(content=chunk) for chunk in chunks])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+
+    events = _collect(_request("설정 알려줘"))
+
+    text = "".join(event["data"]["text"] for event in events if event["type"] == "token")
+    assert text == expected
+
+
+@pytest.mark.parametrize(
+    ("chunks", "expected"),
+    [
+        (["좋아 ❤", "\ufe0f 입니다"], "좋아 ❤️ 입니다"),
+        (["한자 㐂", "\U000e0100 입니다"], "한자 㐂\U000e0100 입니다"),
+        (
+            [
+                "국기 🏴\U000e0067\U000e0062",
+                "\U000e0065\U000e006e\U000e0067\U000e007f 입니다",
+            ],
+            "국기 🏴\U000e0067\U000e0062\U000e0065\U000e006e\U000e0067\U000e007f 입니다",
+        ),
+        (["비지원 🏴\U000e0075", "\U000e0073 입니다"], "비지원 🏴 입니다"),
+    ],
+)
+def test_stream_sanitizes_unicode_sequences_split_across_chunks(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[str], expected: str
+) -> None:
+    """청크 경계의 등록 시퀀스는 보존하고 비지원 Tag payload는 제거한다."""
+    agent = _StubStreamAgent([AIMessageChunk(content=chunk) for chunk in chunks])
+    monkeypatch.setattr(seller_api, "build_general_agent", lambda today: agent)
+
+    events = _collect(_request("표시해줘"))
+
+    text = "".join(event["data"]["text"] for event in events if event["type"] == "token")
+    assert text == expected
+
+
 def test_stream_scope_refusal_without_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """scope 위반 → 에이전트 미빌드(LLM 0회), 거절 token + done."""
 
@@ -529,7 +581,7 @@ def test_product_draft_executes_the_sanitized_after_value(
             DraftChange(
                 field="description",
                 before="기존\x1b[31m 설명\u200b\u202e",
-                after="새\n설명 Bearer abcdefghijklmnop1234\u200b\u202e",
+                after="새\n설명 ❤️ Bearer abcdefghijklmnop1234 A\ufe0fB\U000e0061",
             )
         ],
         summary="설명 수정",
@@ -545,8 +597,10 @@ def test_product_draft_executes_the_sanitized_after_value(
         set_spring_client(None)
 
     assert [e["type"] for e in confirm_events] == ["meta", "token", "done"]
-    assert draft["changes"][0]["after"] == "새\n설명 [민감 정보 차단]"
-    assert spring.patch.description == "새\n설명 Bearer abcdefghijklmnop1234"
+    assert draft["changes"][0]["after"] == "새\n설명 ❤️ [민감 정보 차단] AB"
+    assert spring.patch.description == "새\n설명 ❤️ Bearer abcdefghijklmnop1234 AB"
+    assert "[민감 정보 차단]" not in spring.patch.description
+    assert all(char not in spring.patch.description for char in ("\ufe0fB", "\U000e0061"))
 
 
 def test_draft_changes_field_is_camelcase(monkeypatch: pytest.MonkeyPatch) -> None:
