@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from app.core.config import Settings
 
 
@@ -25,3 +28,13 @@ def test_pool_max_size_covers_fanout_concurrency() -> None:
     """
     settings = Settings(_env_file=None)
     assert settings.category_search_pool_max_size >= settings.category_fanout_max
+
+
+def test_negative_fanout_max_rejected() -> None:
+    """음수 fanout_max 는 로드 시 거부한다 — out[:fanout_max] 가 음수면 '뒤에서' 잘려 앞 항목이
+
+    남아 "fanout_max<=0 이면 정확히 0개"라는 절단 불변식이 조용히 깨진다(category_mapping·
+    decompose 두 슬라이스 공통). 소스에서 ge=0 으로 막는다(PR #73 리뷰).
+    """
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, category_fanout_max=-1)
