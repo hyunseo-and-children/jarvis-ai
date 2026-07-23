@@ -35,7 +35,7 @@
 - 브랜치: **`main`(배포·보호) + `dev`(통합·보호) + `<type>/<topic>` topic**. `main` push = 배포팀 CD(EC2 자동배포)라 `main`은 실서버 라인. 동시 기능은 각자 **`dev`에서 딴** 별도 `feat/`. 장수 브랜치 금지.
 - 작업은 **이슈 단위** — 기능/버그를 이슈로 등록 후 브랜치·PR 연결(`Closes #N`). mvp-todo 주제와 이슈를 맞춘다.
 - 커밋: Conventional Commits `<type>(<scope>): <subject>`. 계약 변경은 명세 개정 커밋을 먼저/함께.
-- PR: **일상 개발은 `dev` 대상** + 최소 1인 리뷰 + `uv run pytest`·`ruff` 통과. **배포는 `dev → main` 승격 PR** 로만. `main` 직접 push·직접 PR(승격 외) 금지. 상세는 README.
+- PR: **일상 개발은 `dev` 대상** — **CI(`uv run pytest`·`ruff`) 필수, 사람 승인 리뷰는 면제**(리뷰 0, 원하면 요청). **배포는 `dev → main` 승격 PR** 로만 — 여기서만 **사람 1인 리뷰 필수** + CI. `main` 직접 push·직접 PR(승격 외) 금지. dev도 직접 push 금지(PR+CI 필수). 상세는 README.
 - worktree 분기 기준도 `dev` — `git checkout dev && git pull` 후 분기(배포분·미완성 코드 딸림 방지).
 
 **커밋 워크플로 (기능 구현 후)**:
