@@ -140,16 +140,49 @@ async def test_null_null_leg_skipped_no_category_forced() -> None:
     assert out == []
 
 
-async def test_hard_failure_degrades_to_empty_not_raw() -> None:
-    """embed/DB 다운 → 미검증 raw 를 신뢰하지 않고 빈 legs 로 degrade한다(canonical-or-null, PR #73 #20).
+async def test_embed_failure_without_exact_degrades_to_empty_not_raw() -> None:
+    """exact 매치가 없는데 embed 까지 다운 → 미검증 raw 를 신뢰하지 않고 빈 legs 로 degrade한다.
 
     raw 는 검증이 필요할 만큼 자주 틀린다(이 PR의 전제) — 검증 불가 시 raw 를 보내면 가짜
-    categoryName 으로 0건이 날 수 있어, 카테고리 없이(전체) 검색하도록 빈 리스트로 degrade 한다.
-    graph 바깥 except(#18)·미매핑(#13)과 동일한 canonical-or-null 불변식.
+    categoryName 으로 0건이 날 수 있어, 카테고리 없이(전체) 검색하도록 빈 리스트로 degrade 한다
+    (canonical-or-null, PR #73 #20). exact 매치가 있으면 §5·별도 테스트대로 보존된다(여기선 없음).
     """
     m = _FakeMapper(exact=set(), nearest={}, embed_raises=True)
     out = await m.run([CategoryQuery("PC부품 > CPU", "cpu"), CategoryQuery(None, "뭐")])
     assert out == []
+
+
+async def test_search_failure_logs_leg_failed_not_unmapped(caplog) -> None:
+    """조회가 예외로 실패한 leg 는 category_leg_search_failed 로만 남기고 category_unmapped 로는
+    이중 기록하지 않는다(PR #73 리뷰).
+
+    category_unmapped 는 "신호 있으나 히트 0건"(top-k 미스율 품질 신호, §11)이라 인프라 실패
+    (조회 예외)가 이 메트릭을 오염시키면 안 된다 — 실패 leg 는 실패 로그로만 관측한다.
+    """
+    m = _FakeMapper(exact=set(), nearest={}, search_raises_for={"이어폰"})
+    with caplog.at_level("WARNING"):
+        out = await m.run([CategoryQuery(None, "이어폰")])
+    assert out == []
+    msgs = [r.msg for r in caplog.records]
+    assert "category_leg_search_failed" in msgs  # 인프라 실패는 남김
+    assert "category_unmapped" not in msgs  # 품질 메트릭은 오염 안 됨
+
+
+async def test_exact_match_survives_embed_failure() -> None:
+    """embed/search 가 실패해도 이미 DB 검증된 exact 매치 leg 는 보존한다(PR #73 리뷰).
+
+    exact 조회(DB 직접)는 임베딩 경로와 독립이라 그 자체로 canonical 검증이다 — 임베딩 API
+    일시 오류가 확정된 exact canonical 까지 무필터로 날리면 안 된다. exact leg 유지 +
+    임베딩 필요 leg 만 드롭(canonical-or-null 은 exact·search 히트 둘 다 canonical 이라 성립).
+    """
+    m = _FakeMapper(exact={"전자기기 > 노트북"}, nearest={}, embed_raises=True)
+    out = await m.run(
+        [
+            CategoryQuery("전자기기 > 노트북", "노트북"),  # exact match(DB 검증)
+            CategoryQuery("여행용품", "파우치"),  # 임베딩 보정 필요 → embed 실패로 드롭
+        ]
+    )
+    assert out == [("전자기기 > 노트북", "노트북")]  # exact 보존, 여행용품 leg 만 드롭
 
 
 async def test_one_leg_search_failure_does_not_drop_other_legs() -> None:

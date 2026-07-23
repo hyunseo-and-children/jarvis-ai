@@ -217,7 +217,7 @@ async def run_buyer_turn(
                 settings=settings,
             )
         except Exception as exc:  # noqa: BLE001 - 매핑 호출 자체의 예외(시그니처 불일치·버그 등)
-            # embed/DB 하드실패는 map_categories 내부에서 빈 legs degrade(§5·#20)로 이미 처리된다.
+            # embed/DB 실패는 map_categories 내부에서 leg 단위 격리(exact 보존·§5·#20)로 처리된다.
             # 여기까지 오는 건 map_categories 호출 자체의 버그라 raw(DB 미검증)를 신뢰할 근거가 없다 —
             # canonical-or-null 불변식대로 빈 legs 로 degrade(→ filters.category=None). 미검증 원문이
             # Spring·조건 칩·멀티턴 승계로 새지 않게(PR #73 리뷰). 관측 로그는 남긴다.
