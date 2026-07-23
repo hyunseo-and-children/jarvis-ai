@@ -217,8 +217,9 @@ uv run pytest tests/integration/test_buyer_flow_e2e.py -q
 ### 브랜치 전략
 
 - `main` — **배포(production) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 여기 머지 = **EC2 자동배포**. 항상 실서버와 일치.
-- `dev` — **통합(integration) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 일상 개발이 모이는 곳.
-- 일상 개발은 topic 브랜치에서 → **`dev`로 PR** → **최소 1인 리뷰**(3인이라 나머지 2명 중 누구든) → 병합. topic은 [mvp-todo.md](docs/mvp-todo.md) 주제와 정렬.
+- `dev` — **통합(integration) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 일상 개발이 모이는 곳. **CI(`lint-test`) 통과는 필수, 사람 승인 리뷰는 면제** — 봇이 문지기, 리뷰는 선택.
+- 일상 개발은 topic 브랜치에서 → **`dev`로 PR** → **CI 통과 → 병합**(사람 리뷰는 선택, 필요하면 요청). topic은 [mvp-todo.md](docs/mvp-todo.md) 주제와 정렬.
+- **사람 1인 리뷰 게이트는 `dev → main` 승격 PR에 위치** — 실서버로 나가는 경계에서만 사람이 확인한다.
 - **배포는 `dev → main` 승격 PR** 로만 — 배포할 준비가 된 `dev`를 `main`으로 올리는 PR을 잘라 머지하면 CD가 배포한다.
 - 이름 규칙: `<type>/<topic>` (예: `feat/recommend-graph`, `feat/cart-i2`, `fix/sse-timeout`, `docs/api-spec-sync`)
 - **이슈 단위 작업**: 기능/버그는 먼저 이슈로 등록(`.github/ISSUE_TEMPLATE`)한다. 브랜치는 그 이슈에 대응(`feat/<topic>`), PR 본문에 `Closes #이슈번호`를 넣어 머지 시 이슈 자동 종료. mvp-todo 주제 ↔ 이슈 ↔ 브랜치 ↔ PR 로 추적성 유지.
@@ -263,12 +264,13 @@ test(cart): 게스트 담기 · 옵션 되물음 케이스 추가
 
 ### PR 규칙
 
-- **일상 개발 PR 대상 = `dev`**, **최소 1인 리뷰**. (`main` 직접 PR은 `dev → main` 승격 PR만.)
+- **일상 개발 PR 대상 = `dev`** — **CI 필수·사람 승인 리뷰 면제**(리뷰는 원하면 요청). (`main` 직접 PR은 `dev → main` 승격 PR만.)
+- **`dev → main` 승격 PR = 사람 1인 리뷰 필수** + CI. 실서버로 나가는 경계라 여기서만 사람이 확인한다.
 - 병합 전 **`uv run pytest` + `uv run ruff check` 통과** (테스트 없이 "완료" 금지 — `CLAUDE.md`).
 - 계약 변경 PR은 `docs/api-spec.md` 사본 동기화를 포함.
 - **Squash merge** 권장 — 히스토리를 PR 단위로 정리. 단 **`dev → main` 승격 PR은 merge commit**으로 — 두 라인 히스토리를 보존한다.
-- **CI 자동 검증**: `dev`·`main` 양쪽 PR마다 `.github/workflows/ci.yml`이 `ruff`+`pytest` 실행. **PR 템플릿**(`.github/PULL_REQUEST_TEMPLATE.md`)이 CHANGELOG·계약 동기화 체크리스트를 띄운다.
-- (권장) GitHub `main`·`dev` 브랜치 보호에서 *Require status checks to pass* 를 켜면 CI 초록일 때만 머지된다.
+- **CI 자동 검증**: `dev`·`main` 양쪽 PR마다 `.github/workflows/ci.yml`이 `ruff`+`pytest` 실행하고, **두 브랜치 보호에서 이 체크(`lint-test`)를 필수로 강제**한다(strict — 최신 base 요구). **PR 템플릿**(`.github/PULL_REQUEST_TEMPLATE.md`)이 CHANGELOG·계약 동기화 체크리스트를 띄운다.
+- 브랜치 보호 요약: **dev = PR+CI 필수·리뷰 0**, **main = PR+CI 필수·리뷰 1인**. (`enforce_admins`는 off — 긴급 시 admin 우회 여지.)
 
 ### 배포 (dev → main 승격)
 

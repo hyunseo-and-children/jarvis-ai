@@ -38,6 +38,7 @@
 - **이슈 #61 후속 — I-21 `reason` 방어 정제 + 길이 목표(PR #66 리뷰 반영)** — rerank rationale 은 판매자 입력(상품명·브랜드)에 영향받는 자유 텍스트인데, #61로 처음 신뢰경계(AI→Spring→CH-5→FE)를 넘어 최종 사용자에게 노출된다. push 직전 `_sanitize_reason`으로 **비-whitespace 제어문자(NUL·ESC·DEL 등)·zero-width·bidi 포맷 문자를 제거하고 공백류(개행 포함)를 접은 뒤 안전 상한(config `reason_max_len`=200)으로 truncate**해 ANSI 이스케이프·양방향 조작·인젝션성 텍스트·초장문을 차단(`\s`로는 안 걸리는 표시 조작 문자 포함). 표시 목표는 rerank 프롬프트로 **한글 ≤40자 1문장** 유도(소프트), 시각적 오버플로(줄임/더보기)는 FE 소관(경로 B). 긴/개행 rationale 정제 회귀 테스트 추가.
 
 ### Docs
+- **이슈 #92 후속 — 리뷰 게이트를 배포 경계로 이동** — `dev`는 **PR+CI 필수·사람 승인 리뷰 면제**(리뷰 0), 사람 1인 리뷰는 **`dev → main` 승격 PR**에서만 강제하도록 브랜치 보호·문서(README·CLAUDE.md)를 정합화. dev·main 모두 직접 push 금지·`lint-test` 필수는 유지.
 - **이슈 #92 — `main`=배포 라인 고정 + `dev` 통합 브랜치 도입** — 배포팀 CD가 `main` push 기준 EC2 자동배포(`jarvis-backend/.github/workflows/deploy.yml` 패턴)임에 맞춰, 일상 개발을 통합 라인 `dev`로 모으고 `main`은 배포 라인으로 고정했다. README §Git 워크플로에 `main`(배포)+`dev`(통합)+topic 3계층·분기 기준 `dev`·`dev → main` 승격/핫픽스 절차를 반영하고, CLAUDE.md §Git의 브랜치·PR·worktree 분기 기준을 `dev`로 개정. `dev` 브랜치 보호(직접 push 금지·CI 필수·리뷰 1인)는 repo admin 웹 설정 필요.
 - **api-spec §4.2 `reasons` 확정 반영(v0.15.15)** — I-21 콜백의 상품별 근거 `reasons[{productId, reason}]`를 🔴 역제안(v0.15.2)에서 🟢 확정(BE 구현 2026-07-18)으로 개정. §4.2 필드표·주석·C-9·Q2 마커 갱신. 코드(이슈 #61)의 `reasons` 전송이 확정 계약을 따르도록 사본 동기화 — 계약 우선(명세 개정 선행) 원칙 충족. 정본(기획 repo) 백포트 완료(2026-07-22).
 
