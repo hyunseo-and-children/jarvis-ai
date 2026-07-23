@@ -222,12 +222,18 @@ def _sensitive_suffix_start(text: str) -> int | None:
 
 
 def _overlong_bearer_prefix_start(text: str) -> int | None:
-    """무제한 whitespace로 이어지는 Bearer 후보가 보류 상한을 넘었는지 찾는다."""
+    """whitespace가 보류 상한을 소진한 Bearer 후보를 fail-closed로 찾는다."""
     start = text.rfind("Bearer")
     if start < 0 or len(text) - start <= _MAX_SENSITIVE_PREFIX:
         return None
     rest = text[start + len("Bearer") :]
-    return start if rest and rest.isspace() else None
+    whitespace_length = len(rest) - len(rest.lstrip())
+    if whitespace_length == 0:
+        return None
+    token = rest[whitespace_length:]
+    if len(token) >= _MIN_SECRET_TOKEN_LENGTH:
+        return None
+    return start if all(char in _BEARER_TOKEN_CHARS for char in token) else None
 
 
 def _earliest_secret_match(text: str) -> tuple[int, re.Match[str]] | None:

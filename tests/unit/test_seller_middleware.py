@@ -145,3 +145,12 @@ def test_streaming_output_guard_absorbs_selector_after_fixed_secret_match() -> N
     parts.extend(guard.feed("️ 끝"))
     parts.extend(guard.flush())
     assert "".join(parts) == "번호 [민감 정보 차단] 끝"
+
+
+def test_streaming_output_guard_masks_bearer_after_overlong_whitespace_prefix() -> None:
+    """보류 상한 직후 partial token이 붙어도 Bearer prefix를 안전 텍스트로 방출하지 않는다."""
+    guard = middleware.StreamingOutputGuard()
+    parts = guard.feed("앞 Bearer" + "\n" * 16 + "a")
+    parts.extend(guard.feed("bcdefghijklmnop"))
+    parts.extend(guard.flush())
+    assert "".join(parts) == "앞 " + middleware.MASK_REPLACEMENT
