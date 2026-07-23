@@ -212,28 +212,30 @@ uv run pytest tests/integration/test_buyer_flow_e2e.py -q
 
 ## 🔀 Git 워크플로 & 커밋 규칙
 
-**3인 팀** 기준 경량 **GitHub Flow**. `main` 하나 + 짧게 사는 topic 브랜치만 쓴다 — `develop`/`release`/`hotfix` 계층을 두는 Git Flow는 3인에 과하다.
+**3인 팀** 기준 경량 흐름. **배포 라인 `main` + 통합 라인 `dev`** 두 보호 브랜치와 짧게 사는 topic 브랜치를 쓴다 — 배포팀이 `main` push 기준 CD(EC2 자동배포)를 붙이므로, 매 기능 머지가 곧장 실서버로 나가지 않도록 `dev`를 통합 버퍼로 둔다. `develop`/`release`/`hotfix`까지 계층화하는 정식 Git Flow는 3인에 여전히 과하다.
 
 ### 브랜치 전략
 
-- `main` — 보호 브랜치. 항상 배포 가능 상태, **직접 push 금지**, PR로만 병합.
-- 작업은 topic 브랜치에서 → PR → **최소 1인 리뷰**(3인이라 나머지 2명 중 누구든) → 병합. topic은 [mvp-todo.md](docs/mvp-todo.md) 주제와 정렬.
+- `main` — **배포(production) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 여기 머지 = **EC2 자동배포**. 항상 실서버와 일치.
+- `dev` — **통합(integration) 라인**. 보호 브랜치, **직접 push 금지**, PR로만 병합. 일상 개발이 모이는 곳.
+- 일상 개발은 topic 브랜치에서 → **`dev`로 PR** → **최소 1인 리뷰**(3인이라 나머지 2명 중 누구든) → 병합. topic은 [mvp-todo.md](docs/mvp-todo.md) 주제와 정렬.
+- **배포는 `dev → main` 승격 PR** 로만 — 배포할 준비가 된 `dev`를 `main`으로 올리는 PR을 잘라 머지하면 CD가 배포한다.
 - 이름 규칙: `<type>/<topic>` (예: `feat/recommend-graph`, `feat/cart-i2`, `fix/sse-timeout`, `docs/api-spec-sync`)
 - **이슈 단위 작업**: 기능/버그는 먼저 이슈로 등록(`.github/ISSUE_TEMPLATE`)한다. 브랜치는 그 이슈에 대응(`feat/<topic>`), PR 본문에 `Closes #이슈번호`를 넣어 머지 시 이슈 자동 종료. mvp-todo 주제 ↔ 이슈 ↔ 브랜치 ↔ PR 로 추적성 유지.
 - **짧게 유지** — 주제 단위로 잘게 쪼개 자주 병합한다. 오래 사는 브랜치는 3인 사이 충돌·정체를 부른다(장수 브랜치 금지).
 
 ### 병렬 작업 (동시에 여러 기능)
 
-기능마다 브랜치 하나. 두 기능을 동시에 하면 **각자 `main`에서 딴 별도 `feat/` 브랜치**로 병렬 진행한다.
+기능마다 브랜치 하나. 두 기능을 동시에 하면 **각자 `dev`에서 딴 별도 `feat/` 브랜치**로 병렬 진행한다.
 
-- **분기는 항상 최신 `main`에서** — 다른 `feat/` 브랜치에서 따지 않는다(안 끝난 코드가 딸려온다).
+- **분기는 항상 최신 `dev`에서** — 다른 `feat/` 브랜치나 `main`에서 따지 않는다(안 끝난 코드나 배포분이 딸려온다).
   ```bash
-  git checkout main && git pull
+  git checkout dev && git pull
   git checkout -b feat/<topic>
   ```
 - **먼저 병합된 쪽을 뒤 브랜치가 따라잡는다** — 자주 당길수록 충돌이 작다.
   ```bash
-  git checkout feat/<topic> && git merge origin/main   # 또는 rebase
+  git checkout feat/<topic> && git merge origin/dev   # 또는 rebase
   ```
 - **공통 파일은 조율** — 주제별 파일은 대체로 분리(`agents/buyer/cart/` vs `.../recommendation/`)돼 충돌이 적지만, `services/spring_client.py`·`schemas/`·`main.py`·`core/config.py`는 여러 기능이 함께 건드린다. 작게·자주 병합하거나 뼈대→기능 순서를 정한다.
 - 두 기능이 **같은 코드를 깊게 얽어** 고쳐야 하면 억지로 나누지 말고 한 브랜치에서 순차로 한다.
@@ -261,12 +263,18 @@ test(cart): 게스트 담기 · 옵션 되물음 케이스 추가
 
 ### PR 규칙
 
-- 대상 = `main`, **최소 1인 리뷰**.
+- **일상 개발 PR 대상 = `dev`**, **최소 1인 리뷰**. (`main` 직접 PR은 `dev → main` 승격 PR만.)
 - 병합 전 **`uv run pytest` + `uv run ruff check` 통과** (테스트 없이 "완료" 금지 — `CLAUDE.md`).
 - 계약 변경 PR은 `docs/api-spec.md` 사본 동기화를 포함.
-- **Squash merge** 권장 — 히스토리를 PR 단위로 정리.
-- **CI 자동 검증**: PR마다 `.github/workflows/ci.yml`이 `ruff`+`pytest` 실행. **PR 템플릿**(`.github/PULL_REQUEST_TEMPLATE.md`)이 CHANGELOG·계약 동기화 체크리스트를 띄운다.
-- (권장) GitHub `main` 브랜치 보호에서 *Require status checks to pass* 를 켜면 CI 초록일 때만 머지된다.
+- **Squash merge** 권장 — 히스토리를 PR 단위로 정리. 단 **`dev → main` 승격 PR은 merge commit**으로 — 두 라인 히스토리를 보존한다.
+- **CI 자동 검증**: `dev`·`main` 양쪽 PR마다 `.github/workflows/ci.yml`이 `ruff`+`pytest` 실행. **PR 템플릿**(`.github/PULL_REQUEST_TEMPLATE.md`)이 CHANGELOG·계약 동기화 체크리스트를 띄운다.
+- (권장) GitHub `main`·`dev` 브랜치 보호에서 *Require status checks to pass* 를 켜면 CI 초록일 때만 머지된다.
+
+### 배포 (dev → main 승격)
+
+- `main` push = 배포팀 CD가 EC2에 자동배포([`jarvis-backend/.github/workflows/deploy.yml`](https://github.com/toss-delta-final/jarvis-backend) 패턴). 그래서 `main` 머지는 **배포 행위**다.
+- 배포할 준비가 된 `dev`를 `main`으로 올리는 **승격 PR**을 잘라 머지한다. 릴리스 단위로 CHANGELOG `[Unreleased]`를 확정하고 버전 태그를 남긴다.
+- **핫픽스**: 프로덕션 긴급 수정은 `main`에서 `fix/*`를 따 `main`으로 PR한 뒤, **즉시 `main`을 `dev`로 백머지**해 두 라인이 갈라지지 않게 한다.
 - **Git hook(pre-commit)**: `uv run pre-commit install` 한 번이면 커밋마다 로컬에서 **ruff(lint+format)** + **커밋 메시지 형식(Conventional Commits)** 을 자동 검사한다(사람·Claude 모두). 설정은 [`.pre-commit-config.yaml`](.pre-commit-config.yaml). CI는 서버 측 재검증이라 상호보완.
 
 ### 에디터 자동 포맷 (선택 — 저장 시 자동 lint)
