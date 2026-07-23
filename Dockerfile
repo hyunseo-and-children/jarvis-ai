@@ -1,4 +1,5 @@
-# 멀티스테이지 uv 빌드 (결정 13). 임베딩 그룹 포함 (파이프라인/런타임 필요).
+# 멀티스테이지 uv 빌드 (결정 13). 임베딩(google-genai·pgvector)은 main deps라 uv sync 로 설치
+# — 셀프호스트 torch·`--group embedding` 폐기(api-spec §4.8 v0.15.14).
 
 # ── builder ──
 FROM python:3.12-slim AS builder
@@ -12,15 +13,17 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-# 잠금 파일 기준 재현 가능 설치 — dev 제외, embedding 그룹 포함.
+# 잠금 파일 기준 재현 가능 설치 — dev 제외(임베딩 의존성은 main deps).
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --group embedding --no-install-project
+    uv sync --frozen --no-dev --no-install-project
 
 # 프로젝트 소스 복사 후 프로젝트 자체 설치.
+# README.md 는 pyproject `readme` 필드라 wheel 빌드(hatchling) 시 필요.
+COPY README.md ./
 COPY app ./app
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-dev --group embedding
+    uv sync --frozen --no-dev
 
 # ── final ──
 FROM python:3.12-slim AS final

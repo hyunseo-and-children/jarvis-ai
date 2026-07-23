@@ -13,7 +13,7 @@
 
 ## 명령어
 
-- 의존성: `uv sync` (임베딩 그룹: `uv sync --group embedding`)
+- 의존성: `uv sync` (임베딩 의존성(google-genai·pgvector)은 main deps — 별도 그룹 없음, `--group embedding` 폐기: api-spec §4.8 v0.15.14)
 - DB: `docker compose up -d pg-catalog pg-profile` (catalog 5433 / profile 5434)
 - 실행: `uv run uvicorn app.main:app --reload`
 - 테스트: `uv run pytest` / 린트: `uv run ruff check`

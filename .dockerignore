@@ -1,0 +1,45 @@
+# 빌드 컨텍스트 슬림화 + 시크릿/불필요 파일 이미지 유입 차단.
+# Dockerfile 은 pyproject.toml·uv.lock·app 만 COPY 하지만, 방어적으로 넓게 제외한다.
+
+# ── 시크릿 (절대 이미지에 넣지 않는다) ──
+.env
+.env.*
+!.env.example
+deploy.env
+*.pem
+*.key
+
+# ── VCS / CI ──
+.git
+.gitignore
+.gitattributes
+.github
+
+# ── Python 가상환경·캐시 (이미지는 builder 단계에서 새로 설치) ──
+.venv
+venv
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── 테스트·문서·로컬 산출물 (런타임 불필요) ──
+tests/
+output/
+docs/
+*.md
+!README.md
+
+# ── 로컬 DB init(컨테이너 볼륨 마운트용, 이미지 불필요) ──
+db/
+
+# ── 에디터/OS/에이전트 ──
+.vscode/
+.idea/
+.DS_Store
+.claude/
+.agents/
+.codex/
+scratchpad/

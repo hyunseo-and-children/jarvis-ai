@@ -13,6 +13,12 @@
 
 ---
 
+## [2026-07-23] Docker 이미지가 오래 빌드 불가였는데 CI가 못 잡았다
+- 증상: 배포 준비(#95)로 처음 `docker build` 를 돌리자 두 지점에서 실패 — (1) `uv sync --group embedding` 이 "Group embedding is not defined"(§4.8 v0.15.14에서 폐기), (2) 이어서 hatchling wheel 빌드가 `pyproject.readme`(README.md)를 못 찾음(Dockerfile이 COPY 안 함). 즉 이미지는 한동안 빌드 불가 상태로 방치돼 있었다.
+- 원인: CI(`ci.yml`)가 `ruff`+`pytest` 만 돌고 **`docker build` 스모크가 없어**, Dockerfile 결함이 커밋돼도 아무도 못 봤다. 임베딩 그룹 폐기 시 Dockerfile·문서의 잔존 참조를 함께 지우지 않은 것도 겹쳤다.
+- 규칙: **배포/의존성/Dockerfile 변경 시 로컬 `docker build` + 이미지 내 `create_app()` 스모크를 반드시 돌린다.** CI에 이미지 빌드 잡 추가를 검토한다. 의존성 그룹·명령을 폐기하면 `grep -rn` 으로 Dockerfile·README·CLAUDE·docs 잔존 참조를 전수 정리한다.
+- 관련: #95, PR #96, Dockerfile, api-spec §4.8 v0.15.14
+
 ## [2026-07-23] 여러 파일 patch는 파일 경계마다 Update File 헤더를 다시 선언한다
 - 증상: SPEC과 구현 계획을 한 patch로 갱신하면서 두 번째 파일의 체크박스 변경 전에 `Update File` 헤더를 빠뜨려 첫 파일에서 해당 문맥을 찾다가 patch 전체가 실패했다.
 - 원인: 서로 다른 문서의 hunk를 하나의 파일 블록으로 이어 붙였다.

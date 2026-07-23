@@ -128,7 +128,7 @@ tests/                   # pytest (unit · integration)
 ## 🚀 시작하기
 
 ```bash
-# 1. 의존성 설치 (임베딩 그룹은 배치 실행 시에만: uv sync --group embedding)
+# 1. 의존성 설치 (임베딩 의존성도 main deps — 별도 그룹 없음)
 uv sync
 
 # 2. PostgreSQL ×2 기동 (catalog=5433, profile=5434)
