@@ -13,6 +13,17 @@
 
 ---
 
+## [2026-07-23] 진단 스크립트도 실제 응답 모델 계약으로 성공 경로를 테스트한다
+- 증상: FastAPI→Spring 연결과 internal token 인증은 성공했지만, 연결 확인 스크립트가
+  `SellerProductList`에 없는 `total` 속성을 출력하려다 `AttributeError`로 종료되어 실제 연결
+  성공을 실패처럼 보이게 했다.
+- 원인: 목록 응답에 관습적으로 `total`이 있을 것이라 가정하고 `rows`만 정의된 실제 Pydantic
+  모델을 확인하지 않았으며, 실패 경로만 수동 확인하고 성공 응답 출력은 테스트하지 않았다.
+- 규칙: 진단 도구도 운영 클라이언트의 실제 응답 모델을 사용해 성공·빈 결과 경로를 테스트하고,
+  출력 필드는 스키마에 선언된 속성만 참조한다.
+- 관련: `scripts/check_spring_connection.py`, `app/schemas/spring.py::SellerProductList`,
+  `tests/unit/test_check_spring_connection_script.py`
+
 ## [2026-07-23] Docker 이미지가 오래 빌드 불가였는데 CI가 못 잡았다
 - 증상: 배포 준비(#95)로 처음 `docker build` 를 돌리자 두 지점에서 실패 — (1) `uv sync --group embedding` 이 "Group embedding is not defined"(§4.8 v0.15.14에서 폐기), (2) 이어서 hatchling wheel 빌드가 `pyproject.readme`(README.md)를 못 찾음(Dockerfile이 COPY 안 함). 즉 이미지는 한동안 빌드 불가 상태로 방치돼 있었다.
 - 원인: CI(`ci.yml`)가 `ruff`+`pytest` 만 돌고 **`docker build` 스모크가 없어**, Dockerfile 결함이 커밋돼도 아무도 못 봤다. 임베딩 그룹 폐기 시 Dockerfile·문서의 잔존 참조를 함께 지우지 않은 것도 겹쳤다.
