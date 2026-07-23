@@ -787,7 +787,7 @@ def test_route_model_not_configured_emits_llm_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """supervisor 생성 전 provider 미구성은 error 이벤트로 안전하게 종료한다."""
+    """supervisor 생성 전 provider 미구성도 general meta 뒤 error로 종료한다."""
 
     async def not_configured(question, context):
         raise LLMNotConfigured("openai key missing")
@@ -797,8 +797,9 @@ def test_route_model_not_configured_emits_llm_unavailable(
     with caplog.at_level(logging.ERROR, logger="app.api.seller"):
         events = _collect_seller(_request("매출 알려줘"))
 
-    assert [event["type"] for event in events] == ["error"]
-    assert events[0]["data"]["code"] == "LLM_UNAVAILABLE"
+    assert [event["type"] for event in events] == ["meta", "error"]
+    assert events[0]["data"]["lane"] == "general"
+    assert events[1]["data"]["code"] == "LLM_UNAVAILABLE"
     assert "provider=openai lane=routing thread=t-1" in caplog.text
     assert "openai key missing" not in caplog.text
 

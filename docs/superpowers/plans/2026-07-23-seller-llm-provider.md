@@ -420,4 +420,27 @@ finding으로 바꾸면 API의 `LLM_UNAVAILABLE` 계약이 깨진다. gather 병
 - [x] **Step 3: `_llm_unavailable` 공용 helper가 오류 로그와 SSE 생성을 함께 담당하게 한다**
 - [x] **Step 4: 네 `LLMNotConfigured` catch가 lane/thread context를 전달하도록 변경한다**
 - [x] **Step 5: ruff·전체 pytest·diff 검토 후 Lore 커밋과 push를 수행한다**
+- [x] **Step 6: 리뷰 답변·resolve 후 새 CI/Claude Review를 다시 확인한다**
+
+### Task 9: Claude Review follow-up — 라우팅 설정 오류 meta-first 계약
+
+**Review:** PR #88 unresolved thread `PRRT_kwDOTZymn86THf1T`
+
+**Decision:** 반영한다. api-spec §3.2와 FE 계약은 모든 판매자 스트림의 첫 프레임을
+`meta{lane}`으로 고정하지만, supervisor가 provider 미구성으로 분류 전에 실패하는 경로만
+`error`로 시작한다. 새 `routing` wire lane은 계약 변경을 불필요하게 넓히므로 추가하지 않고,
+기존 라우팅 장애의 UI 폴백인 `general`을 사용해 `meta{general} → error{LLM_UNAVAILABLE}`로
+끝낸다. 서버 로그는 실제 실패 지점 식별을 위해 `lane=routing`을 유지한다.
+
+**Files:**
+- Modify: `docs/specs/SPEC-SELLER-001.md`
+- Modify: `tests/unit/test_seller_api.py`
+- Modify: `app/api/seller.py`
+- Modify: `CHANGELOG.md`
+
+- [x] **Step 1: SPEC v1.1.4에 모든 스트림의 meta-first 및 라우팅 실패 general 폴백을 기록한다**
+- [x] **Step 2: 라우팅 provider 미구성 경로가 `meta{general}` 뒤 error를 내는 RED 테스트를 작성한다**
+- [x] **Step 3: catch에서 general meta를 먼저 방출하는 최소 구현을 한다**
+- [x] **Step 4: 로그의 `lane=routing`과 비밀값 비노출 회귀를 함께 검증한다**
+- [x] **Step 5: CHANGELOG·ruff·전체 pytest·diff 검토 후 Lore 커밋과 push를 수행한다**
 - [ ] **Step 6: 리뷰 답변·resolve 후 새 CI/Claude Review를 다시 확인한다**

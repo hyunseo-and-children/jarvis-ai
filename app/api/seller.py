@@ -516,6 +516,7 @@ async def _seller_stream(request: SellerChatRequest, identity: Identity) -> Asyn
     try:
         decision = await route_question(request.message, context)
     except LLMNotConfigured:
+        yield _meta("general")
         yield _llm_unavailable(lane="routing", thread_id=request.thread_id)
         return
     logger.info(
