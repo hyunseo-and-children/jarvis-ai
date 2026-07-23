@@ -57,6 +57,17 @@ def test_merge_skips_empty_legs() -> None:
     assert _ids(merged) == [1]
 
 
+def test_merge_cap_zero_yields_empty() -> None:
+    """cap<=0(운영 설정 실수)면 정확히 0개로 절단한다 — slice 의미와 일치(PR #73 리뷰).
+
+    append 후 체크 방식이면 첫 상품이 항상 남아 decompose·_dedup_truncate 의 slice 절단과
+    어긋난다. 세 절단 지점(_parse·merge·_dedup)을 같은 slice 규약으로 통일한다.
+    """
+    merged = _merge_fanout_results([_res(1, 2, 3), _res(4, 5)], cap=0)
+    assert _ids(merged) == []
+    assert merged.total_count == 0
+
+
 # ─────────── fan-out 오케스트레이션 (stream_recommendation §6) ───────────
 
 
@@ -210,6 +221,34 @@ async def test_fanout_partial_leg_failure_uses_survivors() -> None:
     )
     assert "error" not in [e["type"] for e in events]
     assert set(push.pushes[0].product_ids) <= {101, 102}
+
+
+async def test_fanout_leg_unexpected_exception_isolated_not_stream_crash() -> None:
+    """leg 하나가 SpringUnavailable 아닌 예상외 예외를 던져도 그 leg 만 드롭하고 스트림은 계속한다(PR #73 리뷰).
+
+    _leg 이 SpringUnavailableError 만 삼키면 다른 예외가 gather → _run_search → stream 상위로
+    전파돼 SSE 스트림 전체가 미처리 예외로 죽는다(주석이 약속한 leg 격리 미보장). 예상외 예외도
+    그 leg 만 격리해 살아남은 leg 로 계속해야 한다 — category_mapping fan-out(return_exceptions)과 정합.
+    """
+
+    async def _search(filters, exclude_product_ids=None):
+        if "어댑터" in filters.category:
+            raise RuntimeError("unexpected leg bug")  # SpringUnavailable 아님
+        return _res(101, 102)
+
+    push = _RecordingPush()
+    events = await _collect(
+        run_buyer_turn(
+            _req(),
+            _member(),
+            llm=FakeLLM(),
+            search=_search,
+            push_fn=push,
+            map_categories=_two_leg_mapper(),
+        )
+    )
+    assert "error" not in [e["type"] for e in events]  # 스트림 안 죽음
+    assert set(push.pushes[0].product_ids) <= {101, 102}  # 살아남은 leg 결과로 진행
 
 
 # ─────────── conditions 칩 멀티 카테고리 반영 (PR #73 리뷰 #6) ───────────

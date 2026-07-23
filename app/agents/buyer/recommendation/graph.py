@@ -9,6 +9,7 @@ SSE 는 상품 카드를 싣지 않는다(경로 B) — products.ready 는 {sess
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -36,6 +37,8 @@ from app.schemas.spring import (
     SpringProduct,
 )
 from app.services.spring_client import SpringUnavailableError
+
+logger = logging.getLogger(__name__)
 
 _INACTIVE_STATUSES = frozenset(
     {"CANCELED", "CANCELLED", "RETURNED"}
@@ -83,8 +86,9 @@ def _merge_fanout_results(results: list[ProductSearchResult], cap: int) -> Produ
                 continue
             seen.add(product.product_id)
             merged.append(product)
-            if len(merged) >= cap:
-                return ProductSearchResult(products=merged, total_count=len(merged))
+    # slice 절단 — decompose 의 _parse_category_queries·_dedup_truncate 와 동일 규약
+    # (cap<=0 이면 정확히 0개; append 후 체크는 첫 상품이 남아 절단 의미가 어긋난다, PR #73 리뷰).
+    merged = merged[:cap]
     return ProductSearchResult(products=merged, total_count=len(merged))
 
 
@@ -121,6 +125,11 @@ async def stream_recommendation(
                 return await search(decision.filters, exclude_product_ids=None)
             except SpringUnavailableError:
                 return None
+            except Exception as exc:  # noqa: BLE001 - 예상외 예외도 삼켜 SEARCH_FAILED 로 degrade
+                # 검색 호출이 SpringUnavailable 아닌 예외를 던져도 SSE 스트림을 미처리 예외로 죽이지
+                # 않는다 — None → 상위에서 SEARCH_FAILED(§6). CancelledError(BaseException)는 전파.
+                logger.warning("search_failed", extra={"reason": str(exc)})
+                return None
 
         # fan-out — canonical 카테고리마다 leg 를 병렬 검색(§6). leg 별 filters 는 category·
         # keyword(그 카테고리 query, 없으면 base)·size 만 교체한다.
@@ -133,17 +142,24 @@ async def stream_recommendation(
         )
 
         async def _leg(canonical: str, query: str | None) -> ProductSearchResult | None:
-            leg_filters = decision.filters.model_copy(
-                update={
-                    "category": canonical,
-                    "keyword": query or decision.filters.keyword,
-                    "limit": leg_limit,
-                }
-            )
+            # leg 전체를 try 로 감싼다 — model_copy·search 어디서 실패해도 그 leg 만 드롭한다.
             try:
+                leg_filters = decision.filters.model_copy(
+                    update={
+                        "category": canonical,
+                        "keyword": query or decision.filters.keyword,
+                        "limit": leg_limit,
+                    }
+                )
                 return await search(leg_filters, exclude_product_ids=None)
             except SpringUnavailableError:
                 return None  # leg 별 실패는 삼켜 다른 leg 는 계속(§6)
+            except Exception as exc:  # noqa: BLE001 - 예상외 예외도 그 leg 만 격리(SSE 스트림 보호)
+                # SpringUnavailable 아닌 예외가 gather → 스트림 상위로 전파돼 SSE 전체가 죽지 않게
+                # 격리한다. return_exceptions 대신 여기서 잡아 로그 + None — CancelledError(BaseException)
+                # 는 전파돼 협조적 취소가 보존된다. category_mapping fan-out(§6)과 격리 목적 일관.
+                logger.warning("search_leg_failed", extra={"reason": str(exc)})
+                return None
 
         leg_results = await asyncio.gather(*(_leg(c, q) for c, q in legs))
         survived = [r for r in leg_results if r is not None]
@@ -164,6 +180,10 @@ async def stream_recommendation(
         try:
             return await fn(uid)
         except SpringUnavailableError:
+            return None
+        except Exception as exc:  # noqa: BLE001 - I-19 실패는 degrade(dedup 없이 진행, SSE 유지)
+            # 최근구매 조회가 예상외 예외를 던져도 추천 스트림을 죽이지 않는다 — None → dedup 스킵(§4.7).
+            logger.warning("purchases_fetch_failed", extra={"reason": str(exc)})
             return None
 
     search_result, purchases = await asyncio.gather(_run_search(), _fetch_purchases())

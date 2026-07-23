@@ -121,10 +121,13 @@ category-agnostic 질의**("5만원 이하 아무거나")는 카테고리를 강
 
 - **leg 구성**: canonical 카테고리마다 `decision.filters`를 복사해 `category`·`keyword`(해당
   `query` 있으면 그걸로)·`limit=category_fanout_per_cat_limit`로 교체.
-- **병렬**: `asyncio.gather`, 각 leg 는 `SpringUnavailableError`를 삼켜 `[]`. AI→Spring 3s
-  타임아웃은 기존 `spring_timeout_s` 재사용.
+- **병렬**: `asyncio.gather`, 각 leg(`_leg`)는 실패를 leg 단위로 격리한다 — `SpringUnavailableError`
+  뿐 아니라 예상외 예외도 삼켜 `None`(그 leg만 드롭, 로그 `search_leg_failed`). 한 leg의 미처리
+  예외가 gather→스트림 상위로 전파돼 SSE 전체가 죽지 않게(단일검색·최근구매 조회도 동일 격리).
+  `CancelledError`는 전파(협조적 취소 보존). AI→Spring 3s 타임아웃은 기존 `spring_timeout_s` 재사용.
 - **병합**: productId dedup + round-robin 인터리브(한 카테고리가 rerank 입력 독점 방지) +
-  `category_fanout_merge_cap` 절단.
+  `category_fanout_merge_cap` slice 절단(`merged[:cap]` — decompose `_parse`·`_dedup_truncate`와
+  동일 규약, cap≤0이면 0개).
 - 전량 leg 실패 → 기존 `SEARCH_FAILED`. 성공했으나 전체 0건 → 기존 zero-result 안내.
 
 **비범위(Case 3 기능):** priority(필수/권장/선택), 예산 배분(budget), SSE `groups`(경로 B 평면

@@ -153,9 +153,9 @@ def _parse_category_queries(raw: object, fanout_max: int) -> list[CategoryQuery]
                 query=str(qry) if isinstance(qry, str) and qry else None,
             )
         )
-        if len(out) >= fanout_max:
-            break
-    return out
+    # slice 절단 — category_mapping 의 _dedup_truncate·_merge_fanout_results 와 동일 규약
+    # (fanout_max<=0 이면 정확히 0개; append 후 체크는 첫 항목이 남아 절단 의미가 어긋난다, PR #73 리뷰).
+    return out[:fanout_max]
 
 
 def _as_int(value: object) -> int | None:
