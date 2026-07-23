@@ -375,4 +375,27 @@
 - [x] **Step 4: `field_validator(mode="before")`에서 문자열 값에만 `.lower()`를 적용한다**
 - [x] **Step 5: 집중 테스트 → ruff → 전체 pytest 순서로 검증한다**
 - [x] **Step 6: CHANGELOG에 하위호환 복구를 기록하고 Lore 커밋 후 push한다**
-- [ ] **Step 7: 리뷰 스레드에 변경·테스트를 답변하고 resolve한다**
+- [x] **Step 7: 리뷰 스레드에 변경·테스트를 답변하고 resolve한다**
+
+### Task 7: Claude Review follow-up — worker configuration error 전파
+
+**Review:** PR #88 unresolved thread `PRRT_kwDOTZymn86THQ_3`
+
+**Decision:** 반영한다. `LLMNotConfigured`는 특정 데이터 소스의 일시 실패가 아니라 모든
+worker가 공유하는 배포 설정 오류다. 현재 planner가 먼저 같은 fast tier를 만들기 때문에
+대부분 선행 실패하지만, worker tier 분리나 직접 호출에서도 `run_workers`가 이 오류를 degrade
+finding으로 바꾸면 API의 `LLM_UNAVAILABLE` 계약이 깨진다. gather 병렬성은 유지하고 결과 수렴
+시 configuration error를 다른 예외보다 먼저 재전파한다.
+
+**Files:**
+- Modify: `docs/specs/SPEC-SELLER-001.md`
+- Modify: `tests/unit/test_seller_orchestrator.py`
+- Modify: `app/agents/seller/orchestrator.py`
+- Modify: `CHANGELOG.md`
+
+- [x] **Step 1: SPEC v1.1.2에 provider 미구성은 worker degrade 대상이 아님을 기록한다**
+- [x] **Step 2: 정상 worker와 `LLMNotConfigured` worker가 섞여도 예외가 재전파되는 RED 테스트를 추가한다**
+- [x] **Step 3: gather 결과에서 `LLMNotConfigured`를 finding 변환 전에 재전파한다**
+- [x] **Step 4: 일반 예외·timeout의 기존 partial degrade 테스트를 함께 실행한다**
+- [x] **Step 5: ruff·전체 pytest·diff 검토 후 Lore 커밋과 push를 수행한다**
+- [ ] **Step 6: 리뷰 답변·resolve 후 새 CI/Claude Review를 다시 확인한다**

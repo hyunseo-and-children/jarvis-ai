@@ -180,6 +180,7 @@ async def run_workers(
     - 시작 시 워커별 진행 token 을 계획 순서대로 emit(first-token·체감 대기, §7).
     - 실행은 asyncio.gather 병렬 — 반환 순서는 plan.analyses 순서를 유지한다.
     - 일부 실패는 degrade finding 으로 수렴해 부분 보고서로 계속(§4).
+    - provider 미구성은 전역 설정 오류라 degrade하지 않고 API 경계까지 전파한다.
     - 전부 예외면 AllWorkersFailedError — 부분 보고서조차 불가능한 경우만이다.
     """
     settings = get_settings()
@@ -195,6 +196,10 @@ async def run_workers(
         ),
         return_exceptions=True,
     )
+
+    for result in results:
+        if isinstance(result, LLMNotConfigured):
+            raise result
 
     findings: list[AnalysisFinding] = []
     failures = 0

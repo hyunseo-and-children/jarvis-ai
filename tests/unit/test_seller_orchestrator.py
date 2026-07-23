@@ -23,6 +23,7 @@ from app.agents.seller.schemas import (
     RecommendationSet,
     ReportScore,
 )
+from app.core.llm import LLMNotConfigured
 
 
 def _settings(timeout_s: float = 5.0) -> SimpleNamespace:
@@ -138,6 +139,25 @@ def test_run_workers_partial_failure_becomes_degrade(monkeypatch: pytest.MonkeyP
     assert "확보 실패" in degraded.summary  # D3 탐지 문자열 유지
     assert degraded.evidence == []
     assert findings[0].summary == "sales_anomaly 정상 결과"
+
+
+def test_run_workers_configuration_error_is_not_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """provider 미구성은 정상 finding이 섞여도 부분 실패로 흡수하지 않는다."""
+    _patch(
+        monkeypatch,
+        {
+            "sales_anomaly": _StubAgent(finding=_finding("sales_anomaly")),
+            "abuse": _StubAgent(exc=LLMNotConfigured("openai key missing")),
+        },
+    )
+    _, emit = _collect_emit()
+
+    with pytest.raises(LLMNotConfigured):
+        asyncio.run(
+            orchestrator.run_workers("질문", _plan("sales_anomaly", "abuse"), _CTX, emit=emit)
+        )
 
 
 def test_run_workers_all_failed_raises(monkeypatch: pytest.MonkeyPatch) -> None:
