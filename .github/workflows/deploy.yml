@@ -42,6 +42,8 @@ jobs:
   deploy:
     needs: build
     runs-on: ubuntu-latest
+    permissions:
+      packages: read   # EC2에서 GHCR pull 시 필요 (조직 기본 권한에 의존하지 않도록 명시)
     steps:
       - name: AI 서버 무중단 배포
         uses: appleboy/ssh-action@v1.0.3   # 버전 고정 — @master는 예고 없이 깨짐
@@ -73,6 +75,7 @@ jobs:
             OPENAI_FAST_REASONING_EFFORT=${{ vars.OPENAI_FAST_REASONING_EFFORT }}
             OPENAI_SMART_REASONING_EFFORT=${{ vars.OPENAI_SMART_REASONING_EFFORT }}
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            PII_HASH_PEPPER=${{ secrets.PII_HASH_PEPPER }}
             EMBEDDING_MODEL_ID=${{ vars.EMBEDDING_MODEL_ID }}
             EMBEDDING_DIM=${{ vars.EMBEDDING_DIM }}
             CORS_ORIGINS=${{ vars.CORS_ORIGINS }}
