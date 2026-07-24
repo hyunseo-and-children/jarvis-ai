@@ -37,14 +37,29 @@ class SellerChatRequest(ChatRequest):
         default=None,
         description="action=='confirm' 일 때 실행할 draft 식별자(스트림1 draft.draftId)",
     )
+    # [2026-07-24] confirm 은 '발화 ≠ 동의'라 message 가 없다 — FE 계약 A-2 의
+    # confirm 페이로드({sessionId, threadId, action:"confirm", draftId})는 message 키를
+    # 싣지 않는다. 부모 ChatRequest 의 message 는 필수(...)라, 문서대로 보낸 confirm 이
+    # "message field required" 400 으로 거절됐다. 여기서 message 를 선택(기본 "")으로
+    # 낮춰 계약과 스키마를 일치시킨다 — 일반 발화의 message 필수성은 아래 model_validator
+    # 가 action 별로 조건부 강제하므로 빈 발화 400 방어는 유지된다.
+    message: str = Field(
+        default="",
+        description="현재 턴 사용자 원문 질의. confirm 승인 시엔 비운다(발화≠동의), 그 외 필수.",
+    )
 
     @model_validator(mode="after")
-    def _confirm_requires_draft_id(self) -> "SellerChatRequest":
-        """승인 신호의 형식을 강제한다 — action=='confirm' 이면 draftId 가 비어있으면 안 된다.
+    def _validate_message_and_confirm(self) -> "SellerChatRequest":
+        """action 별 요청 형식을 강제한다 — 위반은 스트림 시작 전 400(BAD_REQUEST, §3.2).
 
-        형식 위반은 스트림 시작 전 400(BAD_REQUEST)으로 거른다(§3.2) — 빈 draftId 를
-        일반 발화로 흘리면 승인이 조용히 무시되어 FE 가 원인을 알 수 없다.
+        - action=='confirm': draftId 필수. 빈 draftId 를 일반 발화로 흘리면 승인이
+          조용히 무시되어 FE 가 원인을 알 수 없다. message 는 요구하지 않는다(발화 아님).
+        - 그 외(일반 발화): message 필수. 빈 발화를 라우팅·파이프라인에 흘리지 않는다
+          (message 를 선택 필드로 낮춘 뒤에도 일반 발화의 필수성을 여기서 지킨다).
         """
-        if self.action == "confirm" and not (self.draft_id and self.draft_id.strip()):
-            raise ValueError("action=='confirm' 이면 draftId 가 필요합니다")
+        if self.action == "confirm":
+            if not (self.draft_id and self.draft_id.strip()):
+                raise ValueError("action=='confirm' 이면 draftId 가 필요합니다")
+        elif not (self.message and self.message.strip()):
+            raise ValueError("message 가 필요합니다")
         return self
