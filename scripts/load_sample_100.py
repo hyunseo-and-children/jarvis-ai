@@ -28,7 +28,9 @@ from app.core.config import get_settings  # noqa: E402
 def load_documents(
     path: Path, expected_count: int, expected_dim: int, expected_model: str
 ) -> list[dict[str, Any]]:
-    documents = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    documents = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
     ids = {int(row["product_id"]) for row in documents}
     if len(documents) != expected_count or len(ids) != expected_count:
         raise ValueError(
